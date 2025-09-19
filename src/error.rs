@@ -1,124 +1,119 @@
 use std::{error, fmt};
 use crate::utils::byte_utils;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum NumericError {
-    InvalidHexDigit { digit: u8, position: usize }
+    InvalidHexDigit { digit: u8, pos: usize }
 }
 
-#[derive(Debug)]
-pub enum TokenizerError {
-    InvalidControlCharacter { byte: u8, position: usize },
-    InvalidUtf8Sequence { len: u8, position: usize },
-    IncompleteUtf8Sequence { position: usize },
-    IncompleteEscapeSequence { position: usize },
-    UnknownEscapeCharacter { position: usize },
-    InvalidSurrogate { val: u16, position: usize },
-    UnpairedSurrogate{ val: u16, position: usize },
-    UnrecognizedCharacter { byte: Option<u8>, position: usize },
-    UnterminatedString { position: usize },
-    IncompleteUnicodeSequence { position: usize},
-    InvalidUnicodeSequence { digit: u8, position: usize },
-    InvalidNumber { message: &'static str, position: usize }, // toDo: Why not String
-    UnexpectedValue { position: usize }
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Utf8Error {
-    IncompleteSequence { position: usize },
-    InvalidSequence { len: u8, position: usize },
+    InvalidByteSequence { len: u8, pos: usize },
+    InvalidSurrogate { pos: usize },
 }
 
-impl fmt::Display for TokenizerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidControlCharacter { byte, position } => {
-                write!(f, "Invalid control character {} (0x{:02X}) at position {}", byte_utils::map_to_text(*byte), *byte, position)
-            }
-            Self::InvalidUtf8Sequence { len, position } => {
-                write!(f, "Invalid {} byte utf-8 sequence from index {}", len, position)
-            }
-            Self::IncompleteUtf8Sequence { position } => {
-                write!(f, "Incomplete utf-8 sequence from index {}", position)
-            }
-            Self::InvalidUnicodeSequence { digit, position } => {
-                write!(f, "Invalid unicode sequence, invalid hex digit '{}' at index {}", digit, position)
-            }
-            Self::IncompleteUnicodeSequence {position } => {
-                write!(f, "Incomplete unicode sequence at index {}", position)
-            }
-            Self::IncompleteEscapeSequence {position } => {
-                write!(f, "Incomplete character escape sequence at index {}", position)
-            }
-            Self::UnknownEscapeCharacter {position } => {
-                write!(f, "Unknown escape character at index {}", position)
-            }
-            Self::InvalidSurrogate {val, position} => {
-                write!(f, "Low surrogate \\u{:04X} at index {}. Surrogate pair order is always high low", val, position)
-            }
-            Self::UnpairedSurrogate {val, position} => {
-                write!(f, "Unpaired high surrogate \\u{:04X} at index {}", val, position)
-            }
-            Self::UnrecognizedCharacter {byte, position} => {
-                match byte {
-                    Some(byte) if byte.is_ascii() => {
-                        write!(f, "Unrecognized character '{}' at position {}", *byte as char, position)
-                    }
-                    Some(byte) if byte.is_ascii_control() => {
-                        write!(f, "Unrecognized character {} (0x{:02X}) at position {}", byte_utils::map_to_text(*byte), *byte, position)
-                    }
-                    // utf8 sequence
-                    _ => write!(f, "Unrecognized character at position {}", position)
-                }
-            }
-            Self::UnterminatedString {position} => {
-                write!(f, "Unterminated String at index {}", position)
-            }
-            Self::InvalidNumber {message, position} => {
-                write!(f, "{} at index {}", message, position)
-            }
-            Self::UnexpectedValue {position} => {
-                write!(f, "Unexpected value  at index {}", position)
-            }
-        }
-    }
+#[derive(Debug, PartialEq)]
+pub enum MalformedStringError {
+    InvalidUtf8(Utf8Error),
+    UnterminatedString { pos: usize },
+    InvalidControlCharacter { byte: u8, pos: usize },
+    InvalidEscapeSequence { pos: usize },
 }
 
-impl fmt::Display for NumericError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidHexDigit {digit, position} => write!(f, "Invalid hex digit (byte 0x{:02x}) at index {}", digit, position)
-        }
-    }
+#[derive(Debug, PartialEq)]
+pub enum TokenizerError {
+    InvalidString(MalformedStringError),
+    UnrecognizedCharacter { byte: Option<u8>, pos: usize },
+    InvalidNumber { message: &'static str, pos: usize }, // toDo: Why not String
+    UnexpectedValue { pos: usize } // toDo: explain why we can't show the actual value(we don't if the value has characters with text representation(control characters) or
+    // maybe an invalid utf8 sequence)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ParserError {
+    DuplicateName { name: String, pos: usize },
+    UnexpectedToken { token: Option<&'static str>, pos: usize },
+    UnexpectedEndOfInput { pos: usize },
+    DepthLimitExceeded { depth: u16 }
 }
 
 impl fmt::Display for Utf8Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::IncompleteSequence { position } => write!(f, "Incomplete utf-8 sequence from index {}", position),
-            Self::InvalidSequence { len, position } => write!(f, "Invalid {} byte utf-8 sequence from index {}", len, position)
+            Self::InvalidByteSequence { len, pos } => write!(f, "invalid {} byte utf-8 sequence from index {}", len, pos),
+            Self::InvalidSurrogate { pos } => write!(f, "invalid surrogate pair at index {}", pos),
         }
     }
 }
 
-impl From<Utf8Error> for TokenizerError {
+impl fmt::Display for MalformedStringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidUtf8(err) => write!(f, "{}", err),
+            Self::UnterminatedString { pos } => write!(f, "unterminated String at index {}", pos),
+            Self::InvalidControlCharacter { byte, pos } => write!(f, "invalid control character (0x{:02X}) at index {}", *byte, pos),
+            Self::InvalidEscapeSequence { pos } => write!(f, "invalid escape sequence at index {}", pos)
+        }
+    }
+}
+
+impl fmt::Display for TokenizerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidString(err) => write!(f, "{}", err),
+            Self::UnrecognizedCharacter { byte, pos } => {
+                match byte {
+                    Some(byte) if byte.is_ascii() => {
+                        write!(f, "unrecognized character '{}' at index {}", *byte as char, pos)
+                    }
+                    Some(byte) if byte.is_ascii_control() => {
+                        write!(f, "unrecognized character {} (0x{:02X}) at index {}", byte_utils::map_to_text(*byte), *byte, pos)
+                    }
+                    // utf8 sequence
+                    _ => write!(f, "unrecognized character at index {}", pos)
+                }
+            }
+            Self::InvalidNumber {message, pos } => {
+                write!(f, "{} at index {}", message, pos)
+            }
+            Self::UnexpectedValue { pos } => {
+                write!(f, "unexpected value  at index {}", pos)
+            }
+        }
+    }
+}
+
+impl fmt::Display for ParserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateName { name, pos} => write!(f, "duplicate object name {} at index {}", name, pos),
+            Self::UnexpectedToken { token, pos } => {
+                match token {
+                    Some(token) => write!(f, "unexpected token at index {}. Expected {}", pos, token),
+                    None => write!(f, "unexpected token at index {}", pos),
+                }
+            },
+            Self:: UnexpectedEndOfInput { pos } => write!(f, "unexpected end of input at index {}", pos),
+            Self::DepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth)
+        }
+    }
+}
+
+impl From<Utf8Error> for MalformedStringError {
     fn from(err: Utf8Error) -> Self {
-        match err {
-            Utf8Error::InvalidSequence { len, position } => TokenizerError::InvalidUtf8Sequence { len, position },
-            Utf8Error::IncompleteSequence { position } => TokenizerError::IncompleteUtf8Sequence { position }
-        }
+        MalformedStringError::InvalidUtf8(err)
     }
 }
 
-impl From<NumericError> for TokenizerError {
-    fn from(err: NumericError) -> Self {
-        match err {
-            NumericError::InvalidHexDigit { digit, position } => TokenizerError::InvalidUnicodeSequence {digit, position}
-        }
+impl From<MalformedStringError> for TokenizerError {
+    fn from(err: MalformedStringError) -> Self {
+        TokenizerError::InvalidString(err)
     }
 }
 
-impl error::Error for TokenizerError {}
 impl error::Error for Utf8Error {}
-impl error::Error for NumericError {}
+impl error::Error for MalformedStringError {}
+impl error::Error for TokenizerError {}
+impl error::Error for ParserError {}
+
 

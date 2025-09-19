@@ -1,4 +1,4 @@
-use crate::error::TokenizerError;
+use crate::error::{MalformedStringError, TokenizerError};
 use crate::utils::{byte_utils, numeric_utils, utf8_utils};
 
 #[derive(Debug, PartialEq)]
@@ -15,11 +15,13 @@ pub enum TokenizerTokenType {
     Null,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct TokenizerToken {
     start_index: usize,
     offset: u32,
-    token_type: TokenizerTokenType,
+    token_type: TokenizerTokenType, // type is reserved
 }
+
 
 impl TokenizerToken {
     fn new(start_index: usize, offset: u32, token_type: TokenizerTokenType) -> Self {
@@ -41,12 +43,12 @@ impl TokenizerToken {
 
 pub struct Tokenizer<'a> {
     buffer: &'a [u8],
-    position: usize,
+    pos: usize,
 }
 
 impl<'a> Tokenizer<'a> {
     pub fn new(buffer: &'a [u8]) -> Self {
-        Self { buffer, position: 0 }
+        Self { buffer, pos: 0 }
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, TokenizerError> {
@@ -54,48 +56,67 @@ impl<'a> Tokenizer<'a> {
         let len = self.buffer.len();
 
         // Byte Order Mark
-        utf8_utils::ignore_bom_if_present(&mut self.position, & self.buffer);
+        utf8_utils::ignore_bom_if_present(&mut self.pos, &self.buffer);
 
-        while self.position < len {
+        while self.pos < len {
             self.skip_white_spaces()?;
-            if self.position >= len {
+            if self.pos >= len {
                 return Ok(tokens);
             }
 
-            let byte = self.buffer[self.position];
-            if byte.is_ascii() {
-                match byte {
-                    b'{' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::LeftCurlyBracket)),
-                    b'}' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::RightCurlyBracket)),
-                    b']' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::RightSquareBracket)),
-                    b'[' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::LeftSquareBracket)),
-                    b':' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::Colon)),
-                    b',' => tokens.push(TokenizerToken::new(self.position, 1, TokenizerTokenType::Comma)),
+            let current = self.buffer[self.pos];
+            // scan_* methods advance pos to one past the token's end, this is why we don't call
+            // self.pos += 1; in those arms
+            if current.is_ascii() {
+                match current {
+                    b'{' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftCurlyBracket));
+                        self.pos += 1;
+                    },
+                    b'}' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightCurlyBracket));
+                        self.pos += 1;
+                    },
+                    b']' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightSquareBracket));
+                        self.pos += 1;
+                    },
+                    b'[' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftSquareBracket));
+                        self.pos += 1;
+                    },
+                    b':' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Colon));
+                        self.pos += 1;
+                    },
+                    b',' => {
+                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Comma));
+                        self.pos += 1;
+                    },
                     b'-' | b'+' | b'0'..=b'9' => {
-                        let start = self.position;
+                        let start = self.pos;
                         self.scan_number()?;
-                        tokens.push(TokenizerToken::new(start, (self.position - start) as u32, TokenizerTokenType::Number))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Number))
                     }
                     b'"' => {
-                        let start = self.position;
+                        let start = self.pos;
                         self.scan_string()?;
-                        tokens.push(TokenizerToken::new(start, (self.position - start) as u32, TokenizerTokenType::String))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::String))
                     }
                     b't' | b'f' => {
-                        let start = self.position;
+                        let start = self.pos;
                         self.scan_boolean()?;
-                        tokens.push(TokenizerToken::new(start, (self.position - start) as u32, TokenizerTokenType::Boolean))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Boolean))
                     }
                     b'n' => {
-                        let start = self.position;
+                        let start = self.pos;
                         self.scan_null()?;
-                        tokens.push(TokenizerToken::new(start, (self.position - start) as u32, TokenizerTokenType::Null))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Null))
                     }
-                    // toDo: handle unexpected character: false5 -> check if the stack is empty and there are more tokens in the list on the parser
-                    _ => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(byte), position: self.position })
+                    _ => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos })
                 }
             } else {
-                return Err(TokenizerError::UnrecognizedCharacter { byte: Some(byte), position: self.position });
+                return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
             }
         }
         Ok(tokens)
@@ -103,201 +124,200 @@ impl<'a> Tokenizer<'a> {
 
     fn scan_number(&mut self) -> Result<(), TokenizerError> {
         let len = self.buffer.len();
-        let mut byte = self.buffer[self.position];
-        let next_byte = self.buffer.get(self.position + 1);
+        let start = self.pos;
+        let mut current = self.buffer[self.pos];
+        let next = self.buffer.get(self.pos + 1);
 
-        match(byte, next_byte) {
-            (b'+' | b'-', None) => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(byte), position: self.position }),
+        match(current, next) {
+            (b'+' | b'-', None) => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos }),
+            // +9
             (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "JSON specification prohibits numbers from being prefixed with a plus sign",
-                position: self.position
+                message: "json specification prohibits numbers from being prefixed with a plus sign",
+                pos: self.pos
             }),
+            // +a
+            (b'+', Some(_)) => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos }),
             // -0 is valid
             (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "A valid numeric value requires a digit (0-9) after the minus sign",
-                position: self.position
+                message: "a valid numeric value requires a digit (0-9) after the minus sign",
+                pos: self.pos
             }),
             (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "Leading zeros are not allowed",
-                position: self.position
+                message: "leading zeros are not allowed",
+                pos: self.pos
             }),
             _ => (),
         }
 
-        // Advance before the check. For single digit cases next_byte is always none, if we return
+        // Advance before the check. For single digit cases next is always none, if we return
         // before advancing, self.position is still at 0, control returns to tokenize and because
         // self.position < len is true it enters an infinite loop
-        self.position += 1;
-        if next_byte.is_none() {
+        self.pos += 1;
+        if next.is_none() {
             return Ok(());
         }
 
-        byte = *next_byte.unwrap();
-        let mut has_decimal_point = false;
-        let mut has_exponential_notation = false;
-        while self.position < len {
-                match byte {
+        current = *next.unwrap();
+        let mut decimal_point = false;
+        let mut scientific_notation = false;
+        let negative = self.buffer[start] == b'-';
+        while self.pos < len {
+                match current {
                     b'0'..=b'9' => (),
                     b'.' => {
                         // 1.2.3
-                        if has_decimal_point {
-                            return Err(TokenizerError::InvalidNumber { message: "Double decimal point found", position: self.position });
+                        if decimal_point {
+                            return Err(TokenizerError::InvalidNumber { message: "double decimal point found", pos: self.pos });
                         }
                         // 1. 2.g
-                        if self.position + 1 >= len || !self.buffer[self.position + 1].is_ascii_digit() {
-                            return Err(TokenizerError::InvalidNumber { message: "Decimal point must be followed by a digit", position: self.position });
+                        if self.pos + 1 >= len || !self.buffer[self.pos + 1].is_ascii_digit() {
+                            return Err(TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: self.pos });
                         }
                         // 1e4.5
-                        if has_exponential_notation {
-                            return Err(TokenizerError::InvalidNumber { message: "Decimal point is not allowed after exponential notation", position: self.position });
+                        if scientific_notation {
+                            return Err(TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: self.pos });
                         }
-                        has_decimal_point = true;
+                        decimal_point = true;
                     }
                     b'e' | b'E' => {
                         // 1e2E3
-                        if has_exponential_notation {
-                            return Err(TokenizerError::InvalidNumber { message: "Double exponential notation('e' or 'E') found", position: self.position });
+                        if scientific_notation {
+                            return Err(TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: self.pos });
                         }
                         // 1e 1eg
-                        if self.position + 1 >= len || !matches!(self.buffer[self.position + 1], b'-' | b'+' | b'0'..b'9') {
-                            return Err(TokenizerError::InvalidNumber { message: "Exponential notation must be followed by a digit or a sign", position: self.position });
+                        if self.pos + 1 >= len || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
+                            return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: self.pos });
                         }
-                        has_exponential_notation = true;
+                        // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
+                        scientific_notation = true;
                     }
                     b'-' | b'+' => {
                         // 1+2
-                        if !matches!(self.buffer[self.position - 1], b'e' | b'E') {
-                            return Err(TokenizerError::InvalidNumber { message: "Sign ('+' or '-') is only allowed as part of exponential notation", position: self.position });
+                        if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
+                            return Err(TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: self.pos });
                         }
                         // 1E+g
-                        if self.position + 1 >= len  || !self.buffer[self.position + 1].is_ascii_digit() {
-                            return Err(TokenizerError::InvalidNumber { message: "Exponential notation must be followed by a digit", position: self.position });
+                        if self.pos + 1 >= len  || !self.buffer[self.pos + 1].is_ascii_digit() {
+                            return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: self.pos });
                         }
                     }
                     _ => break
             }
-            self.position += 1;
-            if self.position >= len {
+            self.pos += 1;
+            if self.pos >= len {
                 break;
             }
-            byte = self.buffer[self.position];
+            current = self.buffer[self.pos];
+        }
+        
+        if decimal_point || scientific_notation {
+            let buffer = &self.buffer[start..self.pos];
+            match numeric_utils::is_out_of_range_f64(buffer) {
+                true => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
+                false => (),
+            }
+        } else {
+            let buffer = if negative { &self.buffer[start + 1..self.pos] } else { &self.buffer[start..self.pos] };
+            match numeric_utils::is_out_of_range_i64(buffer) {
+                true if negative => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
+                true => {
+                    match numeric_utils::is_out_of_range_u64(buffer) {
+                        true => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
+                        false => (),
+                    }
+                }
+                false => (),
+            }
         }
         Ok(())
     }
     
-    fn scan_string(&mut self) -> Result<(), TokenizerError> {
+    fn scan_string(&mut self) -> Result<(), MalformedStringError> {
         let len = self.buffer.len();
-        self.position += 1;
+        self.pos += 1;
 
-        while self.position < len && self.buffer[self.position] != b'"' {
-            let byte = self.buffer[self.position];
+        while self.pos < len && self.buffer[self.pos] != b'"' {
+            let current = self.buffer[self.pos];
             // raw control characters are not allowed
-            if byte.is_ascii_control() {
-                return Err(TokenizerError::InvalidControlCharacter { byte, position: self.position });
+            // [34, 10, 34] is invalid the control character is passed as raw byte, and it is unescaped
+            // but [34, 92, 110, 34] should be considered valid as a new line character
+            if current.is_ascii_control() {
+                return Err(MalformedStringError::InvalidControlCharacter { byte: current, pos: self.pos });
             }
-            if !byte.is_ascii() {
-                utf8_utils::validate_utf8_sequence(&mut self.position, &self.buffer)?;
+            if !current.is_ascii() {
+                utf8_utils::validate_utf8_sequence(&mut self.pos, &self.buffer)?;
             }
-            if byte == b'\\' {
-                self.position += 1;
-                if self.position >= len {
-                    return Err(TokenizerError::IncompleteEscapeSequence { position: self.position - 1 });
+            if current == b'\\' {
+                self.pos += 1;
+                if self.pos >= len {
+                    return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 1 });
                 }
 
-                let next_byte = self.buffer[self.position];
-                if !matches!(next_byte, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
-                    return Err(TokenizerError::UnknownEscapeCharacter{ position: self.position });
+                let next = self.buffer[self.pos];
+                if !matches!(next, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
+                    return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
                 }
-                if next_byte == b'u' {
+                if next == b'u' {
                     // Need 4 hex digits
-                    if self.position + 4 >= len {
-                        return Err(TokenizerError::IncompleteUnicodeSequence { position: self.position });
+                    if self.pos + 4 >= len {
+                        return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
                     }
 
-                    // self.position is at the 1 digit of the hex sequence
-                    self.position += 1;
-                    let val = numeric_utils::hex_to_u16((&self.buffer[self.position..self.position + 4]).try_into().unwrap())?;
+                    // self.position is at the first digit of the hex sequence
+                    self.pos += 1;
+                    let val = match numeric_utils::hex_to_u16(&self.buffer[self.pos..self.pos + 4]) {
+                        Ok(low) => low,
+                        Err(_) => return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 2 })
+                    };
                     // move past the hex digits
-                    self.position += 3;
+                    self.pos += 3;
                     if utf8_utils::is_surrogate(val) {
-                        self.validate_surrogate(val)?
+                        utf8_utils::validate_surrogate(&mut self.pos, &self.buffer, val)?;
                     }
                 }
             }
-            self.position += 1;
+            self.pos += 1;
         }
-        if self.position == len {
-            return Err(TokenizerError::UnterminatedString { position: self.position - 1 });
+        if self.pos == len {
+            return Err(MalformedStringError::UnterminatedString { pos: self.pos - 1 });
         }
-        // move to the next character past the closing quotation mark
-        self.position += 1;
+        // move to the next character past the closing quote
+        self.pos += 1;
 
-        Ok(())
-    }
-
-    fn validate_surrogate(&mut self, val: u16) -> Result<(), TokenizerError>{
-        let len = self.buffer.len();
-
-        if utf8_utils::is_high_surrogate(val) {
-            if self.position + 6 >= len {
-                // self.position - 6 is the index at the start of the Unicode sequence
-                return Err(TokenizerError::UnpairedSurrogate { val, position: self.position - 6 });
-            }
-
-            self.position += 1;
-            match (self.buffer[self.position], self.buffer[self.position + 1]) {
-                (b'\\', b'u') => {
-                    self.position += 2;
-                }
-                _ => return Err(TokenizerError::UnpairedSurrogate { val, position: self.position })
-            };
-
-            let low = numeric_utils::hex_to_u16((&self.buffer[self.position..self.position + 4]).try_into().unwrap())?;
-            if !utf8_utils::is_low_surrogate(low) {
-                return Err(TokenizerError::UnpairedSurrogate { val, position: self.position - 6});
-            }
-        } else {
-            // surrogate pairs do not start with low surrogate, it's always high-low
-            return Err(TokenizerError::InvalidSurrogate { val, position: self.position - 6 });
-        }
         Ok(())
     }
 
     fn scan_boolean(&mut self) -> Result<(), TokenizerError> {
-        let remaining = &self.buffer[self.position..];
+        let remaining = &self.buffer[self.pos..];
 
         match remaining {
-            s if s.starts_with(b"false") => self.position += 5,
-            s if s.starts_with(b"true") => self.position += 4,
-            _ => {
-                match self.buffer[self.position] {
-                    b'f' | b't' => return Err(TokenizerError::UnexpectedValue { position: self.position }),
-                    _ => ()
-                }
+            s if s.starts_with(b"true") => self.pos += 4,
+            s if s.starts_with(b"false") => self.pos += 5,
+            _ => return Err(TokenizerError::UnexpectedValue { pos: self.pos }),
+
             }
-        }
         Ok(())
     }
 
     fn scan_null(&mut self) -> Result<(), TokenizerError> {
-        if self.buffer[self.position..].starts_with(b"null") {
-            self.position += 4;
+        if self.buffer[self.pos..].starts_with(b"null") {
+            self.pos += 4;
         } else {
-            return Err(TokenizerError::UnexpectedValue { position: self.position });
+            return Err(TokenizerError::UnexpectedValue { pos: self.pos });
         }
         Ok(())
     }
 
     fn skip_white_spaces(&mut self) -> Result<(), TokenizerError> {
-        while self.position < self.buffer.len() {
-            let byte = self.buffer[self.position];
+        while self.pos < self.buffer.len() {
+            let current = self.buffer[self.pos];
             // The only control characters that are allowed as raw bytes according to rfc are '\t', '\n', '\r'
             // ' '(space) is not a control character
-            if byte.is_ascii_control() && !byte_utils::is_rfc_whitespace(byte) {
-                return Err(TokenizerError::InvalidControlCharacter { byte, position: self.position});
+            if current.is_ascii_control() && !byte_utils::is_rfc_whitespace(current) {
+                return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
             }
-            if byte_utils::is_rfc_whitespace(byte) {
-                self.position += 1;
+            if byte_utils::is_rfc_whitespace(current) {
+                self.pos += 1;
             } else {
                 break;
             }
@@ -308,160 +328,200 @@ impl<'a> Tokenizer<'a> {
     // reset the input buffer
     pub fn reset(&mut self, buffer: &'a [u8]) {
         self.buffer = buffer;
-        self.position = 0;
+        self.pos = 0;
     }
 }
 
+// We declare tokenizer as let mut tokenizer because tokenize takes a mutable reference to self
 #[cfg(test)]
 mod tests {
+    use crate::error::Utf8Error;
     use super::*;
 
-    fn valid_numbers() -> Vec<(&'static [u8], usize, u32)> {
+    fn valid_numbers() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
-            (b"0", 0, 1),
-            (b"-0", 0, 2),
-            (b"123", 0, 3),
-            (b"-45", 0, 3),
-            (b"123.45", 0, 6),
-            (b"1e10", 0, 4),
-            (b"-0.1e-2", 0, 7),
+            (b"0", TokenizerToken::new(0, 1, TokenizerTokenType::Number)),
+            (b"-0", TokenizerToken::new(0, 2, TokenizerTokenType::Number)),
+            (b"123", TokenizerToken::new(0, 3, TokenizerTokenType::Number)),
+            (b"-45", TokenizerToken::new(0, 3, TokenizerTokenType::Number)),
+            (b"123.45", TokenizerToken::new(0, 6, TokenizerTokenType::Number)),
+            (b"1e10", TokenizerToken::new(0, 4, TokenizerTokenType::Number)),
+            (b"-0.1e-2", TokenizerToken::new(0, 7, TokenizerTokenType::Number)),
         ]
     }
 
-    fn invalid_numbers() -> Vec<&'static [u8]> {
+    fn invalid_numbers() -> Vec<(&'static [u8], TokenizerError)> {
         vec![
-            b"+", b"-", b"+9", b"-a", b"06",
-            b"1.", b"1.a", b"1.2.3", b"4e5.1",
-            b"1e2e5", b"246Ef", b"83+1", b"1e+", b"1e"
+            (b"+", TokenizerError::UnrecognizedCharacter { byte: Some(43), pos: 0 }),
+            (b"+a", TokenizerError::UnrecognizedCharacter { byte: Some(43), pos: 0 }),
+            (b"+9", TokenizerError::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign", pos: 0 }),
+            (b"-a", TokenizerError::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign", pos: 0 }),
+            (b"06", TokenizerError::InvalidNumber { message: "leading zeros are not allowed", pos: 0 }),
+            (b"1.2.3", TokenizerError::InvalidNumber { message: "double decimal point found", pos: 3 }),
+            (b"1.", TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: 1 }),
+            (b"1.a", TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: 1 }),
+            (b"4e5.1", TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: 3 }),
+            (b"1e2e5", TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: 3 }),
+            (b"1e", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 1 }),
+            (b"246Ef", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 3 }),
+            (b"83+1", TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: 2}),
+            (b"1e+", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2}),
+            (b"1e+f", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2}),
         ]
     }
 
-    fn valid_strings() -> Vec<(&'static [u8], usize, u32)> {
+    fn valid_strings() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
-            (b"\"abc\"", 0, 5),
-            (b"\"A\\uD83D\\uDE00B\"", 0, 16),
-            (b"\"b\\n\"", 0, 5),
-            (b"\"\\u00E9\"", 0, 8),
-            // 2-byte sequence
-            // same as (b"\"\xC3\xA9\"", 0, 4)
-            ("\"é\"".as_bytes(), 0, 4),
+            (b"\"abc\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
+            (b"\"A\\uD83D\\uDE00B\"", TokenizerToken::new(0, 16, TokenizerTokenType::String)),
+            (b"\"b\\n\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
+            (b"\"\\u00E9\"", TokenizerToken::new(0, 8, TokenizerTokenType::String)),
+            // 2-byte sequence same as (b"\"\xC3\xA9\"", 0, 4)
+            ("\"é\"".as_bytes(), TokenizerToken::new(0, 4, TokenizerTokenType::String)),
         ]
     }
 
-    fn invalid_strings() -> Vec<&'static [u8]> {
+    fn invalid_strings() -> Vec<(&'static [u8], TokenizerError)> {
         vec![
             // raw byte control character
-            b"\"\x00",
-            // incomplete escape sequence
-            b"\"\\",
-            // unknown escape character
-            b"\"\\g\"",
-            // incomplete unicode sequence
-            b"\"\\u\"",
-            // unpaired high surrogate, not enough bytes to form a low surrogate
-            b"\"\\uD83D\"",
-            // unpaired high surrogate, high not followed by low
-            b"\"\\uD83Dabcdef\"",
+            (b"\"\x00", TokenizerError::InvalidString(MalformedStringError::InvalidControlCharacter { byte: 0, pos: 1 })),
+            (b"\"\\", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 1 })),
+            (b"\"\\g\"", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 2 })),
+            (b"\"\\u\"", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 2 })),
+            // // not enough bytes to form a low surrogate
+            (b"\"\\uD83D\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
+            // high not followed by low
+            (b"\"\\uD83Dabcdef\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
+            // high followed by high
+            (b"\"\\uD83D\\uD83D\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
             // low surrogate
-            b"\"\\uDE00\"",
-            // unterminated string
-            b"\"abc",
+            (b"\"\\uDC00\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
+            (b"\"abc", TokenizerError::InvalidString(MalformedStringError::UnterminatedString { pos: 3 })),
         ]
     }
 
-    fn valid_boolean() -> Vec<(&'static [u8], usize, u32)> {
+    fn valid_boolean() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
-            (b"false", 0, 5),
-            (b"true", 0, 4)
+            (b"false", TokenizerToken::new(0, 5, TokenizerTokenType::Boolean)),
+            (b"true", TokenizerToken::new(0, 4, TokenizerTokenType::Boolean)),
         ]
     }
 
-    fn invalid_boolean() -> Vec<&'static [u8]> {
+    fn invalid_boolean() -> Vec<(&'static [u8], TokenizerError)> {
         vec![
-            b"falte",
-            b"trur"
+            (b"falte", TokenizerError::UnexpectedValue { pos: 0}),
+            (b"trur", TokenizerError::UnexpectedValue { pos: 0}),
         ]
     }
 
     #[test]
+    fn empty_input() {
+        // []
+        let buffer = [];
+        let mut tokenizer = Tokenizer::new(&buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn skip_whitespaces() {
+        // \t, \n, \r, ' '
+        let buffer: [u8; 4] = [9, 10, 13, 32];
+        let mut tokenizer = Tokenizer::new(&buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
     fn test_valid_numbers() {
-        for (sequence, start_index, offset) in valid_numbers() {
-            let mut tokenizer = Tokenizer::new(sequence);
+        for (buffer, token) in valid_numbers() {
+            let mut tokenizer = Tokenizer::new(buffer);
             let tokens = tokenizer.tokenize().unwrap();
 
             assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0].start_index, start_index);
-            assert_eq!(tokens[0].offset, offset);
-            assert_eq!(tokens[0].token_type, TokenizerTokenType::Number);
+            assert_eq!(tokens[0], token);
         }
     }
 
     #[test]
     fn test_invalid_numbers() {
-        for sequence in invalid_numbers() {
-            let mut tokenizer = Tokenizer::new(sequence);
-            assert!(tokenizer.tokenize().is_err());
+        for (buffer, error) in invalid_numbers() {
+            let mut tokenizer = Tokenizer::new(buffer);
+            let result = tokenizer.tokenize();
+
+            if let Err(e) = result {
+                assert_eq!(e, error);
+            }
         }
     }
 
     #[test]
     fn test_valid_strings() {
-        for (sequence, start_index, offset) in valid_strings() {
-            let mut tokenizer = Tokenizer::new(sequence);
+        for (buffer, token) in valid_strings() {
+            let mut tokenizer = Tokenizer::new(buffer);
             let tokens = tokenizer.tokenize().unwrap();
 
             assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0].start_index, start_index);
-            assert_eq!(tokens[0].offset, offset);
-            assert_eq!(tokens[0].token_type, TokenizerTokenType::String);
+            assert_eq!(tokens[0], token);
         }
     }
 
     #[test]
     fn test_invalid_strings() {
-        for sequence in invalid_strings() {
-            let mut tokenizer = Tokenizer::new(sequence);
-            assert!(tokenizer.tokenize().is_err());
+        for (buffer, error) in invalid_strings() {
+            let mut tokenizer = Tokenizer::new(buffer);
+            let result = tokenizer.tokenize();
+
+            if let Err(e) = result {
+                assert_eq!(e, error);
+            }
         }
     }
 
     #[test]
     fn test_valid_boolean() {
-        for (sequence, start_index, offset) in valid_boolean() {
-            let mut tokenizer = Tokenizer::new(sequence);
+        for (buffer, token) in valid_boolean() {
+            let mut tokenizer = Tokenizer::new(buffer);
             let tokens = tokenizer.tokenize().unwrap();
 
             assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0].start_index, start_index);
-            assert_eq!(tokens[0].offset, offset);
-            assert_eq!(tokens[0].token_type, TokenizerTokenType::Boolean);
+            assert_eq!(tokens[0], token);
         }
     }
 
     #[test]
     fn test_invalid_boolean() {
-        for sequence in invalid_boolean() {
-            let mut tokenizer = Tokenizer::new(sequence);
-            assert!(tokenizer.tokenize().is_err());
+        for (buffer, error) in invalid_boolean() {
+            let mut tokenizer = Tokenizer::new(buffer);
+            let result = tokenizer.tokenize();
+
+            if let Err(e) = result {
+                assert_eq!(e, error);
+            }
         }
     }
 
     #[test]
     fn test_valid_null() {
-        let mut tokenizer = Tokenizer::new(&[110, 117, 108, 108]);
+        let buffer: [u8; 4] = [110, 117, 108, 108];
+        let mut tokenizer = Tokenizer::new(&buffer);
         let tokens = tokenizer.tokenize().unwrap();
 
         assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].start_index, 0);
-        assert_eq!(tokens[0].offset, 4);
-        assert_eq!(tokens[0].token_type, TokenizerTokenType::Null);
+        assert_eq!(tokens[0], TokenizerToken::new(0, 4, TokenizerTokenType::Null));
     }
 
     #[test]
     fn test_invalid_null() {
-        let mut tokenizer = Tokenizer::new(&[110, 117, 108, 107]);
+        let buffer: [u8; 4] = [110, 117, 108, 107];
+        let mut tokenizer = Tokenizer::new(&buffer);
+        let result = tokenizer.tokenize();
 
-        assert!(tokenizer.tokenize().is_err());
+        if let Err(e) = result {
+            assert_eq!(e, TokenizerError::UnexpectedValue { pos: 0 });
+        }
     }
 
     #[test]
