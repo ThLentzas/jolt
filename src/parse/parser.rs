@@ -3,6 +3,8 @@ use std::cmp::PartialEq;
 use std::collections::HashSet;
 use linked_hash_map::LinkedHashMap;
 use crate::error::ParserError;
+use crate::parse::node::JsonValue;
+use crate::parse::node::JsonNode;
 use crate::parse::tokenizer::{TokenizerToken, TokenizerTokenType};
 use crate::utils::{numeric_utils, utf8_utils};
 use crate::utils::numeric_utils::Number;
@@ -29,23 +31,6 @@ pub struct ParserToken {
     token_type: ParserTokenType,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum JsonValue {
-    Null,
-    Boolean(bool),
-    Number(Number),
-    String(String),
-    Array(Vec<JsonValue>),
-    Object(LinkedHashMap<String, JsonValue>),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct JsonNode {
-    // [](empty input buffer) is not invalid, the value of the root of AST is None
-    // same logic applies for [\n, \t, '\r', ' ']
-    val: Option<JsonValue>
-}
-
 impl ParserToken {
     fn new(start_index: usize, offset: u32, token_type: ParserTokenType) -> Self {
         Self {
@@ -65,7 +50,6 @@ pub struct Parser<'a> {
     depth: u16
 }
 
-
 impl<'a> Parser<'a> {
     pub fn new(buffer: &'a [u8], tokens: &'a Vec<TokenizerToken>) -> Self {
         Self {
@@ -78,27 +62,28 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // toDo: advantages of peek/advance and recursive decent parser
     pub fn parse(&mut self) -> Result<JsonNode, ParserError> {
         if self.tokens.is_empty() {
-            return Ok(JsonNode { val: None });
+            return Ok(JsonNode::new(None));
         }
 
         self.parse_value()?;
-        // toDo: consider resetting indices in case someone calls parser.parse() multiple times
         // false5, "abc"123, {}null
         if self.pos < self.tokens.len() {
-            return Err(ParserError::UnexpectedToken { pos: self.tokens[self.pos].start_index(), token: None }); // change that to the actual value since we know
-            // that the token is valid from tokenizer, we can create a slice from the original buffer that does have a text representation
+            return Err(ParserError::UnexpectedToken { pos: self.tokens[self.pos].start_index(), token: None });
         }
-
+        // someone could call parse() multiples, for the same input we return the same node by resetting the indices
         self.token_idx = 0;
         self.pos = 0;
-        Ok(JsonNode { val: Some(self.json_value()) })
+
+        Ok(JsonNode::new(Some(self.json_value()))) // toDo: Does this move or it is a copy?
     }
 
+    // None of the parse_* calls moves past the related tokens, we advance after
      fn parse_value(&mut self) -> Result<(), ParserError> {
-         match self.tokens.get(self.pos) {
-             Some(token) => match *token.token_type() {
+         match self.peek() {
+             Some(token) => match token.token_type() {
                  TokenizerTokenType::LeftCurlyBracket => self.parse_object()?,
                  TokenizerTokenType::LeftSquareBracket => self.parse_array()?,
                  TokenizerTokenType::Number => self.parse_number(),
@@ -107,8 +92,9 @@ impl<'a> Parser<'a> {
                  TokenizerTokenType::Null => self.parse_null(),
                  _ => return Err(ParserError::UnexpectedToken { token: Some("json value"), pos: token.start_index() })
              }
-             None => return Err(ParserError::UnexpectedEndOfInput { pos: self.buffer.len() - 1})
+             None => return Err(ParserError::UnexpectedEndOfInput { pos: self.buffer.len() - 1 })
          }
+         self.advance();
          Ok(())
      }
     
@@ -136,6 +122,7 @@ impl<'a> Parser<'a> {
                 // {}
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ObjectEnd));
+                    self.depth -= 1;
                     break;
                 }
                 Some(next) if expect(next.token_type(), TokenizerTokenType::String) => {
@@ -171,7 +158,6 @@ impl<'a> Parser<'a> {
             }
 
             self.parse_value()?;
-            self.advance();
 
             match self.peek() {
                 Some(next) if expect(next.token_type(), TokenizerTokenType::Comma) => {
@@ -190,8 +176,6 @@ impl<'a> Parser<'a> {
                 None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
             }
         }
-        self.advance();
-
         Ok(())
     }
 
@@ -201,7 +185,7 @@ impl<'a> Parser<'a> {
         }
 
         let current = &self.tokens[self.pos];
-        let buffer_len = self.buffer.len();
+        let len = self.buffer.len();
         self._tokens.push(ParserToken::new(current.start_index(), current.offset(), ParserTokenType::ArrayStart));
         self.depth += 1;
         self.advance();
@@ -217,13 +201,13 @@ impl<'a> Parser<'a> {
                 // []
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ArrayEnd));
+                    self.depth -= 1;
                     break;
                 }
                 Some(_) => {
                     self.parse_value()?;
-                    self.advance();
                 },
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
+                None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
             }
 
             match self.peek() {
@@ -239,10 +223,9 @@ impl<'a> Parser<'a> {
                 Some(next) => {
                     return Err(ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: next.start_index() });
                 }
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
+                None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
             }
         }
-        self.advance();
         Ok(())
     }
 
@@ -266,7 +249,8 @@ impl<'a> Parser<'a> {
         self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Null))
     }
 
-    fn peek(& self) -> Option<&TokenizerToken> {
+
+    fn peek(&self) -> Option<&TokenizerToken> {
         self.tokens.get(self.pos)
     }
 
@@ -274,21 +258,24 @@ impl<'a> Parser<'a> {
         self.pos += 1;
     }
 
-    fn next(& self) -> Option<&ParserToken>{
+    fn next(&self) -> Option<&ParserToken>{
         self._tokens.get(self.token_idx)
     }
 
     fn json_value(&mut self) -> JsonValue {
         let token = &self._tokens[self.token_idx];
-        match token.token_type {
-            ParserTokenType::ObjectStart => { JsonValue::Object(self.object_value()) },
-            ParserTokenType::ArrayStart => { JsonValue::Array(self.array_value()) },
-            ParserTokenType::Number => { JsonValue::Number(self.number_value()) }
-            ParserTokenType::String => { JsonValue::String(self.string_value()) },
-            ParserTokenType::Boolean => { JsonValue::Boolean(self.boolean_value()) }
-            ParserTokenType::Null => { JsonValue::Null }
-            _ => unreachable!("Unexpected token type for the start of json value"),
-        }
+        let val = match token.token_type {
+            ParserTokenType::ObjectStart => JsonValue::Object(self.object_value()),
+            ParserTokenType::ArrayStart => JsonValue::Array(self.array_value()),
+            ParserTokenType::Number => JsonValue::Number(self.number_value()),
+            ParserTokenType::String => JsonValue::String(self.string_value()),
+            ParserTokenType::Boolean => JsonValue::Boolean(self.boolean_value()),
+            ParserTokenType::Null => JsonValue::Null,
+            _ => unreachable!("Unexpected token type for the start of json value at index {}", self.token_idx),
+        };
+        self.token_idx += 1;
+
+        val
     }
 
     fn object_value(&mut self) -> LinkedHashMap<String, JsonValue> {
@@ -304,19 +291,18 @@ impl<'a> Parser<'a> {
             // Drop opening/closing quotes
             let name: &[u8] = &self.buffer[token.start_index + 1 ..token.start_index + (token.offset - 1)  as usize];
             let key = String::from_utf8(Vec::from(name)).unwrap(); // toDo: can this be &str?
-            // skip colon
-            self.token_idx += 1;
+            // skip key,colon
+            self.token_idx += 2;
             let value = self.json_value();
             map.insert(key, value);
             // move past the value, we expect either ',' or '}'. The structure of the object is always
             // valid at this point
-            self.token_idx += 1;
             if let Some(token) = self.next() {
                 if token.token_type == ParserTokenType::ObjectEnd {
                     break;
                 }
             }
-            // at this point the current token is ',' we move to the next key
+            // skip comma
             self.token_idx += 1;
         }
         map
@@ -333,77 +319,15 @@ impl<'a> Parser<'a> {
 
         while let Some(_) = self.next() {
             values.push(self.json_value());
-            self.token_idx += 1;
-
             if let Some(token) = self.next() {
                 if token.token_type == ParserTokenType::ArrayEnd {
                     break;
                 }
             }
+            // skip comma
             self.token_idx += 1;
         }
         values
-    }
-
-    fn boolean_value(&self) -> bool {
-        let token = &self._tokens[self.token_idx]; // toDo: check if we need to increment the index
-
-        self.buffer[token.start_index] == b't'
-    }
-
-    fn string_value(&self) -> String {
-        let token = &self._tokens[self.token_idx];
-        let mut val = String::new();
-        let mut index = token.start_index;
-
-        while index < token.start_index + token.offset as usize {
-            let byte = self.buffer[index];
-            match byte {
-                b'\\' => {
-                    index += 1;
-                    match self.buffer[index] {
-                        b'\\' => val.push('\\'), // toDo: what is the return type?
-                        b'"' => val.push('"'),
-                        b'/' => val.push('/'),
-                        b'b' => val.push('\x08'),
-                        b'f' => val.push('\x0C'),
-                        b'n' => val.push('\n'),
-                        b'r' => val.push('\r'),
-                        b't' => val.push('\t'),
-                        b'u' => {
-                            index += 1;
-                            let code_unit = numeric_utils::hex_to_u16(&self.buffer[index..index + 4]).unwrap();
-                            if utf8_utils::is_surrogate(code_unit) {
-                                let high = code_unit;
-                                index += 6; // 4 hex digits + \u
-                                let low = numeric_utils::hex_to_u16(&self.buffer[index..index + 4]).unwrap();
-                                let code_point= utf8_utils::decode_surrogate_pair(high, low);
-                                val.push(char::from_u32(code_point).unwrap());
-                                index += 3; // Move to the last hex digit
-                            } else {
-                                val.push(char::from_u32(code_unit as u32).unwrap());
-                                index += 3; // Move to the last hex digit
-                            }
-                        }
-                        _ => unreachable!("backslash not followed by an escape character"),
-                    }
-                    // move past the escaped character or the last hex digit
-                    index += 1;
-                }
-                b if b.is_ascii() => {
-                    val.push(b as char);
-                    index += 1;
-                }
-                _ => {
-                    let width = utf8_utils::utf8_char_width(byte);
-                    val.push_str(str::from_utf8(&self.buffer[index..index + width]).unwrap());
-                    index += width;
-                }
-            }
-        }
-        // for (i, &byte) in self.buffer[token.start_index..token.start_index + token.offset as usize].iter().enumerate() {}
-        // toDo: learn about the &byte pattern and why we don't need to dereference. How references work in literals like &5 passed in a function like the contains()
-        val
     }
 
     fn number_value(&mut self) -> Number {
@@ -428,6 +352,74 @@ impl<'a> Parser<'a> {
             }
         }
     }
+
+    fn string_value(&self) -> String {
+        let token = &self._tokens[self.token_idx];
+        let mut val = String::new();
+        let mut index = token.start_index + 1; // Skip opening quotation mark
+
+        while index < token.start_index + (token.offset - 1) as usize { // Skip closing quotation mark
+            let byte = self.buffer[index];
+            match byte {
+                b'\\' => {
+                    self.map_escape_character(&mut index, &mut val);
+                    // move past the escaped character or the last hex digit
+                    index += 1;
+                }
+                b if b.is_ascii() => {
+                    val.push(b as char);
+                    index += 1;
+                }
+                _ => {
+                    let width = utf8_utils::utf8_char_width(byte);
+                    val.push_str(str::from_utf8(&self.buffer[index..index + width]).unwrap());
+                    index += width;
+                }
+            }
+        }
+        // for (i, &byte) in self.buffer[token.start_index..token.start_index + token.offset as usize].iter().enumerate() {}
+        // toDo: learn about the &byte pattern and why we don't need to dereference. How references work in literals like &5 passed in a function like the contains()
+        val
+    }
+
+    fn boolean_value(&mut self) -> bool {
+        let token = &self._tokens[self.token_idx];
+
+        self.buffer[token.start_index] == b't'
+    }
+
+    fn map_escape_character(&self, index: &mut usize, val: &mut String) {
+        *index += 1;
+        match self.buffer[*index] {
+            b'\\' => val.push('\\'), // toDo: what is the return type?
+            b'"' => val.push('"'),
+            b'/' => val.push('/'),
+            b'b' => val.push('\x08'),
+            b'f' => val.push('\x0C'),
+            b'n' => val.push('\n'),
+            b'r' => val.push('\r'),
+            b't' => val.push('\t'),
+            b'u' => self.compute_surrogate(index, val),
+            _ => unreachable!("backslash not followed by an escape character"),
+        }
+    }
+
+    fn compute_surrogate(&self, index: &mut usize, val: &mut String) {
+        *index += 1;
+        let code_unit = numeric_utils::hex_to_u16(&self.buffer[*index..*index + 4]).unwrap();
+
+        if utf8_utils::is_surrogate(code_unit) {
+            let high = code_unit;
+            *index += 6; // 4 hex digits + \u
+            let low = numeric_utils::hex_to_u16(&self.buffer[*index..*index + 4]).unwrap();
+            let code_point= utf8_utils::decode_surrogate_pair(high, low);
+            val.push(char::from_u32(code_point).unwrap());
+            *index += 3; // Move to the last hex digit
+        } else {
+            val.push(char::from_u32(code_unit as u32).unwrap());
+            *index += 3; // Move to the last hex digit
+        }
+    }
 }
 
 fn expect(left: &TokenizerTokenType, right: TokenizerTokenType) -> bool {
@@ -448,7 +440,7 @@ mod tests {
             (b"{ \"foo\"",ParserError::UnexpectedEndOfInput { pos: 6 }),
             (b"{ \"foo\" 3", ParserError::UnexpectedToken { token: Some("colon ':'"),  pos: 8 }),
             (b"{ \"foo\": \"value\" } 123", ParserError::UnexpectedToken { token: None, pos: 19 }),
-            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", ParserError::DuplicateName { name: String::from("\"foo\""), pos: 16 })
+            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", ParserError::DuplicateName { name: String::from("foo"), pos: 16 })
         ]
     }
 
@@ -474,6 +466,43 @@ mod tests {
                 assert_eq!(e, error);
             }
         }
+    }
+
+    #[test]
+    fn foo() {
+        // can't use br## because 💖 is a Non ASCII character
+        let buffer = r#"{
+            "4_byte_sequence": "💖",
+            "surrogate_pair": "\uD83D\uDE00",
+            "escape_characters": "\\\"\/\b\f\n\r\t",
+            "boolean" : false,
+            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50, -456.78],
+            "null": null
+        }"#.as_bytes();
+
+        let mut numbers = Vec::new();
+        numbers.push(JsonValue::Number(Number::from_i64(116)));
+        numbers.push(JsonValue::Number(Number::from_i64(-943)));
+        numbers.push(JsonValue::Number(Number::from_u64(9223372036854775808)));
+        numbers.push(JsonValue::Number(Number::from_f64(-3.14159265358979e+100)));
+        numbers.push(JsonValue::Number(Number::from_f64(6.02214076e+23)));
+        numbers.push(JsonValue::Number(Number::from_f64(2.718281828e-50)));
+        numbers.push(JsonValue::Number(Number::from_f64(-456.78)));
+
+        let mut map = LinkedHashMap::new();
+        map.insert("4_byte_sequence".to_string(), JsonValue::String(String::from("💖")));
+        map.insert("surrogate_pair".to_string(), JsonValue::String(String::from("😀")));
+        map.insert("escape_characters".to_string(), JsonValue::String(String::from("\\\"/\x08\x0C\n\r\t")));
+        map.insert("boolean".to_string(), JsonValue::Boolean(false));
+        map.insert("numbers".to_string(), JsonValue::Array(numbers));
+        map.insert("null".to_string(), JsonValue::Null);
+
+        let mut tokenizer = Tokenizer::new(buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+        let mut parser = Parser::new(buffer, &tokens);
+        let result = parser.parse().unwrap();
+
+        assert_eq!(JsonValue::Object(map), *result.value().unwrap());
     }
 
     #[test]

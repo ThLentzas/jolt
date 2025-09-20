@@ -99,6 +99,12 @@ impl fmt::Display for ParserError {
     }
 }
 
+impl fmt::Display for NumericError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
 impl From<Utf8Error> for MalformedStringError {
     fn from(err: Utf8Error) -> Self {
         MalformedStringError::InvalidUtf8(err)
@@ -115,5 +121,6 @@ impl error::Error for Utf8Error {}
 impl error::Error for MalformedStringError {}
 impl error::Error for TokenizerError {}
 impl error::Error for ParserError {}
+impl error::Error for NumericError {}
 
 

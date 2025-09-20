@@ -1,6 +1,13 @@
 use crate::error::{MalformedStringError, TokenizerError};
 use crate::utils::{byte_utils, numeric_utils, utf8_utils};
 
+// much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
+struct NumberState {
+    decimal_point: bool,
+    scientific_notation: bool,
+    negative: bool
+}
+
 #[derive(Debug, PartialEq)]
 pub enum TokenizerTokenType {
     LeftCurlyBracket,
@@ -65,60 +72,44 @@ impl<'a> Tokenizer<'a> {
             }
 
             let current = self.buffer[self.pos];
-            // scan_* methods advance pos to one past the token's end, this is why we don't call
-            // self.pos += 1; in those arms
             if current.is_ascii() {
                 match current {
-                    b'{' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftCurlyBracket));
-                        self.pos += 1;
-                    },
-                    b'}' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightCurlyBracket));
-                        self.pos += 1;
-                    },
-                    b']' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightSquareBracket));
-                        self.pos += 1;
-                    },
-                    b'[' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftSquareBracket));
-                        self.pos += 1;
-                    },
-                    b':' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Colon));
-                        self.pos += 1;
-                    },
-                    b',' => {
-                        tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Comma));
-                        self.pos += 1;
-                    },
+                    b'{' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftCurlyBracket)),
+                    b'}' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightCurlyBracket)),
+                    b']' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightSquareBracket)),
+                    b'[' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftSquareBracket)),
+                    b':' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Colon)),
+                    b',' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Comma)),
                     b'-' | b'+' | b'0'..=b'9' => {
                         let start = self.pos;
                         self.scan_number()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Number))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Number));
                     }
                     b'"' => {
                         let start = self.pos;
                         self.scan_string()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::String))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::String));
                     }
                     b't' | b'f' => {
                         let start = self.pos;
                         self.scan_boolean()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Boolean))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Boolean));
                     }
                     b'n' => {
                         let start = self.pos;
                         self.scan_null()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start) as u32, TokenizerTokenType::Null))
+                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Null));
                     }
                     _ => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos })
                 }
+                self.pos += 1;
             } else {
                 return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
             }
         }
+        // reset the position, so the next tokenize call with the same buffer has the same output
+        self.pos = 0;
+
         Ok(tokens)
     }
 
@@ -142,6 +133,7 @@ impl<'a> Tokenizer<'a> {
                 message: "a valid numeric value requires a digit (0-9) after the minus sign",
                 pos: self.pos
             }),
+            // 05 not allowed
             (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
                 message: "leading zeros are not allowed",
                 pos: self.pos
@@ -154,84 +146,98 @@ impl<'a> Tokenizer<'a> {
         // self.position < len is true it enters an infinite loop
         self.pos += 1;
         if next.is_none() {
+            self.pos -= 1;
             return Ok(());
         }
 
         current = *next.unwrap();
-        let mut decimal_point = false;
-        let mut scientific_notation = false;
-        let negative = self.buffer[start] == b'-';
+        let mut state = NumberState { decimal_point: false, scientific_notation: false, negative: self.buffer[start] == b'-' };
         while self.pos < len {
-                match current {
-                    b'0'..=b'9' => (),
-                    b'.' => {
-                        // 1.2.3
-                        if decimal_point {
-                            return Err(TokenizerError::InvalidNumber { message: "double decimal point found", pos: self.pos });
-                        }
-                        // 1. 2.g
-                        if self.pos + 1 >= len || !self.buffer[self.pos + 1].is_ascii_digit() {
-                            return Err(TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: self.pos });
-                        }
-                        // 1e4.5
-                        if scientific_notation {
-                            return Err(TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: self.pos });
-                        }
-                        decimal_point = true;
-                    }
-                    b'e' | b'E' => {
-                        // 1e2E3
-                        if scientific_notation {
-                            return Err(TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: self.pos });
-                        }
-                        // 1e 1eg
-                        if self.pos + 1 >= len || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
-                            return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: self.pos });
-                        }
-                        // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
-                        scientific_notation = true;
-                    }
-                    b'-' | b'+' => {
-                        // 1+2
-                        if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
-                            return Err(TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: self.pos });
-                        }
-                        // 1E+g
-                        if self.pos + 1 >= len  || !self.buffer[self.pos + 1].is_ascii_digit() {
-                            return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: self.pos });
-                        }
-                    }
-                    _ => break
+            match current {
+                b'0'..=b'9' => (),
+                b'.' => self.check_decimal_point(&mut state)?,
+                b'e' | b'E' | b'-' | b'+'=> self.check_scientific_notation(&mut state)?,
+                _ => break
             }
             self.pos += 1;
-            if self.pos >= len {
-                break;
+            // update current only if we did not reach the end of the buffer
+            if self.pos < len {
+                current = self.buffer[self.pos];
             }
-            current = self.buffer[self.pos];
         }
-        
-        if decimal_point || scientific_notation {
-            let buffer = &self.buffer[start..self.pos];
-            match numeric_utils::is_out_of_range_f64(buffer) {
-                true => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
-                false => (),
-            }
-        } else {
-            let buffer = if negative { &self.buffer[start + 1..self.pos] } else { &self.buffer[start..self.pos] };
-            match numeric_utils::is_out_of_range_i64(buffer) {
-                true if negative => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
-                true => {
-                    match numeric_utils::is_out_of_range_u64(buffer) {
-                        true => return Err(TokenizerError::InvalidNumber { message: "Number out of range", pos: start }),
-                        false => (),
-                    }
+        if self.is_out_of_range(start, state) {
+            return Err(TokenizerError::InvalidNumber { message: "number out of range", pos: start });
+        }
+
+        self.pos -= 1;
+        Ok(())
+    }
+
+    fn check_decimal_point(&self, state: &mut NumberState) -> Result<(), TokenizerError> {
+        // 1.2.3
+        if state.decimal_point {
+            return Err(TokenizerError::InvalidNumber { message: "double decimal point found", pos: self.pos });
+        }
+        // 1. 2.g
+        if self.pos + 1 >= self.buffer.len() || !self.buffer[self.pos + 1].is_ascii_digit() {
+            return Err(TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: self.pos });
+        }
+        // 1e4.5
+        if state.scientific_notation {
+            return Err(TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: self.pos });
+        }
+        state.decimal_point = true;
+
+        Ok(())
+    }
+
+    fn check_scientific_notation(&self, state: &mut NumberState) -> Result<(), TokenizerError> {
+        let current = self.buffer[self.pos];
+
+        match current {
+            b'e' | b'E' => {
+                // 1e2E3
+                if state.scientific_notation {
+                    return Err(TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: self.pos });
                 }
-                false => (),
+                // 1e 1eg
+                if self.pos + 1 >= self.buffer.len() || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
+                    return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: self.pos });
+                }
+                // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
+                state.scientific_notation = true;
             }
+            b'+' | b'-' => {
+                // 1+2
+                if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
+                    return Err(TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: self.pos });
+                }
+                // 1E+g
+                if self.pos + 1 >= self.buffer.len()  || !self.buffer[self.pos + 1].is_ascii_digit() {
+                    return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: self.pos });
+                }
+            }
+            _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
         }
         Ok(())
     }
-    
+
+    fn is_out_of_range(&self, start: usize, state: NumberState) -> bool {
+        let slice =  &self.buffer[start..self.pos];
+
+        if state.decimal_point || state.scientific_notation {
+            return numeric_utils::is_out_of_range_f64(slice);
+        } else {
+            match numeric_utils::is_out_of_range_i64(slice) {
+                true if state.negative => return false,
+                // positive and overflow for i64, try u64
+                true => return numeric_utils::is_out_of_range_u64(slice),
+                false => (),
+            };
+        }
+        false
+    }
+
     fn scan_string(&mut self) -> Result<(), MalformedStringError> {
         let len = self.buffer.len();
         self.pos += 1;
@@ -258,22 +264,7 @@ impl<'a> Tokenizer<'a> {
                     return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
                 }
                 if next == b'u' {
-                    // Need 4 hex digits
-                    if self.pos + 4 >= len {
-                        return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
-                    }
-
-                    // self.position is at the first digit of the hex sequence
-                    self.pos += 1;
-                    let val = match numeric_utils::hex_to_u16(&self.buffer[self.pos..self.pos + 4]) {
-                        Ok(low) => low,
-                        Err(_) => return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 2 })
-                    };
-                    // move past the hex digits
-                    self.pos += 3;
-                    if utf8_utils::is_surrogate(val) {
-                        utf8_utils::validate_surrogate(&mut self.pos, &self.buffer, val)?;
-                    }
+                    self.check_unicode_escape()?;
                 }
             }
             self.pos += 1;
@@ -281,8 +272,26 @@ impl<'a> Tokenizer<'a> {
         if self.pos == len {
             return Err(MalformedStringError::UnterminatedString { pos: self.pos - 1 });
         }
-        // move to the next character past the closing quote
+        Ok(())
+    }
+
+    fn check_unicode_escape(&mut self) -> Result<(), MalformedStringError> {
+        // Need 4 hex digits
+        if self.pos + 4 >= self.buffer.len() {
+            return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
+        }
+
+        // self.pos is at the first digit of the hex sequence
         self.pos += 1;
+        let val = match numeric_utils::hex_to_u16(&self.buffer[self.pos..self.pos + 4]) {
+            Ok(hex) => hex,
+            Err(_) => return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 2 })
+        };
+        // move past the hex digits
+        self.pos += 3;
+        if utf8_utils::is_surrogate(val) {
+            utf8_utils::validate_surrogate(&mut self.pos, &self.buffer, val)?;
+        }
 
         Ok(())
     }
@@ -291,17 +300,16 @@ impl<'a> Tokenizer<'a> {
         let remaining = &self.buffer[self.pos..];
 
         match remaining {
-            s if s.starts_with(b"true") => self.pos += 4,
-            s if s.starts_with(b"false") => self.pos += 5,
+            s if s.starts_with(b"true") => self.pos += 3,
+            s if s.starts_with(b"false") => self.pos += 4,
             _ => return Err(TokenizerError::UnexpectedValue { pos: self.pos }),
-
-            }
+        }
         Ok(())
     }
 
     fn scan_null(&mut self) -> Result<(), TokenizerError> {
         if self.buffer[self.pos..].starts_with(b"null") {
-            self.pos += 4;
+            self.pos += 3;
         } else {
             return Err(TokenizerError::UnexpectedValue { pos: self.pos });
         }
@@ -323,12 +331,6 @@ impl<'a> Tokenizer<'a> {
             }
         }
         Ok(())
-    }
-
-    // reset the input buffer
-    pub fn reset(&mut self, buffer: &'a [u8]) {
-        self.buffer = buffer;
-        self.pos = 0;
     }
 }
 
@@ -364,9 +366,12 @@ mod tests {
             (b"1e2e5", TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: 3 }),
             (b"1e", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 1 }),
             (b"246Ef", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 3 }),
-            (b"83+1", TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: 2}),
-            (b"1e+", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2}),
-            (b"1e+f", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2}),
+            (b"83+1", TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: 2 }),
+            (b"1e+", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2 }),
+            (b"1e+f", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2 }),
+            (b"1.8e308", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for f64
+            (b"-9223372036854775809", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for i64
+            (b"18446744073709551616", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for u64
         ]
     }
 
