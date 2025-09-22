@@ -9,7 +9,7 @@ struct NumberState {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum TokenizerTokenType {
+pub(super) enum TokenizerTokenType {
     LeftCurlyBracket,
     RightCurlyBracket,
     LeftSquareBracket,
@@ -35,30 +35,30 @@ impl TokenizerToken {
         Self { start_index, offset, token_type }
     }
 
-    pub fn start_index(&self) -> usize {
+    pub(super) fn start_index(&self) -> usize {
         self.start_index
     }
 
-    pub fn offset(&self) -> u32 {
+    pub(super) fn offset(&self) -> u32 {
         self.offset
     }
 
-    pub fn token_type(&self) -> &TokenizerTokenType {
+    pub(super) fn token_type(&self) -> &TokenizerTokenType {
         &self.token_type
     }
 }
 
-pub struct Tokenizer<'a> {
+pub(super) struct Tokenizer<'a> {
     buffer: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Tokenizer<'a> {
-    pub fn new(buffer: &'a [u8]) -> Self {
+    pub(super) fn new(buffer: &'a [u8]) -> Self {
         Self { buffer, pos: 0 }
     }
 
-    pub fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, TokenizerError> {
+    pub(super) fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, TokenizerError> {
         let mut tokens: Vec<TokenizerToken> = Vec::new();
         let len = self.buffer.len();
 
@@ -223,13 +223,13 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn is_out_of_range(&self, start: usize, state: NumberState) -> bool {
-        let slice =  &self.buffer[start..self.pos];
+        let slice = &self.buffer[start..self.pos];
 
         if state.decimal_point || state.scientific_notation {
             return numeric_utils::is_out_of_range_f64(slice);
         } else {
             match numeric_utils::is_out_of_range_i64(slice) {
-                true if state.negative => return false,
+                true if state.negative => return true,
                 // positive and overflow for i64, try u64
                 true => return numeric_utils::is_out_of_range_u64(slice),
                 false => (),
@@ -340,6 +340,7 @@ mod tests {
     use crate::error::Utf8Error;
     use super::*;
 
+    // toDo: Maybe break them into individual tests
     fn valid_numbers() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
             (b"0", TokenizerToken::new(0, 1, TokenizerTokenType::Number)),
@@ -414,8 +415,8 @@ mod tests {
 
     fn invalid_boolean() -> Vec<(&'static [u8], TokenizerError)> {
         vec![
-            (b"falte", TokenizerError::UnexpectedValue { pos: 0}),
-            (b"trur", TokenizerError::UnexpectedValue { pos: 0}),
+            (b"falte", TokenizerError::UnexpectedValue { pos: 0 }),
+            (b"trur", TokenizerError::UnexpectedValue { pos: 0 }),
         ]
     }
 
@@ -533,7 +534,10 @@ mod tests {
     fn test_unrecognized_character() {
         // @
         let mut tokenizer = Tokenizer::new(&[64]);
+        let result = tokenizer.tokenize();
 
-        assert!(tokenizer.tokenize().is_err());
+        if let Err(e) = result {
+            assert_eq!(e, TokenizerError::UnrecognizedCharacter { byte: Some(64), pos: 0 });
+        }
     }
 }

@@ -125,12 +125,12 @@ pub fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
 
 pub fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
 
-pub fn validate_surrogate(index: &mut usize, buffer: &[u8], val: u16) -> Result<(), Utf8Error> {
+pub fn validate_surrogate(index: &mut usize, buffer: &[u8], hex_sequence: u16) -> Result<(), Utf8Error> {
     let len = buffer.len();
     // *index - 5 is the index at the start of the Unicode sequence
     let start = *index - 5;
 
-    if is_high_surrogate(val) {
+    if is_high_surrogate(hex_sequence) {
         if *index + 6 >= len {
             return Err(Utf8Error::InvalidSurrogate { pos: start });
         }
@@ -145,13 +145,13 @@ pub fn validate_surrogate(index: &mut usize, buffer: &[u8], val: u16) -> Result<
         };
 
         // safe to call, it will never be out of bounds
-        let low = match numeric_utils::hex_to_u16(&buffer[*index..*index + 4]) {
+        let next = match numeric_utils::hex_to_u16(&buffer[*index..*index + 4]) {
             Ok(low) => low,
             Err(_) => return Err(Utf8Error::InvalidSurrogate { pos: start })
         };
 
         *index += 3;
-        if !is_low_surrogate(low) {
+        if !is_low_surrogate(next) {
             return Err(Utf8Error::InvalidSurrogate { pos: start });
         }
     } else {
@@ -187,6 +187,7 @@ fn next(index: &mut usize, bytes: &[u8]) -> Option<u8> {
     Some(bytes[*index])
 }
 
+// toDo: complete good cases for 4 byte, group them in 1 method as valid sequences and create test cases for invalid
 #[cfg(test)]
 mod tests {
     use super::*;

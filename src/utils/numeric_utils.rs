@@ -10,6 +10,7 @@ enum NumberKind {
     F64(f64),
 }
 
+// toDo: implement BigDecimal as feature
 impl Number {
     pub fn from_i64(val: i64) -> Self {
         Number(NumberKind::I64(val))
@@ -21,6 +22,27 @@ impl Number {
 
     pub fn from_f64(val: f64) -> Self {
         Number(NumberKind::F64(val))
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self.0 {
+            NumberKind::I64(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self.0 {
+            NumberKind::U64(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self.0 {
+            NumberKind::F64(v) => Some(v),
+            _ => None,
+        }
     }
 }
 

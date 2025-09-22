@@ -2,10 +2,9 @@ use std::string::String;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
 use linked_hash_map::LinkedHashMap;
+use super::tokenizer::{TokenizerToken, TokenizerTokenType};
+use super::node::{Value, Node};
 use crate::error::ParserError;
-use crate::parse::node::JsonValue;
-use crate::parse::node::JsonNode;
-use crate::parse::tokenizer::{TokenizerToken, TokenizerTokenType};
 use crate::utils::{numeric_utils, utf8_utils};
 use crate::utils::numeric_utils::Number;
 
@@ -44,7 +43,7 @@ impl ParserToken {
 pub struct Parser<'a> {
     buffer: &'a [u8],
     tokens: &'a Vec<TokenizerToken>,
-    _tokens: Vec<ParserToken>,
+    _tokens: Vec<ParserToken>, // toDo: rename
     pos: usize,
     token_idx: usize,
     depth: u16
@@ -63,9 +62,9 @@ impl<'a> Parser<'a> {
     }
 
     // toDo: advantages of peek/advance and recursive decent parser
-    pub fn parse(&mut self) -> Result<JsonNode, ParserError> {
+    pub fn parse(&mut self) -> Result<Node, ParserError> {
         if self.tokens.is_empty() {
-            return Ok(JsonNode::new(None));
+            return Ok(Node::new(None));
         }
 
         self.parse_value()?;
@@ -77,7 +76,7 @@ impl<'a> Parser<'a> {
         self.token_idx = 0;
         self.pos = 0;
 
-        Ok(JsonNode::new(Some(self.json_value()))) // toDo: Does this move or it is a copy?
+        Ok(Node::new(Some(self.compute_value()))) // toDo: Does this move or it is a copy?
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
@@ -97,7 +96,17 @@ impl<'a> Parser<'a> {
          self.advance();
          Ok(())
      }
-    
+
+    // We peek and advance 4 times, after moving past the opening '{'
+    //
+    // 1. peek and expect either '}' for an empty object or a key string -> advance
+    // 2. peek and expect ':' after key -> advance
+    // 3. after colon we call parse_value(), it advances internally the pointer to the next token
+    // 4. peek, after value we expect either ',' to separate from the next key-value pair -> advance
+    // or '}' -> break
+    //
+    // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
+    // will be consumed by the caller (parse_value()) after this function returns.
     fn parse_object(&mut self) -> Result<(), ParserError> {
         if self.depth + 1 > MAX_DEPTH {
             return Err(ParserError::DepthLimitExceeded { depth: MAX_DEPTH });
@@ -112,15 +121,13 @@ impl<'a> Parser<'a> {
         let mut names = HashSet::new();
         // We don't know how many tokens are part of the current object, the moment we encounter '}' we break
         loop {
-            // {"foo": "bar",}
             match self.peek() {
+                // {"foo": "bar",}
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(ParserError::UnexpectedToken { pos: next.start_index(), token: Some("object name") });
                     }
-                }
-                // {}
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
+                    // {}
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ObjectEnd));
                     self.depth -= 1;
                     break;
@@ -170,15 +177,20 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 // mismatch
-                Some(next) => {
-                    return Err(ParserError::UnexpectedToken { token: Some("'}' or ','"), pos: next.start_index() });
-                }
+                Some(next) => return Err(ParserError::UnexpectedToken { token: Some("'}' or ','"), pos: next.start_index() }),
                 None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
             }
         }
         Ok(())
     }
 
+    // We peek and advance 3 times, after moving past the opening '['
+    //
+    // 1. peek and expect either ']' for an empty array or a json value(parse_value() will peek and advance)
+    // 2. peek and expect ',' to separate values -> advance, or ']' -> break;
+    //
+    // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
+    // by the caller (parse_value()) after this function returns.
     fn parse_array(&mut self) -> Result<(), ParserError> {
         if self.depth + 1 > MAX_DEPTH {
             return Err(ParserError::DepthLimitExceeded { depth: MAX_DEPTH });
@@ -197,16 +209,12 @@ impl<'a> Parser<'a> {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(ParserError::UnexpectedToken { pos: next.start_index(), token: Some("json value") });
                     }
-                }
-                // []
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
+                    // []
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ArrayEnd));
                     self.depth -= 1;
                     break;
                 }
-                Some(_) => {
-                    self.parse_value()?;
-                },
+                Some(_) => self.parse_value()?,
                 None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
             }
 
@@ -220,9 +228,7 @@ impl<'a> Parser<'a> {
                     self.depth -= 1;
                     break;
                 }
-                Some(next) => {
-                    return Err(ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: next.start_index() });
-                }
+                Some(next) => return Err(ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: next.start_index() }),
                 None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
             }
         }
@@ -231,25 +237,26 @@ impl<'a> Parser<'a> {
 
     fn parse_number(&mut self) {
         let token = &self.tokens[self.pos];
-        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Number))
+        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Number));
     }
 
     fn parse_string(&mut self) {
         let token = &self.tokens[self.pos];
-        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::String))
+        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::String));
     }
 
     fn parse_boolean(&mut self) {
         let token = &self.tokens[self.pos];
-        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Boolean))
+        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Boolean));
     }
 
     fn parse_null(&mut self) {
         let token = &self.tokens[self.pos];
-        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Null))
+        self._tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Null));
     }
 
-
+    // peek and advance are used during the parsing process, next is used when we compute the value
+    // to access the tokens produced by the parser
     fn peek(&self) -> Option<&TokenizerToken> {
         self.tokens.get(self.pos)
     }
@@ -262,15 +269,16 @@ impl<'a> Parser<'a> {
         self._tokens.get(self.token_idx)
     }
 
-    fn json_value(&mut self) -> JsonValue {
+    fn compute_value(&mut self) -> Value {
         let token = &self._tokens[self.token_idx];
         let val = match token.token_type {
-            ParserTokenType::ObjectStart => JsonValue::Object(self.object_value()),
-            ParserTokenType::ArrayStart => JsonValue::Array(self.array_value()),
-            ParserTokenType::Number => JsonValue::Number(self.number_value()),
-            ParserTokenType::String => JsonValue::String(self.string_value()),
-            ParserTokenType::Boolean => JsonValue::Boolean(self.boolean_value()),
-            ParserTokenType::Null => JsonValue::Null,
+            ParserTokenType::ObjectStart => Value::Object(self.object_value()),
+            ParserTokenType::ArrayStart => Value::Array(self.array_value()),
+            ParserTokenType::Number => Value::Number(self.number_value()),
+            ParserTokenType::String => Value::String(self.string_value()),
+            ParserTokenType::Boolean => Value::Boolean(self.boolean_value()),
+            ParserTokenType::Null => Value::Null,
+            // only the above cases will start a json value
             _ => unreachable!("Unexpected token type for the start of json value at index {}", self.token_idx),
         };
         self.token_idx += 1;
@@ -278,7 +286,7 @@ impl<'a> Parser<'a> {
         val
     }
 
-    fn object_value(&mut self) -> LinkedHashMap<String, JsonValue> {
+    fn object_value(&mut self) -> LinkedHashMap<String, Value> {
         let mut map = LinkedHashMap::new();
         self.token_idx += 1; // move past '{'
 
@@ -293,10 +301,9 @@ impl<'a> Parser<'a> {
             let key = String::from_utf8(Vec::from(name)).unwrap(); // toDo: can this be &str?
             // skip key,colon
             self.token_idx += 2;
-            let value = self.json_value();
+            let value = self.compute_value();
             map.insert(key, value);
-            // move past the value, we expect either ',' or '}'. The structure of the object is always
-            // valid at this point
+            // we expect either ',' or '}'. The structure of the object is always valid at this point
             if let Some(token) = self.next() {
                 if token.token_type == ParserTokenType::ObjectEnd {
                     break;
@@ -308,7 +315,7 @@ impl<'a> Parser<'a> {
         map
     }
 
-    fn array_value(&mut self) -> Vec<JsonValue> {
+    fn array_value(&mut self) -> Vec<Value> {
         let mut values = Vec::new();
         self.token_idx += 1; // move past '['
 
@@ -318,7 +325,7 @@ impl<'a> Parser<'a> {
         }
 
         while let Some(_) = self.next() {
-            values.push(self.json_value());
+            values.push(self.compute_value());
             if let Some(token) = self.next() {
                 if token.token_type == ParserTokenType::ArrayEnd {
                     break;
@@ -391,7 +398,7 @@ impl<'a> Parser<'a> {
     fn map_escape_character(&self, index: &mut usize, val: &mut String) {
         *index += 1;
         match self.buffer[*index] {
-            b'\\' => val.push('\\'), // toDo: what is the return type?
+            b'\\' => val.push('\\'),
             b'"' => val.push('"'),
             b'/' => val.push('/'),
             b'b' => val.push('\x08'),
@@ -414,11 +421,10 @@ impl<'a> Parser<'a> {
             let low = numeric_utils::hex_to_u16(&self.buffer[*index..*index + 4]).unwrap();
             let code_point= utf8_utils::decode_surrogate_pair(high, low);
             val.push(char::from_u32(code_point).unwrap());
-            *index += 3; // Move to the last hex digit
         } else {
             val.push(char::from_u32(code_unit as u32).unwrap());
-            *index += 3; // Move to the last hex digit
         }
+        *index += 3; // Move to the last hex digit
     }
 }
 
@@ -449,8 +455,8 @@ mod tests {
             (b"[", ParserError::UnexpectedEndOfInput { pos : 0 }),
             (b"[116, 943", ParserError::UnexpectedEndOfInput { pos : 8 }),
             (b"[116, 943,", ParserError::UnexpectedEndOfInput { pos : 9 }),
-            (b"[116 943]", ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: 5 }),
-            (b"[:]",ParserError::UnexpectedToken { token: Some("json value"), pos: 1 }),
+            (b"[116 true]", ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: 5 }),
+            (b"[:]", ParserError::UnexpectedToken { token: Some("json value"), pos: 1 }),
         ]
     }
 
@@ -469,43 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn foo() {
-        // can't use br## because 💖 is a Non ASCII character
-        let buffer = r#"{
-            "4_byte_sequence": "💖",
-            "surrogate_pair": "\uD83D\uDE00",
-            "escape_characters": "\\\"\/\b\f\n\r\t",
-            "boolean" : false,
-            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50, -456.78],
-            "null": null
-        }"#.as_bytes();
-
-        let mut numbers = Vec::new();
-        numbers.push(JsonValue::Number(Number::from_i64(116)));
-        numbers.push(JsonValue::Number(Number::from_i64(-943)));
-        numbers.push(JsonValue::Number(Number::from_u64(9223372036854775808)));
-        numbers.push(JsonValue::Number(Number::from_f64(-3.14159265358979e+100)));
-        numbers.push(JsonValue::Number(Number::from_f64(6.02214076e+23)));
-        numbers.push(JsonValue::Number(Number::from_f64(2.718281828e-50)));
-        numbers.push(JsonValue::Number(Number::from_f64(-456.78)));
-
-        let mut map = LinkedHashMap::new();
-        map.insert("4_byte_sequence".to_string(), JsonValue::String(String::from("💖")));
-        map.insert("surrogate_pair".to_string(), JsonValue::String(String::from("😀")));
-        map.insert("escape_characters".to_string(), JsonValue::String(String::from("\\\"/\x08\x0C\n\r\t")));
-        map.insert("boolean".to_string(), JsonValue::Boolean(false));
-        map.insert("numbers".to_string(), JsonValue::Array(numbers));
-        map.insert("null".to_string(), JsonValue::Null);
-
-        let mut tokenizer = Tokenizer::new(buffer);
-        let tokens = tokenizer.tokenize().unwrap();
-        let mut parser = Parser::new(buffer, &tokens);
-        let result = parser.parse().unwrap();
-
-        assert_eq!(JsonValue::Object(map), *result.value().unwrap());
-    }
-
-    #[test]
     fn test_invalid_arrays() {
         for (buffer, error) in invalid_arrays() {
             let mut tokenizer = Tokenizer::new(buffer);
@@ -517,6 +486,76 @@ mod tests {
                 assert_eq!(e, error);
             }
         }
+    }
+
+    #[test]
+    fn valid_object() {
+        // can't use br## because 💖 is a Non ASCII character
+        let buffer = r#"{
+            "4_byte_sequence": "💖",
+            "surrogate_pair": "\uD83D\uDE00",
+            "escape_characters": "\\\"\/\b\f\n\r\t",
+            "boolean" : false,
+            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50, -456.78],
+            "null": null
+        }"#.as_bytes();
+
+        let mut numbers = Vec::new();
+        numbers.push(Value::Number(Number::from_i64(116)));
+        numbers.push(Value::Number(Number::from_i64(-943)));
+        numbers.push(Value::Number(Number::from_u64(9223372036854775808)));
+        numbers.push(Value::Number(Number::from_f64(-3.14159265358979e+100)));
+        numbers.push(Value::Number(Number::from_f64(6.02214076e+23)));
+        numbers.push(Value::Number(Number::from_f64(2.718281828e-50)));
+        numbers.push(Value::Number(Number::from_f64(-456.78)));
+
+        let mut map = LinkedHashMap::new();
+        map.insert("4_byte_sequence".to_string(), Value::String(String::from("💖")));
+        map.insert("surrogate_pair".to_string(), Value::String(String::from("😀")));
+        map.insert("escape_characters".to_string(), Value::String(String::from("\\\"/\x08\x0C\n\r\t")));
+        map.insert("boolean".to_string(), Value::Boolean(false));
+        map.insert("numbers".to_string(), Value::Array(numbers));
+        map.insert("null".to_string(), Value::Null);
+
+        let mut tokenizer = Tokenizer::new(buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+        let mut parser = Parser::new(buffer, &tokens);
+        let result = parser.parse().unwrap();
+
+        assert_eq!(Value::Object(map), *result.value().unwrap());
+    }
+
+    #[test]
+    fn empty_buffer() {
+        let buffer: &[u8; 0] = &[];
+        let mut tokenizer = Tokenizer::new(buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+        let mut parser = Parser::new(buffer, &tokens);
+        let result = parser.parse().unwrap();
+
+        assert!(result.value().is_none());
+    }
+
+    #[test]
+    fn empty_object() {
+        let buffer = b"{}";
+        let mut tokenizer = Tokenizer::new(buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+        let mut parser = Parser::new(buffer, &tokens);
+        let result = parser.parse().unwrap();
+
+        assert_eq!(Value::Object(LinkedHashMap::new()), *result.value().unwrap());
+    }
+
+    #[test]
+    fn empty_array() {
+        let buffer = b"[]";
+        let mut tokenizer = Tokenizer::new(buffer);
+        let tokens = tokenizer.tokenize().unwrap();
+        let mut parser = Parser::new(buffer, &tokens);
+        let result = parser.parse().unwrap();
+
+        assert_eq!(Value::Array(Vec::new()), *result.value().unwrap());
     }
 
     // We can't call: let buffer = format!("{}{}", "[".repeat(257), "]".repeat(257)).as_bytes();
