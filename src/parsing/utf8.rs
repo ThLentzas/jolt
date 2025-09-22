@@ -1,5 +1,5 @@
-use crate::error::{Utf8Error};
-use crate::utils::{numeric_utils};
+use crate::parsing::error::Utf8Error;
+use crate::parsing::number;
 
 // Returns the number of bytes in an utf8 sequence based on the value of the leading byte
 // https://en.wikipedia.org/wiki/UTF-8
@@ -30,7 +30,7 @@ const UTF8_CHAR_WIDTH: [u8; 256] = [
     4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // F
 ];
 
-pub fn validate_utf8_sequence(index: &mut usize, buffer: &[u8]) -> Result<(), Utf8Error> {
+pub(super) fn validate_utf8_sequence(index: &mut usize, buffer: &[u8]) -> Result<(), Utf8Error> {
     let first = buffer[*index];
     let width = UTF8_CHAR_WIDTH[first as usize];
     let start = *index;
@@ -111,21 +111,15 @@ pub fn validate_utf8_sequence(index: &mut usize, buffer: &[u8]) -> Result<(), Ut
     Ok(())
 }
 
-// https://en.wikipedia.org/wiki/UTF-16#U+D800_to_U+DFFF_(surrogates)
-// Read: To decode...
-pub fn decode_surrogate_pair(high: u16, low: u16) -> u32 {
-    (high as u32 - 0xD800) * 0x400 + low as u32 - 0xDC00 + 0x10000
-}
-
-pub fn is_surrogate(val: u16) -> bool {
+pub(super) fn is_surrogate(val: u16) -> bool {
     matches!(val, 0xD800..=0xDFFF)
 }
 
-pub fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
+pub(super)fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
 
-pub fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
+pub(super) fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
 
-pub fn validate_surrogate(index: &mut usize, buffer: &[u8], hex_sequence: u16) -> Result<(), Utf8Error> {
+pub(super) fn validate_surrogate(index: &mut usize, buffer: &[u8], hex_sequence: u16) -> Result<(), Utf8Error> {
     let len = buffer.len();
     // *index - 5 is the index at the start of the Unicode sequence
     let start = *index - 5;
@@ -145,7 +139,7 @@ pub fn validate_surrogate(index: &mut usize, buffer: &[u8], hex_sequence: u16) -
         };
 
         // safe to call, it will never be out of bounds
-        let next = match numeric_utils::hex_to_u16(&buffer[*index..*index + 4]) {
+        let next = match number::hex_to_u16(&buffer[*index..*index + 4]) {
             Ok(low) => low,
             Err(_) => return Err(Utf8Error::InvalidSurrogate { pos: start })
         };
@@ -161,13 +155,19 @@ pub fn validate_surrogate(index: &mut usize, buffer: &[u8], hex_sequence: u16) -
     Ok(())
 }
 
+// https://en.wikipedia.org/wiki/UTF-16#U+D800_to_U+DFFF_(surrogates)
+// Read: To decode...
+pub(super) fn decode_surrogate_pair(high: u32, low: u32) -> u32 {
+    (high - 0xD800) * 0x400 + low - 0xDC00 + 0x10000
+}
+
 // returns the width(number of bytes) of an utf8-sequence
-pub fn utf8_char_width(byte: u8) -> usize {
+pub(super) fn utf8_char_width(byte: u8) -> usize {
     UTF8_CHAR_WIDTH[byte as usize] as usize
 }
 
 // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
-pub fn ignore_bom_if_present(index: &mut usize, buffer: &[u8]) {
+pub(super) fn ignore_bom_if_present(index: &mut usize, buffer: &[u8]) {
     if buffer.len() < 3 {
         return;
     }

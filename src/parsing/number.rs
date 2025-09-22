@@ -1,4 +1,4 @@
-use crate::error::NumericError;
+use crate::parsing::error::NumericError;
 
 #[derive(Debug, PartialEq)]
 pub struct Number (NumberKind);
@@ -48,7 +48,7 @@ impl Number {
 
 // We return u16 because the valid range for the Unicode sequences are 0x0000-0xFFFF(0-65535)
 // 0-65535 is the range for u16
-pub fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
+pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
     let mut val: u16 = 0;
 
     // Logic similar to base 10 seen on Leetcode problems
@@ -66,24 +66,24 @@ pub fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
     Ok(val)
 }
 
-pub fn is_out_of_range_u64(buffer: &[u8]) -> bool {
+pub(super) fn is_out_of_range_u64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<u64>().is_err()
     // review underflow
 }
 
 // toDo: review loops and patterns in loops, check default values for primitives
-pub fn is_out_of_range_i64(buffer: &[u8]) -> bool {
+pub(super) fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<i64>().is_err()
 }
 
-// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parse::<f64>() to return inf/-inf
-// Based on that handling normal numbers is straightforward. If the result of parse is inf/-inf since
+// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parsing::<f64>() to return inf/-inf
+// Based on that handling normal numbers is straightforward. If the result of parsing is inf/-inf since
 // infinity and nan are not supported in the json rfc we can safely say that the number is out of range
 //
-// If we actually had to parse parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
-pub fn is_out_of_range_f64(buffer: &[u8]) -> bool {
+// If we actually had to parsing parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
+pub(super) fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     let val = s.parse::<f64>().unwrap();
 

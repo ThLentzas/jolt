@@ -1,6 +1,8 @@
 use std::cmp::PartialEq;
 use linked_hash_map::LinkedHashMap;
-use crate::utils::numeric_utils::Number;
+use crate::parsing::error::MalformedStringError;
+use crate::parsing::number::Number;
+use crate::parsing::escapes;
 
 #[derive(Debug, PartialEq)]
 pub enum Value {
@@ -113,23 +115,40 @@ impl Value {
             _ => None,
         }
     }
-}
 
-#[derive(Debug, PartialEq)]
-pub struct Node {
-    // [](empty input buffer) is not invalid, the value of the root of AST is None
-    // same logic applies for [\n, \t, '\r', ' ']
-    val: Option<Value>
-}
-
-impl Node {
-    pub(super) fn new(val: Option<Value>) -> Self {
-        Self {
-            val
+    pub fn pointer(&self, pointer: &str) -> Option<&Value> {
+        // match self {
+        //     Value::Object(_) | Value::Array(_) => {
+        //
+        //     }
+        //     _ => return None
+        // }
+        if !self.is_object() && !self.is_array() {
+            return None;
         }
-    }
 
-    pub fn value(&self) -> Option<&Value> {
-        self.val.as_ref()
+        let buffer = pointer.as_bytes();
+        let mut index = 0;
+        if buffer.is_empty() {
+            return Some(self)
+        }
+        if buffer[0] != b'/' {
+            return None;
+        }
+
+        let len = buffer.len();
+        while index < len {
+            let current = buffer[index];
+            if current.is_ascii_control() {
+                return Err(MalformedStringError::InvalidControlCharacter { byte: current, pos: self.pos });
+            }
+            if current == b'\\' {
+                escapes::check_escape_character(buffer, &mut index)?;
+            }
+            index += 1;
+        }
+
+
+        None
     }
 }

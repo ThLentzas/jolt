@@ -1,5 +1,5 @@
-use crate::error::{MalformedStringError, TokenizerError};
-use crate::utils::{byte_utils, numeric_utils, utf8_utils};
+use crate::parsing::error::{MalformedStringError, TokenizerError};
+use crate::parsing::{escapes, number, utf8};
 
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
 struct NumberState {
@@ -9,7 +9,7 @@ struct NumberState {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum TokenizerTokenType {
+pub enum TokenizerTokenType {
     LeftCurlyBracket,
     RightCurlyBracket,
     LeftSquareBracket,
@@ -35,15 +35,15 @@ impl TokenizerToken {
         Self { start_index, offset, token_type }
     }
 
-    pub(super) fn start_index(&self) -> usize {
+    pub fn start_index(&self) -> usize {
         self.start_index
     }
 
-    pub(super) fn offset(&self) -> u32 {
+    pub fn offset(&self) -> u32 {
         self.offset
     }
 
-    pub(super) fn token_type(&self) -> &TokenizerTokenType {
+    pub fn token_type(&self) -> &TokenizerTokenType {
         &self.token_type
     }
 }
@@ -63,7 +63,7 @@ impl<'a> Tokenizer<'a> {
         let len = self.buffer.len();
 
         // Byte Order Mark
-        utf8_utils::ignore_bom_if_present(&mut self.pos, &self.buffer);
+        utf8::ignore_bom_if_present(&mut self.pos, &self.buffer);
 
         while self.pos < len {
             self.skip_white_spaces()?;
@@ -226,12 +226,12 @@ impl<'a> Tokenizer<'a> {
         let slice = &self.buffer[start..self.pos];
 
         if state.decimal_point || state.scientific_notation {
-            return numeric_utils::is_out_of_range_f64(slice);
+            return number::is_out_of_range_f64(slice);
         } else {
-            match numeric_utils::is_out_of_range_i64(slice) {
+            match number::is_out_of_range_i64(slice) {
                 true if state.negative => return true,
                 // positive and overflow for i64, try u64
-                true => return numeric_utils::is_out_of_range_u64(slice),
+                true => return number::is_out_of_range_u64(slice),
                 false => (),
             };
         }
@@ -251,21 +251,10 @@ impl<'a> Tokenizer<'a> {
                 return Err(MalformedStringError::InvalidControlCharacter { byte: current, pos: self.pos });
             }
             if !current.is_ascii() {
-                utf8_utils::validate_utf8_sequence(&mut self.pos, &self.buffer)?;
+                utf8::validate_utf8_sequence(&mut self.pos, &self.buffer)?;
             }
             if current == b'\\' {
-                self.pos += 1;
-                if self.pos >= len {
-                    return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 1 });
-                }
-
-                let next = self.buffer[self.pos];
-                if !matches!(next, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
-                    return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
-                }
-                if next == b'u' {
-                    self.check_unicode_escape()?;
-                }
+                escapes::check_escape_character(&self.buffer, &mut self.pos)?;
             }
             self.pos += 1;
         }
@@ -274,28 +263,7 @@ impl<'a> Tokenizer<'a> {
         }
         Ok(())
     }
-
-    fn check_unicode_escape(&mut self) -> Result<(), MalformedStringError> {
-        // Need 4 hex digits
-        if self.pos + 4 >= self.buffer.len() {
-            return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos });
-        }
-
-        // self.pos is at the first digit of the hex sequence
-        self.pos += 1;
-        let val = match numeric_utils::hex_to_u16(&self.buffer[self.pos..self.pos + 4]) {
-            Ok(hex) => hex,
-            Err(_) => return Err(MalformedStringError::InvalidEscapeSequence { pos: self.pos - 2 })
-        };
-        // move past the hex digits
-        self.pos += 3;
-        if utf8_utils::is_surrogate(val) {
-            utf8_utils::validate_surrogate(&mut self.pos, &self.buffer, val)?;
-        }
-
-        Ok(())
-    }
-
+    
     fn scan_boolean(&mut self) -> Result<(), TokenizerError> {
         let remaining = &self.buffer[self.pos..];
 
@@ -321,10 +289,10 @@ impl<'a> Tokenizer<'a> {
             let current = self.buffer[self.pos];
             // The only control characters that are allowed as raw bytes according to rfc are '\t', '\n', '\r'
             // ' '(space) is not a control character
-            if current.is_ascii_control() && !byte_utils::is_rfc_whitespace(current) {
+            if current.is_ascii_control() && !matches!(current, b'\t' | b'\n' | b'\r' | b' ') { // rfc whitespaces
                 return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
             }
-            if byte_utils::is_rfc_whitespace(current) {
+            if matches!(current, b'\t' | b'\n' | b'\r' | b' ') {
                 self.pos += 1;
             } else {
                 break;
@@ -337,7 +305,7 @@ impl<'a> Tokenizer<'a> {
 // We declare tokenizer as let mut tokenizer because tokenize takes a mutable reference to self
 #[cfg(test)]
 mod tests {
-    use crate::error::Utf8Error;
+    use crate::parsing::error::Utf8Error;
     use super::*;
 
     // toDo: Maybe break them into individual tests

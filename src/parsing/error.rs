@@ -1,8 +1,7 @@
 use std::{error, fmt};
-use crate::utils::byte_utils;
 
 #[derive(Debug, PartialEq)]
-pub enum NumericError {
+pub(super) enum NumericError {
     InvalidHexDigit { digit: u8, pos: usize }
 }
 
@@ -67,7 +66,7 @@ impl fmt::Display for TokenizerError {
                         write!(f, "unrecognized character '{}' at index {}", *byte as char, pos)
                     }
                     Some(byte) if byte.is_ascii_control() => {
-                        write!(f, "unrecognized character {} (0x{:02X}) at index {}", byte_utils::map_to_text(*byte), *byte, pos)
+                        write!(f, "unrecognized character (0x{:02X}) at index {}", *byte, pos)
                     }
                     // utf8 sequence
                     _ => write!(f, "unrecognized character at index {}", pos)

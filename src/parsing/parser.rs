@@ -3,15 +3,15 @@ use std::cmp::PartialEq;
 use std::collections::HashSet;
 use linked_hash_map::LinkedHashMap;
 use super::tokenizer::{TokenizerToken, TokenizerTokenType};
-use super::node::{Value, Node};
-use crate::error::ParserError;
-use crate::utils::{numeric_utils, utf8_utils};
-use crate::utils::numeric_utils::Number;
+use super::value::Value;
+use crate::parsing::error::ParserError;
+use crate::parsing::{escapes, utf8};
+use crate::parsing::number::Number;
 
 const MAX_DEPTH: u16 = 256;
 
 #[derive(Debug, PartialEq)]
-pub enum ParserTokenType {
+enum ParserTokenType {
     ObjectStart,
     ObjectEnd,
     NameSeparator,
@@ -24,7 +24,7 @@ pub enum ParserTokenType {
     Null,
 }
 
-pub struct ParserToken {
+struct ParserToken {
     start_index: usize,
     offset: u32,
     token_type: ParserTokenType,
@@ -40,7 +40,7 @@ impl ParserToken {
     }
 }
 
-pub struct Parser<'a> {
+pub(super) struct Parser<'a> {
     buffer: &'a [u8],
     tokens: &'a Vec<TokenizerToken>,
     _tokens: Vec<ParserToken>, // toDo: rename
@@ -62,9 +62,11 @@ impl<'a> Parser<'a> {
     }
 
     // toDo: advantages of peek/advance and recursive decent parser
-    pub fn parse(&mut self) -> Result<Node, ParserError> {
+    pub(super) fn parse(&mut self) -> Result<Option<Value>, ParserError> {
+        // [](empty input buffer) is not invalid, the value of the root of AST is None
+        // same logic applies for [\n, \t, '\r', ' ']
         if self.tokens.is_empty() {
-            return Ok(Node::new(None));
+            return Ok(None);
         }
 
         self.parse_value()?;
@@ -72,11 +74,11 @@ impl<'a> Parser<'a> {
         if self.pos < self.tokens.len() {
             return Err(ParserError::UnexpectedToken { pos: self.tokens[self.pos].start_index(), token: None });
         }
-        // someone could call parse() multiples, for the same input we return the same node by resetting the indices
+        // someone could call parsing() multiples, for the same input we return the same node by resetting the indices
         self.token_idx = 0;
         self.pos = 0;
 
-        Ok(Node::new(Some(self.compute_value()))) // toDo: Does this move or it is a copy?
+        Ok(Some(self.compute_value())) // toDo: Does this move or it is a copy?
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
@@ -369,7 +371,8 @@ impl<'a> Parser<'a> {
             let byte = self.buffer[index];
             match byte {
                 b'\\' => {
-                    self.map_escape_character(&mut index, &mut val);
+                    index += 1;
+                    val.push(escapes::map_escape_character(self.buffer, &mut index));
                     // move past the escaped character or the last hex digit
                     index += 1;
                 }
@@ -378,7 +381,7 @@ impl<'a> Parser<'a> {
                     index += 1;
                 }
                 _ => {
-                    let width = utf8_utils::utf8_char_width(byte);
+                    let width = utf8::utf8_char_width(byte);
                     val.push_str(str::from_utf8(&self.buffer[index..index + width]).unwrap());
                     index += width;
                 }
@@ -394,38 +397,6 @@ impl<'a> Parser<'a> {
 
         self.buffer[token.start_index] == b't'
     }
-
-    fn map_escape_character(&self, index: &mut usize, val: &mut String) {
-        *index += 1;
-        match self.buffer[*index] {
-            b'\\' => val.push('\\'),
-            b'"' => val.push('"'),
-            b'/' => val.push('/'),
-            b'b' => val.push('\x08'),
-            b'f' => val.push('\x0C'),
-            b'n' => val.push('\n'),
-            b'r' => val.push('\r'),
-            b't' => val.push('\t'),
-            b'u' => self.compute_surrogate(index, val),
-            _ => unreachable!("backslash not followed by an escape character"),
-        }
-    }
-
-    fn compute_surrogate(&self, index: &mut usize, val: &mut String) {
-        *index += 1;
-        let code_unit = numeric_utils::hex_to_u16(&self.buffer[*index..*index + 4]).unwrap();
-
-        if utf8_utils::is_surrogate(code_unit) {
-            let high = code_unit;
-            *index += 6; // 4 hex digits + \u
-            let low = numeric_utils::hex_to_u16(&self.buffer[*index..*index + 4]).unwrap();
-            let code_point= utf8_utils::decode_surrogate_pair(high, low);
-            val.push(char::from_u32(code_point).unwrap());
-        } else {
-            val.push(char::from_u32(code_unit as u32).unwrap());
-        }
-        *index += 3; // Move to the last hex digit
-    }
 }
 
 fn expect(left: &TokenizerTokenType, right: TokenizerTokenType) -> bool {
@@ -434,7 +405,7 @@ fn expect(left: &TokenizerTokenType, right: TokenizerTokenType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::parse::tokenizer::Tokenizer;
+    use crate::parsing::tokenizer::Tokenizer;
     use super::*;
 
     fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
@@ -522,7 +493,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Object(map), *result.value().unwrap());
+        assert_eq!(Value::Object(map), result.unwrap());
     }
 
     #[test]
@@ -533,7 +504,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert!(result.value().is_none());
+        assert!(result.is_none());
     }
 
     #[test]
@@ -544,7 +515,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Object(LinkedHashMap::new()), *result.value().unwrap());
+        assert_eq!(Value::Object(LinkedHashMap::new()), result.unwrap());
     }
 
     #[test]
@@ -555,7 +526,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Array(Vec::new()), *result.value().unwrap());
+        assert_eq!(Value::Array(Vec::new()), result.unwrap());
     }
 
     // We can't call: let buffer = format!("{}{}", "[".repeat(257), "]".repeat(257)).as_bytes();
