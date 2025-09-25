@@ -5,17 +5,20 @@ use crate::parsing::tokenizer::{Tokenizer, TokenizerToken};
 
 mod tokenizer;
 mod parser;
-mod value;
+pub(super) mod value;
 mod number;
-pub mod error;
 mod escapes;
 mod utf8;
+pub(super) mod error;
 
-// toDo: rename parsing.rs to a noun
-pub fn tokenize(buffer: &[u8]) -> Result<Vec<TokenizerToken>, TokenizerError> {
+// maybe a from() method so someone could let val = from(some byte buffer);, from_str() also an option, or even a macro!
+// where there is a call to as.bytes() and then just call from()
+// maybe even make the input a Reader? or a Reader trait
+// make the tokenizer error as variant of the parser error
+pub(super) fn tokenize(buffer: &[u8]) -> Result<Vec<TokenizerToken>, TokenizerError> {
     Tokenizer::new(buffer).tokenize()
 }
 
-pub fn parse(buffer: &[u8], tokens: &Vec<TokenizerToken>) -> Result<Option<Value>, ParserError> {
+pub(super) fn parse(buffer: &[u8], tokens: &Vec<TokenizerToken>) -> Result<Value, ParserError> {
     Parser::new(buffer, tokens).parse()
 }

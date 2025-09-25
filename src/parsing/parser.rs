@@ -6,6 +6,7 @@ use super::tokenizer::{TokenizerToken, TokenizerTokenType};
 use super::value::Value;
 use crate::parsing::error::ParserError;
 use crate::parsing::{escapes, utf8};
+use crate::parsing::escapes::len;
 use crate::parsing::number::Number;
 
 const MAX_DEPTH: u16 = 256;
@@ -62,12 +63,9 @@ impl<'a> Parser<'a> {
     }
 
     // toDo: advantages of peek/advance and recursive decent parser
-    pub(super) fn parse(&mut self) -> Result<Option<Value>, ParserError> {
+    pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
         // [](empty input buffer) is not invalid, the value of the root of AST is None
         // same logic applies for [\n, \t, '\r', ' ']
-        if self.tokens.is_empty() {
-            return Ok(None);
-        }
 
         self.parse_value()?;
         // false5, "abc"123, {}null
@@ -78,7 +76,7 @@ impl<'a> Parser<'a> {
         self.token_idx = 0;
         self.pos = 0;
 
-        Ok(Some(self.compute_value())) // toDo: Does this move or it is a copy?
+        Ok(self.compute_value()) // toDo: Does this move or it is a copy?
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
@@ -371,10 +369,8 @@ impl<'a> Parser<'a> {
             let byte = self.buffer[index];
             match byte {
                 b'\\' => {
-                    index += 1;
-                    val.push(escapes::map_escape_character(self.buffer, &mut index));
-                    // move past the escaped character or the last hex digit
-                    index += 1;
+                    val.push(escapes::map_escape_character(self.buffer, index));
+                    index += len(self.buffer, index);
                 }
                 b if b.is_ascii() => {
                     val.push(b as char);
@@ -461,13 +457,14 @@ mod tests {
 
     #[test]
     fn valid_object() {
-        // can't use br## because 💖 is a Non ASCII character
+        // can't use br## because 💖 is a Non ASCII character, empty strings as keys are allowed
         let buffer = r#"{
             "4_byte_sequence": "💖",
             "surrogate_pair": "\uD83D\uDE00",
             "escape_characters": "\\\"\/\b\f\n\r\t",
             "boolean" : false,
             "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50, -456.78],
+            "": true,
             "null": null
         }"#.as_bytes();
 
@@ -486,6 +483,7 @@ mod tests {
         map.insert("escape_characters".to_string(), Value::String(String::from("\\\"/\x08\x0C\n\r\t")));
         map.insert("boolean".to_string(), Value::Boolean(false));
         map.insert("numbers".to_string(), Value::Array(numbers));
+        map.insert("".to_string(), Value::Boolean(true));
         map.insert("null".to_string(), Value::Null);
 
         let mut tokenizer = Tokenizer::new(buffer);
@@ -493,18 +491,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Object(map), result.unwrap());
-    }
-
-    #[test]
-    fn empty_buffer() {
-        let buffer: &[u8; 0] = &[];
-        let mut tokenizer = Tokenizer::new(buffer);
-        let tokens = tokenizer.tokenize().unwrap();
-        let mut parser = Parser::new(buffer, &tokens);
-        let result = parser.parse().unwrap();
-
-        assert!(result.is_none());
+        assert_eq!(Value::Object(map), result);
     }
 
     #[test]
@@ -515,7 +502,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Object(LinkedHashMap::new()), result.unwrap());
+        assert_eq!(Value::Object(LinkedHashMap::new()), result);
     }
 
     #[test]
@@ -526,7 +513,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Array(Vec::new()), result.unwrap());
+        assert_eq!(Value::Array(Vec::new()), result);
     }
 
     // We can't call: let buffer = format!("{}{}", "[".repeat(257), "]".repeat(257)).as_bytes();
