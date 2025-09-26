@@ -7,7 +7,7 @@ use crate::parsing::number::Number;
 // This can't be String; to_string(), String::from() won't work
 // Constants (const) must be known at compile time, and String operations like String::from() or
 // string literal .to_string() require heap allocation, which can't happen at compile time
-const ARRAY_INDEX_SYNTAX: &str = "array-index = %x30 / ( %x31-39 * (%x30-39) )";
+const ARRAY_INDEX_SYNTAX: &str = "%x30 / ( %x31-39 * (%x30-39) )";
 
 struct RefToken {
     val: String,

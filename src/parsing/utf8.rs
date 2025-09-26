@@ -1,5 +1,4 @@
-use crate::parsing::error::Utf8Error;
-use crate::parsing::number;
+use std::{error, fmt};
 
 // Returns the number of bytes in an utf8 sequence based on the value of the leading byte
 // https://en.wikipedia.org/wiki/UTF-8
@@ -109,56 +108,6 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
     Ok(())
 }
 
-pub(super) fn is_surrogate(val: u16) -> bool {
-    matches!(val, 0xD800..=0xDFFF)
-}
-
-pub(super)fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
-
-pub(super) fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
-
-pub(super) fn validate_surrogate(index: usize, buffer: &[u8], hex_sequence: u16) -> Result<(), Utf8Error> {
-    let len = buffer.len();
-    // *index - 5 is the index at the start of the Unicode sequence
-    let start = index - 5;
-    let mut i = index;
-
-    if is_high_surrogate(hex_sequence) {
-        if i + 6 >= len {
-            return Err(Utf8Error::InvalidSurrogate { pos: start });
-        }
-
-        // move to the next value after the last digit of the high surrogate sequence
-        i += 1;
-        match (buffer[i], buffer[i + 1]) {
-            (b'\\', b'u') => {
-                i += 2;
-            }
-            _ => return Err(Utf8Error::InvalidSurrogate { pos: start })
-        };
-
-        // safe to call, it will never be out of bounds
-        let next = match number::hex_to_u16(&buffer[i..i + 4]) {
-            Ok(low) => low,
-            Err(_) => return Err(Utf8Error::InvalidSurrogate { pos: start })
-        };
-
-        if !is_low_surrogate(next) {
-            return Err(Utf8Error::InvalidSurrogate { pos: start });
-        }
-    } else {
-        // surrogate pairs do not start with low surrogate, it's always high-low
-        return Err(Utf8Error::InvalidSurrogate { pos: start });
-    }
-    Ok(())
-}
-
-// https://en.wikipedia.org/wiki/UTF-16#U+D800_to_U+DFFF_(surrogates)
-// Read: To decode...
-pub(super) fn decode_surrogate_pair(high: u32, low: u32) -> u32 {
-    (high - 0xD800) * 0x400 + low - 0xDC00 + 0x10000
-}
-
 // returns the width(number of bytes) of an utf8-sequence
 pub(super) fn utf8_char_width(byte: u8) -> usize {
     UTF8_CHAR_WIDTH[byte as usize] as usize
@@ -179,6 +128,21 @@ fn next(bytes: &[u8], index: &mut usize) -> Option<u8> {
         return None;
     }
     Some(bytes[*index])
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Utf8Error {
+    InvalidByteSequence { len: u8, pos: usize }
+}
+
+impl error::Error for Utf8Error {}
+
+impl fmt::Display for Utf8Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidByteSequence { len, pos } => write!(f, "invalid {} byte utf-8 sequence from index {}", len, *pos)
+        }
+    }
 }
 
 // toDo: complete good cases for 4 byte, group them in 1 method as valid sequences and create test cases for invalid

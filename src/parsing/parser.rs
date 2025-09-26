@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use linked_hash_map::LinkedHashMap;
 use super::tokenizer::{TokenizerToken, TokenizerTokenType};
 use super::value::Value;
-use crate::parsing::error::ParserError;
+use crate::parsing::error::{ErrorKind, JsonError};
 use crate::parsing::{escapes, utf8};
 use crate::parsing::escapes::len;
 use crate::parsing::number::Number;
@@ -51,7 +51,7 @@ pub(super) struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(buffer: &'a [u8], tokens: &'a Vec<TokenizerToken>) -> Self {
+    pub(super) fn new(buffer: &'a [u8], tokens: &'a Vec<TokenizerToken>) -> Self {
         Self {
             buffer,
             tokens,
@@ -63,14 +63,15 @@ impl<'a> Parser<'a> {
     }
 
     // toDo: advantages of peek/advance and recursive decent parser
-    pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
+    pub(super) fn parse(&mut self) -> Result<Value, JsonError> {
         // [](empty input buffer) is not invalid, the value of the root of AST is None
         // same logic applies for [\n, \t, '\r', ' ']
 
         self.parse_value()?;
         // false5, "abc"123, {}null
         if self.pos < self.tokens.len() {
-            return Err(ParserError::UnexpectedToken { pos: self.tokens[self.pos].start_index(), token: None });
+            // after successfully parsing a value we can't have leftover tokens
+            return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: None }, Some(self.tokens[self.pos].start_index())));
         }
         // someone could call parsing() multiples, for the same input we return the same node by resetting the indices
         self.token_idx = 0;
@@ -80,7 +81,7 @@ impl<'a> Parser<'a> {
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
-     fn parse_value(&mut self) -> Result<(), ParserError> {
+     fn parse_value(&mut self) -> Result<(), JsonError> {
          match self.peek() {
              Some(token) => match token.token_type() {
                  TokenizerTokenType::LeftCurlyBracket => self.parse_object()?,
@@ -89,9 +90,9 @@ impl<'a> Parser<'a> {
                  TokenizerTokenType::String => self.parse_string(),
                  TokenizerTokenType::Boolean => self.parse_boolean(),
                  TokenizerTokenType::Null => self.parse_null(),
-                 _ => return Err(ParserError::UnexpectedToken { token: Some("json value"), pos: token.start_index() })
+                 _ => return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value")} , Some(token.start_index())))
              }
-             None => return Err(ParserError::UnexpectedEndOfInput { pos: self.buffer.len() - 1 })
+             None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)))
          }
          self.advance();
          Ok(())
@@ -107,9 +108,9 @@ impl<'a> Parser<'a> {
     //
     // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
     // will be consumed by the caller (parse_value()) after this function returns.
-    fn parse_object(&mut self) -> Result<(), ParserError> {
+    fn parse_object(&mut self) -> Result<(), JsonError> {
         if self.depth + 1 > MAX_DEPTH {
-            return Err(ParserError::DepthLimitExceeded { depth: MAX_DEPTH });
+            return Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
         }
 
         let current = &self.tokens[self.pos];
@@ -125,7 +126,7 @@ impl<'a> Parser<'a> {
                 // {"foo": "bar",}
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
-                        return Err(ParserError::UnexpectedToken { pos: next.start_index(), token: Some("object name") });
+                        return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") } , Some(next.start_index())));
                     }
                     // {}
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ObjectEnd));
@@ -139,7 +140,7 @@ impl<'a> Parser<'a> {
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
                     if names.contains(name) {
-                        return Err(ParserError::DuplicateName { name: String::from_utf8(Vec::from(name)).unwrap(), pos: next.start_index() });
+                        return Err(JsonError::new(ErrorKind::DuplicateName { name: String::from_utf8(Vec::from(name)).unwrap() } , Some(next.start_index())));
                     }
                     names.insert(name);
                     self.parse_string();
@@ -147,9 +148,9 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(ParserError::UnexpectedToken { pos: next.start_index(), token: Some("object name") });
+                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") } , Some(next.start_index())));
                 }
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
+                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1)))
             }
 
             match self.peek() {
@@ -159,9 +160,9 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(ParserError::UnexpectedToken { token: Some("colon ':'"), pos: next.start_index() });
+                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("colon ':'") } , Some(next.start_index())));
                 }
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
+                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1)))
             }
 
             self.parse_value()?;
@@ -177,8 +178,8 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 // mismatch
-                Some(next) => return Err(ParserError::UnexpectedToken { token: Some("'}' or ','"), pos: next.start_index() }),
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: buffer_len - 1 }),
+                Some(next) => return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("'}' or ','") } , Some(next.start_index()))),
+                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
         }
         Ok(())
@@ -191,13 +192,13 @@ impl<'a> Parser<'a> {
     //
     // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
     // by the caller (parse_value()) after this function returns.
-    fn parse_array(&mut self) -> Result<(), ParserError> {
+    fn parse_array(&mut self) -> Result<(), JsonError> {
         if self.depth + 1 > MAX_DEPTH {
-            return Err(ParserError::DepthLimitExceeded { depth: MAX_DEPTH });
+            return Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
         }
 
         let current = &self.tokens[self.pos];
-        let len = self.buffer.len();
+        let buffer_len = self.buffer.len();
         self._tokens.push(ParserToken::new(current.start_index(), current.offset(), ParserTokenType::ArrayStart));
         self.depth += 1;
         self.advance();
@@ -207,7 +208,7 @@ impl<'a> Parser<'a> {
                 // [1,2,]
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
-                        return Err(ParserError::UnexpectedToken { pos: next.start_index(), token: Some("json value") });
+                        return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value") } , Some(next.start_index())));
                     }
                     // []
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ArrayEnd));
@@ -215,7 +216,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(_) => self.parse_value()?,
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
+                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
 
             match self.peek() {
@@ -228,8 +229,9 @@ impl<'a> Parser<'a> {
                     self.depth -= 1;
                     break;
                 }
-                Some(next) => return Err(ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: next.start_index() }),
-                None => return Err(ParserError::UnexpectedEndOfInput { pos: len - 1 }),
+                Some(next) =>
+                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("',' or ']'") } , Some(next.start_index()))),
+                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
         }
         Ok(())
@@ -404,26 +406,26 @@ mod tests {
     use crate::parsing::tokenizer::Tokenizer;
     use super::*;
 
-    fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
+    fn invalid_objects() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"{", ParserError::UnexpectedEndOfInput { pos : 0 }),
-            (b"{ null : 1 }", ParserError::UnexpectedToken { token: Some("object name"), pos: 2 }),
-            (b"{ \"foo\": 5,", ParserError::UnexpectedEndOfInput { pos : 10 }),
-            (b"{ \"foo\": 5", ParserError::UnexpectedEndOfInput { pos: 9 }),
-            (b"{ \"foo\"",ParserError::UnexpectedEndOfInput { pos: 6 }),
-            (b"{ \"foo\" 3", ParserError::UnexpectedToken { token: Some("colon ':'"),  pos: 8 }),
-            (b"{ \"foo\": \"value\" } 123", ParserError::UnexpectedToken { token: None, pos: 19 }),
-            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", ParserError::DuplicateName { name: String::from("foo"), pos: 16 })
+            (b"{", JsonError::new(ErrorKind::UnexpectedEof, Some(0))),
+            (b"{ null : 1 }", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") }, Some(1))),
+            (b"{ \"foo\": 5,", JsonError::new(ErrorKind::UnexpectedEof, Some(10))),
+            (b"{ \"foo\": 5", JsonError::new(ErrorKind::UnexpectedEof, Some(9))),
+            (b"{ \"foo\"", JsonError::new(ErrorKind::UnexpectedEof, Some(6))),
+            (b"{ \"foo\" 3", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("colon ':'") }, Some(1))),
+            (b"{ \"foo\": \"value\" } 123", JsonError::new(ErrorKind::UnexpectedToken { expected: None }, Some(19))),
+            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", JsonError::new(ErrorKind::DuplicateName { name: String::from("foo") }, Some(16)))
         ]
     }
 
-    fn invalid_arrays() -> Vec<(&'static [u8], ParserError)> {
+    fn invalid_arrays() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"[", ParserError::UnexpectedEndOfInput { pos : 0 }),
-            (b"[116, 943", ParserError::UnexpectedEndOfInput { pos : 8 }),
-            (b"[116, 943,", ParserError::UnexpectedEndOfInput { pos : 9 }),
-            (b"[116 true]", ParserError::UnexpectedToken { token: Some("',' or ']'"), pos: 5 }),
-            (b"[:]", ParserError::UnexpectedToken { token: Some("json value"), pos: 1 }),
+            (b"[", JsonError::new(ErrorKind::UnexpectedEof, Some(0))),
+            (b"[116, 943", JsonError::new(ErrorKind::UnexpectedEof, Some(8))),
+            (b"[116, 943,", JsonError::new(ErrorKind::UnexpectedEof, Some(9))),
+            (b"[116 true]", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("',' or ']'") }, Some(5))),
+            (b"[:]", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value") }, Some(1))),
         ]
     }
 
@@ -435,9 +437,7 @@ mod tests {
             let mut parser = Parser::new(buffer, &tokens);
             let result = parser.parse();
 
-            if let Err(e) = result {
-                assert_eq!(e, error);
-            }
+            assert_eq!(result, Err(error), "failed to parse: {buffer:?}");
         }
     }
 
@@ -449,9 +449,7 @@ mod tests {
             let mut parser = Parser::new(buffer, &tokens);
             let result = parser.parse();
 
-            if let Err(e) = result {
-                assert_eq!(e, error);
-            }
+            assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
     }
 
@@ -531,9 +529,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse();
 
-        if let Err(e) = result {
-            assert_eq!(e, ParserError::DepthLimitExceeded { depth: 256 });
-        }
+        assert_eq!(result, Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
     }
 
     #[test]
@@ -552,8 +548,6 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse();
 
-        if let Err(e) = result {
-            assert_eq!(e, ParserError::DepthLimitExceeded { depth: 256 });
-        }
+        assert_eq!(result, Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
     }
 }

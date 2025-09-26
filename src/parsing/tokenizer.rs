@@ -1,4 +1,4 @@
-use crate::parsing::error::{MalformedStringError, TokenizerError};
+use crate::parsing::error::{ErrorKind, JsonError};
 use crate::parsing::{escapes, number, utf8};
 
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
@@ -35,15 +35,15 @@ impl TokenizerToken {
         Self { start_index, offset, token_type }
     }
 
-    pub fn start_index(&self) -> usize {
+    pub(super) fn start_index(&self) -> usize {
         self.start_index
     }
 
-    pub fn offset(&self) -> u32 {
+    pub(super) fn offset(&self) -> u32 {
         self.offset
     }
 
-    pub fn token_type(&self) -> &TokenizerTokenType {
+    pub(super) fn token_type(&self) -> &TokenizerTokenType {
         &self.token_type
     }
 }
@@ -58,7 +58,7 @@ impl<'a> Tokenizer<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub(super) fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, TokenizerError> {
+    pub(super) fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, JsonError> {
         let mut tokens: Vec<TokenizerToken> = Vec::new();
         let len = self.buffer.len();
 
@@ -66,8 +66,8 @@ impl<'a> Tokenizer<'a> {
         // [](empty input buffer) or [\n, \t, '\r', ' '](only ws) are not allowed
         // Json text = ws value ws
         if self.buffer.is_empty() || self.pos >= len {
-            let index = if self.pos == 0 { 0 } else { len - 1 };
-            return Err(TokenizerError::UnexpectedEndOfInput { pos: index });
+            let i = if self.pos == 0 { 0 } else { len - 1 };
+            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(i)));
         }
 
         // skip Byte Order Mark
@@ -110,11 +110,13 @@ impl<'a> Tokenizer<'a> {
                         self.scan_null()?;
                         tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Null));
                     }
-                    _ => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos })
+                    // unknown ascii has text representation we pass Some()
+                    _ => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
                 }
                 self.pos += 1;
             } else {
-                return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
+                // single byte from utf8 sequence does not have a text representation, we will check how to display it when we implement the display Trait
+                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
             }
         }
         // reset the position, so the next tokenize call with the same buffer has the same output
@@ -123,31 +125,25 @@ impl<'a> Tokenizer<'a> {
         Ok(tokens)
     }
 
-    fn scan_number(&mut self) -> Result<(), TokenizerError> {
+    fn scan_number(&mut self) -> Result<(), JsonError> {
         let len = self.buffer.len();
         let start = self.pos;
         let mut current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
 
         match(current, next) {
-            (b'+' | b'-', None) => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos }),
+            (b'+' | b'-', None) => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
             // +9
-            (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "json specification prohibits numbers from being prefixed with a plus sign",
-                pos: self.pos
-            }),
+            (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+                message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(self.pos))),
             // +a
-            (b'+', Some(_)) => return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos }),
+            (b'+', Some(_)) => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
             // -0 is valid
-            (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "a valid numeric value requires a digit (0-9) after the minus sign",
-                pos: self.pos
-            }),
+            (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+                message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(self.pos))),
             // 05 not allowed
-            (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(TokenizerError::InvalidNumber {
-                message: "leading zeros are not allowed",
-                pos: self.pos
-            }),
+            (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+                message: "leading zeros are not allowed" }, Some(self.pos))),
             _ => (),
         }
 
@@ -176,43 +172,43 @@ impl<'a> Tokenizer<'a> {
             }
         }
         if self.is_out_of_range(start, state) {
-            return Err(TokenizerError::InvalidNumber { message: "number out of range", pos: start });
+            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
         }
 
         self.pos -= 1;
         Ok(())
     }
 
-    fn check_decimal_point(&self, state: &mut NumberState) -> Result<(), TokenizerError> {
+    fn check_decimal_point(&self, state: &mut NumberState) -> Result<(), JsonError> {
         // 1.2.3
         if state.decimal_point {
-            return Err(TokenizerError::InvalidNumber { message: "double decimal point found", pos: self.pos });
+            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "double decimal point found" }, Some(self.pos)));
         }
         // 1. 2.g
         if self.pos + 1 >= self.buffer.len() || !self.buffer[self.pos + 1].is_ascii_digit() {
-            return Err(TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: self.pos });
+            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(self.pos)));
         }
         // 1e4.5
         if state.scientific_notation {
-            return Err(TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: self.pos });
+            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(self.pos)));
         }
         state.decimal_point = true;
 
         Ok(())
     }
 
-    fn check_scientific_notation(&self, state: &mut NumberState) -> Result<(), TokenizerError> {
+    fn check_scientific_notation(&self, state: &mut NumberState) -> Result<(), JsonError> {
         let current = self.buffer[self.pos];
 
         match current {
             b'e' | b'E' => {
                 // 1e2E3
                 if state.scientific_notation {
-                    return Err(TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: self.pos });
+                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(self.pos)));
                 }
                 // 1e 1eg
                 if self.pos + 1 >= self.buffer.len() || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
-                    return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: self.pos });
+                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(self.pos)));
                 }
                 // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
                 state.scientific_notation = true;
@@ -220,11 +216,11 @@ impl<'a> Tokenizer<'a> {
             b'+' | b'-' => {
                 // 1+2
                 if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
-                    return Err(TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: self.pos });
+                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(self.pos)));
                 }
                 // 1E+g
                 if self.pos + 1 >= self.buffer.len()  || !self.buffer[self.pos + 1].is_ascii_digit() {
-                    return Err(TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: self.pos });
+                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(self.pos)));
                 }
             }
             _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
@@ -249,7 +245,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     // toDo: consider adding a limit for the length of the string
-    fn scan_string(&mut self) -> Result<(), MalformedStringError> {
+    fn scan_string(&mut self) -> Result<(), JsonError> {
         let len = self.buffer.len();
         self.pos += 1;
 
@@ -259,7 +255,7 @@ impl<'a> Tokenizer<'a> {
             // [34, 10, 34] is invalid the control character is passed as raw byte, and it is unescaped
             // but [34, 92, 110, 34] should be considered valid as a new line character
             if current.is_ascii_control() {
-                return Err(MalformedStringError::InvalidControlCharacter { byte: current, pos: self.pos });
+                return Err(JsonError::new(ErrorKind::InvalidControlCharacter { byte: current }, Some(self.pos)));
             }
             if !current.is_ascii() {
                 utf8::check_utf8_sequence(&self.buffer, self.pos)?;
@@ -272,38 +268,48 @@ impl<'a> Tokenizer<'a> {
             self.pos += 1;
         }
         if self.pos == len {
-            return Err(MalformedStringError::UnterminatedString { pos: self.pos - 1 });
+            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.pos - 1)));
         }
         Ok(())
     }
-    
-    fn scan_boolean(&mut self) -> Result<(), TokenizerError> {
+
+    // An approach with starts_with() could work but in the case of mismatch we won't know the index
+    fn scan_boolean(&mut self) -> Result<(), JsonError> {
+        let target = if self.buffer[self.pos] == b't' { "true".as_bytes() } else { "false".as_bytes() };
+        self.scan_literal(target)?;
+
+        Ok(())
+    }
+
+    fn scan_null(&mut self) -> Result<(), JsonError> {
+        self.scan_literal(b"null")?;
+        Ok(())
+    }
+
+    fn scan_literal(&mut self, target: &[u8]) -> Result<(), JsonError> {
         let remaining = &self.buffer[self.pos..];
 
-        match remaining {
-            s if s.starts_with(b"true") => self.pos += 3,
-            s if s.starts_with(b"false") => self.pos += 4,
-            _ => return Err(TokenizerError::UnexpectedValue { pos: self.pos }),
+        if target.len() > remaining.len() {
+            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)));
         }
+
+        for &byte in target.iter() {
+            if self.buffer[self.pos] != byte {
+                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte }, Some(self.pos)));
+            }
+            self.pos += 1;
+        }
+
         Ok(())
     }
 
-    fn scan_null(&mut self) -> Result<(), TokenizerError> {
-        if self.buffer[self.pos..].starts_with(b"null") {
-            self.pos += 3;
-        } else {
-            return Err(TokenizerError::UnexpectedValue { pos: self.pos });
-        }
-        Ok(())
-    }
-
-    fn skip_white_spaces(&mut self) -> Result<(), TokenizerError> {
+    fn skip_white_spaces(&mut self) -> Result<(), JsonError> {
         while self.pos < self.buffer.len() {
             let current = self.buffer[self.pos];
             // The only control characters that are allowed as raw bytes according to rfc are '\t', '\n', '\r'
             // ' '(space) is not a control character
             if current.is_ascii_control() && !matches!(current, b'\t' | b'\n' | b'\r' | b' ') { // rfc whitespaces
-                return Err(TokenizerError::UnrecognizedCharacter { byte: Some(current), pos: self.pos });
+                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current } , Some(self.pos)));
             }
             if matches!(current, b'\t' | b'\n' | b'\r' | b' ') {
                 self.pos += 1;
@@ -318,10 +324,8 @@ impl<'a> Tokenizer<'a> {
 // We declare tokenizer as let mut tokenizer because tokenize takes a mutable reference to self
 #[cfg(test)]
 mod tests {
-    use crate::parsing::error::Utf8Error;
     use super::*;
 
-    // toDo: Maybe break them into individual tests
     fn valid_numbers() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
             (b"0", TokenizerToken::new(0, 1, TokenizerTokenType::Number)),
@@ -334,73 +338,75 @@ mod tests {
         ]
     }
 
-    fn invalid_numbers() -> Vec<(&'static [u8], TokenizerError)> {
+    fn invalid_numbers() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"+", TokenizerError::UnrecognizedCharacter { byte: Some(43), pos: 0 }),
-            (b"+a", TokenizerError::UnrecognizedCharacter { byte: Some(43), pos: 0 }),
-            (b"+9", TokenizerError::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign", pos: 0 }),
-            (b"-a", TokenizerError::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign", pos: 0 }),
-            (b"06", TokenizerError::InvalidNumber { message: "leading zeros are not allowed", pos: 0 }),
-            (b"1.2.3", TokenizerError::InvalidNumber { message: "double decimal point found", pos: 3 }),
-            (b"1.", TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: 1 }),
-            (b"1.a", TokenizerError::InvalidNumber { message: "decimal point must be followed by a digit", pos: 1 }),
-            (b"4e5.1", TokenizerError::InvalidNumber { message: "decimal point is not allowed after exponential notation", pos: 3 }),
-            (b"1e2e5", TokenizerError::InvalidNumber { message: "double exponential notation('e' or 'E') found", pos: 3 }),
-            (b"1e", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 1 }),
-            (b"246Ef", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit or a sign", pos: 3 }),
-            (b"83+1", TokenizerError::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation", pos: 2 }),
-            (b"1e+", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2 }),
-            (b"1e+f", TokenizerError::InvalidNumber { message: "exponential notation must be followed by a digit", pos: 2 }),
-            (b"1.8e308", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for f64
-            (b"-9223372036854775809", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for i64
-            (b"18446744073709551616", TokenizerError::InvalidNumber { message: "number out of range", pos: 0 }), // overflow for u64
+            (b"+", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
+            (b"+a", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
+            (b"+9", JsonError::new(ErrorKind::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(0))),
+            (b"-a", JsonError::new(ErrorKind::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(0))),
+            (b"06", JsonError::new(ErrorKind::InvalidNumber { message: "leading zeros are not allowed" }, Some(0))),
+            (b"1.2.3", JsonError::new(ErrorKind::InvalidNumber { message: "double decimal point found" }, Some(3))),
+            (b"1.", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
+            (b"1.a", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
+            (b"4e5.1", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(3))),
+            (b"1e2e5", JsonError::new(ErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(3))),
+            (b"1e", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(1))),
+            (b"246Ef", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(3))),
+            (b"83+1", JsonError::new(ErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(2))),
+            (b"1e+", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
+            (b"1e+f", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
+            (b"1.8e308", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
+            (b"-9223372036854775809", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
+            (b"18446744073709551616", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
         ]
     }
 
     fn valid_strings() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
-            // (b"\"abc\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
-            // (b"\"A\\uD83D\\uDE00B\"", TokenizerToken::new(0, 16, TokenizerTokenType::String)),
-            // (b"\"b\\n\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
-            // (b"\"\\u00E9\"", TokenizerToken::new(0, 8, TokenizerTokenType::String)),
+            (b"\"abc\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
+            (b"\"A\\uD83D\\uDE00B\"", TokenizerToken::new(0, 16, TokenizerTokenType::String)),
+            (b"\"b\\n\"", TokenizerToken::new(0, 5, TokenizerTokenType::String)),
+            (b"\"\\u00E9\"", TokenizerToken::new(0, 8, TokenizerTokenType::String)),
             // 2-byte sequence same as (b"\"\xC3\xA9\"", 0, 4)
             ("\"é\"".as_bytes(), TokenizerToken::new(0, 4, TokenizerTokenType::String)),
         ]
     }
 
-    fn invalid_strings() -> Vec<(&'static [u8], TokenizerError)> {
+    fn invalid_strings() -> Vec<(&'static [u8], JsonError)> {
         vec![
             // raw byte control character
-            (b"\"\x00", TokenizerError::InvalidString(MalformedStringError::InvalidControlCharacter { byte: 0, pos: 1 })),
+            (b"\"\x00", JsonError::new(ErrorKind::InvalidControlCharacter { byte: 0 }, Some(1))),
             // unpaired escaped
-            (b"\"\\", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 1 })),
+            (b"\"\\", JsonError::new(ErrorKind::UnexpectedEof, Some(1))),
             // unknown escaped
-            (b"\"\\g\"", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 2 })),
+            (b"\"\\g\"", JsonError::new(ErrorKind::UnknownEscapedCharacter { byte: b'g' }, Some(2))),
             // incomplete unicode
-            (b"\"\\u\"", TokenizerError::InvalidString(MalformedStringError::InvalidEscapeSequence { pos: 1 })),
-            // not enough bytes to form a low surrogate
-            (b"\"\\uD83D\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
-            // high not followed by low
-            (b"\"\\uD83Dabcdef\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
-            // high followed by high
-            (b"\"\\uD83D\\uD83D\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
-            // low surrogate
-            (b"\"\\uDC00\"", TokenizerError::InvalidString(MalformedStringError::InvalidUtf8(Utf8Error::InvalidSurrogate { pos: 1 }))),
-            (b"\"abc", TokenizerError::InvalidString(MalformedStringError::UnterminatedString { pos: 3 })),
+            (b"\"\\u\"", JsonError::new(ErrorKind::UnexpectedEof, Some(3))),
+            // // not enough bytes to form a low surrogate
+            (b"\"\\uD83D\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            // // high not followed by low
+            (b"\"\\uD83Dabcdef\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            // // high followed by high
+            (b"\"\\uD83D\\uD83D\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            // // low surrogate
+            (b"\"\\uDC00\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"abc", JsonError::new(ErrorKind::UnexpectedEof, Some(3))),
         ]
     }
 
-    fn valid_boolean() -> Vec<(&'static [u8], TokenizerToken)> {
+    fn valid_literals() -> Vec<(&'static [u8], TokenizerToken)> {
         vec![
             (b"false", TokenizerToken::new(0, 5, TokenizerTokenType::Boolean)),
             (b"true", TokenizerToken::new(0, 4, TokenizerTokenType::Boolean)),
+            (b"null", TokenizerToken::new(0, 4, TokenizerTokenType::Null)),
         ]
     }
 
-    fn invalid_boolean() -> Vec<(&'static [u8], TokenizerError)> {
+    // 1 mismatch and 1 not enough characters is enough
+    fn invalid_literals() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"falte", TokenizerError::UnexpectedValue { pos: 0 }),
-            (b"trur", TokenizerError::UnexpectedValue { pos: 0 }),
+            (b"falte", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b't' }, Some(3))),
+            (b"tru", JsonError::new(ErrorKind::UnexpectedEof, Some(2))),
         ]
     }
 
@@ -409,10 +415,9 @@ mod tests {
         let buffer = [];
         let mut tokenizer = Tokenizer::new(&buffer);
         let result = tokenizer.tokenize();
+        let error = JsonError::new(ErrorKind::UnexpectedEof, Some(3));
 
-        if let Err(e) = result {
-            assert_eq!(e, TokenizerError::UnexpectedEndOfInput { pos: 0 });
-        }
+        assert_eq!(result, Err(error));
     }
 
     #[test]
@@ -421,9 +426,9 @@ mod tests {
         let buffer: [u8; 4] = [9, 10, 13, 32];
         let mut tokenizer = Tokenizer::new(&buffer);
         let result = tokenizer.tokenize();
-        if let Err(e) = result {
-            assert_eq!(e, TokenizerError::UnexpectedEndOfInput { pos: 3 });
-        }
+        let error = JsonError::new(ErrorKind::UnexpectedEof, Some(3));
+
+        assert_eq!(result, Err(error));
     }
 
     #[test]
@@ -443,9 +448,7 @@ mod tests {
             let mut tokenizer = Tokenizer::new(buffer);
             let result = tokenizer.tokenize();
 
-            if let Err(e) = result {
-                assert_eq!(e, error);
-            }
+            assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
     }
 
@@ -466,15 +469,13 @@ mod tests {
             let mut tokenizer = Tokenizer::new(buffer);
             let result = tokenizer.tokenize();
 
-            if let Err(e) = result {
-                assert_eq!(e, error);
-            }
+            assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
     }
 
     #[test]
-    fn test_valid_boolean() {
-        for (buffer, token) in valid_boolean() {
+    fn test_valid_literals() {
+        for (buffer, token) in valid_literals() {
             let mut tokenizer = Tokenizer::new(buffer);
             let tokens = tokenizer.tokenize().unwrap();
 
@@ -484,46 +485,22 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_boolean() {
-        for (buffer, error) in invalid_boolean() {
+    fn test_invalid_literals() {
+        for (buffer, error) in invalid_literals() {
             let mut tokenizer = Tokenizer::new(buffer);
             let result = tokenizer.tokenize();
 
-            if let Err(e) = result {
-                assert_eq!(e, error);
-            }
+            assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
     }
 
     #[test]
-    fn test_valid_null() {
-        let buffer: [u8; 4] = [110, 117, 108, 108];
-        let mut tokenizer = Tokenizer::new(&buffer);
-        let tokens = tokenizer.tokenize().unwrap();
-
-        assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0], TokenizerToken::new(0, 4, TokenizerTokenType::Null));
-    }
-
-    #[test]
-    fn test_invalid_null() {
-        let buffer: [u8; 4] = [110, 117, 108, 107];
-        let mut tokenizer = Tokenizer::new(&buffer);
-        let result = tokenizer.tokenize();
-
-        if let Err(e) = result {
-            assert_eq!(e, TokenizerError::UnexpectedValue { pos: 0 });
-        }
-    }
-
-    #[test]
-    fn test_unrecognized_character() {
+    fn test_unexpected_character() {
         // @
         let mut tokenizer = Tokenizer::new(&[64]);
         let result = tokenizer.tokenize();
+        let error = JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'@' }, Some(0));
 
-        if let Err(e) = result {
-            assert_eq!(e, TokenizerError::UnrecognizedCharacter { byte: Some(64), pos: 0 });
-        }
+        assert_eq!(result, Err(error));
     }
 }

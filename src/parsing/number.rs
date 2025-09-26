@@ -1,4 +1,4 @@
-use crate::parsing::error::NumericError;
+use std::{error, fmt};
 
 #[derive(Debug, PartialEq)]
 pub struct Number (NumberKind);
@@ -89,6 +89,19 @@ pub(super) fn is_out_of_range_f64(buffer: &[u8]) -> bool {
 
     val.is_infinite()
 }
+
+#[derive(Debug, PartialEq)]
+pub(super) enum NumericError {
+    InvalidHexDigit { digit: u8, pos: usize }
+}
+
+impl fmt::Display for NumericError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+impl error::Error for NumericError {}
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-use crate::parsing::error::{ParserError, TokenizerError};
+use crate::parsing::error::JsonError;
 use crate::parsing::value::Value;
 use crate::parsing::parser::Parser;
 use crate::parsing::tokenizer::{Tokenizer, TokenizerToken};
@@ -15,10 +15,10 @@ pub(super) mod error;
 // where there is a call to as.bytes() and then just call from()
 // maybe even make the input a Reader? or a Reader trait
 // make the tokenizer error as variant of the parser error
-pub(super) fn tokenize(buffer: &[u8]) -> Result<Vec<TokenizerToken>, TokenizerError> {
+pub(super) fn tokenize(buffer: &[u8]) -> Result<Vec<TokenizerToken>, JsonError> {
     Tokenizer::new(buffer).tokenize()
 }
 
-pub(super) fn parse(buffer: &[u8], tokens: &Vec<TokenizerToken>) -> Result<Value, ParserError> {
+pub(super) fn parse(buffer: &[u8], tokens: &Vec<TokenizerToken>) -> Result<Value, JsonError> {
     Parser::new(buffer, tokens).parse()
 }
