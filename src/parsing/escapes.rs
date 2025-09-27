@@ -37,6 +37,7 @@ pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
 }
 
 // returns the length of an escape sequence
+// it is always called on valid escape sequences
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     if matches!(buffer[i], b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
@@ -51,7 +52,7 @@ pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
 fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     // pos is at 'u', need 4 hex digits
     if pos + 4 >= buffer.len() {
-        return Err(EscapeError::UnexpectedEof { pos: pos - 1 });
+        return Err(EscapeError::UnexpectedEof { pos: buffer.len() - 1 });
     }
 
     let mut i = pos;
@@ -95,12 +96,12 @@ fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
 
 fn validate_surrogate(buffer: &[u8], pos: usize, hex_sequence: u16) -> Result<(), EscapeError> {
     let len = buffer.len();
-    // pos - 5 is the index at the start of the Unicode sequence
+    // pos - 5 is the index at the start of the surrogate
     let start = pos - 5;
 
     if is_high_surrogate(hex_sequence) {
         if pos + 6 >= len {
-            return Err(EscapeError::InvalidSurrogate { pos: start });
+            return Err(EscapeError::UnexpectedEof { pos: buffer.len() - 1 });
         }
 
         let mut i = pos;

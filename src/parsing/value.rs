@@ -1,6 +1,6 @@
 use std::cmp::PartialEq;
 use linked_hash_map::LinkedHashMap;
-use crate::parsing::error::PointerError;
+use crate::parsing::error::{EscapeError, PointerError, PointerErrorKind};
 use crate::parsing::{escapes, utf8};
 use crate::parsing::number::Number;
 
@@ -22,7 +22,7 @@ pub enum Value {
     String(String),
     Boolean(bool),
     Null,
-}
+} // toDo: pretty print
 
 impl Value {
     pub fn is_object(&self) -> bool {
@@ -126,6 +126,8 @@ impl Value {
         }
     }
 
+    // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value
+    // is an object it is treated as a key, if an array as an index
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -171,11 +173,8 @@ impl Value {
         let tokens: Vec<RefToken> = check_pointer_path(pointer)?;
         let mut val: &mut Value = self;
         for token in &tokens {
-            // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value
-            // is an object it is treated as a key, if an array as an index
             match val {
                 Value::Object(map) => {
-                    // val = map.get(token).ok_or(None)?;
                     if map.contains_key(&token.val) {
                         val = map.get_mut(&token.val).unwrap();
                     } else {
@@ -201,7 +200,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
     // neither '/', nor a Unicode sequence that could map to '/'
     // a pointer path always starts with '/', unless it is empty which we already checked
     if buffer[0] != b'/' && buffer[0] != b'\\' {
-        return Err(PointerError::InvalidPathSyntax { pos: 0 } );
+        return Err(PointerError::new(PointerErrorKind::InvalidPathSyntax, 0));
     }
 
     let mut i = 0;
@@ -209,7 +208,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
     if buffer[0] == b'\\' {
         escapes::check_escape_character(buffer, i)?;
         if escapes::map_escape_character(buffer, i) != '/' {
-            return Err(PointerError::InvalidPathSyntax { pos: 0 } );
+            return Err(PointerError::new(PointerErrorKind::InvalidPathSyntax, 0));
         }
     }
 
@@ -223,7 +222,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
     while i < buffer.len() {
         let current = buffer[i];
         match current {
-            c if c.is_ascii_control() => return Err(PointerError::InvalidControlCharacter { byte: current, pos: i }),
+            c if c.is_ascii_control() => return Err(PointerError::new(PointerErrorKind::InvalidControlCharacter { byte: current }, i)),
             b'/' => {
                 // empty strings are allowed as keys in objects("//foo/bar"); for an
                 // empty string there is no starting index so we set pos to usize:MAX
@@ -263,7 +262,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
 }
 
 // When this method gets called buffer[pos] is at '~', we only need to check the next character
-fn check_pointer_escape(buffer: &[u8], pos: usize) -> Result<char, PointerError> {
+fn check_pointer_escape(buffer: &[u8], pos: usize) -> Result<char, EscapeError> {
     let next = buffer.get(pos + 1);
 
     match next {
@@ -274,12 +273,12 @@ fn check_pointer_escape(buffer: &[u8], pos: usize) -> Result<char, PointerError>
             match escapes::map_escape_character(buffer, pos) {
                 '0' => Ok('~'),
                 '1' => Ok('/'),
-                _ => Err(PointerError::InvalidEscapeSequence { pos } )
+                c => Err(EscapeError::UnknownEscapedCharacter { byte: c as u8, pos })
             }
         }
         // ~8 or ~ invalid
-        Some(_) => Err(PointerError::InvalidEscapeSequence { pos: pos + 1 } ),
-        None => Err(PointerError::InvalidEscapeSequence { pos} )
+        Some(b) => Err(EscapeError::UnknownEscapedCharacter { byte: *b, pos: pos + 1 } ),
+        None => Err(EscapeError::UnexpectedEof { pos } )
     }
 }
 
@@ -288,20 +287,17 @@ fn check_array_index(token: &RefToken) -> Result<Option<usize>, PointerError> {
     let second = token.val.chars().nth(1);
 
     match (first, second) {
-        (Some('+') | Some('-'), Some('0'..='9')) => return Err(PointerError::InvalidIndex {
-            message: format!("index can not be prefixed with a sign, syntax : {}", ARRAY_INDEX_SYNTAX),
-            pos: token.pos
-        }),
-        (Some('0'), Some('0'..='9')) => return Err(PointerError::InvalidIndex {
-            message: format!("leading zeros are not allowed, syntax: {}", ARRAY_INDEX_SYNTAX),
-            pos: token.pos
-        }),
+        (Some('+') | Some('-'), Some('0'..='9')) => return Err(PointerError::new(
+            PointerErrorKind::InvalidIndex { message: format!("index can not be prefixed with a sign, syntax : {}", ARRAY_INDEX_SYNTAX) },
+            token.pos)),
+        (Some('0'), Some('0'..='9')) => return Err(PointerError::new(
+            PointerErrorKind::InvalidIndex { message: format!("leading zeros are not allowed, syntax: {}", ARRAY_INDEX_SYNTAX) },
+            token.pos)),
         (Some('-'), None) => return Ok(None),
         // if the token val does not start with a digit, it is invalid
-        (Some(d), _) if !d.is_ascii_digit() => return Err(PointerError::InvalidIndex {
-            message: format!("invalid array index, syntax: {}", ARRAY_INDEX_SYNTAX),
-            pos: token.pos
-        }),
+        (Some(d), _) if !d.is_ascii_digit() => return Err(PointerError::new(
+            PointerErrorKind::InvalidIndex { message: format!("invalid array index, syntax: {}", ARRAY_INDEX_SYNTAX) },
+            token.pos)),
         _ => ()
     }
 
@@ -320,23 +316,23 @@ mod tests {
     fn invalid_paths() -> Vec<(&'static str, PointerError)> {
         vec![
             // does not start with '/'
-            ("foo/bar", PointerError::InvalidPathSyntax { pos: 0 }),
+            ("foo/bar", PointerError::new(PointerErrorKind::InvalidPathSyntax, 0)),
             // does not start with the Unicode sequence of  '/'
-            ("\\u005E", PointerError::InvalidPathSyntax { pos: 0 }),
+            ("\\u005E",PointerError::new(PointerErrorKind::InvalidPathSyntax, 0)),
             // unpaired pointer escape
-            ("/foo/bar~", PointerError::InvalidEscapeSequence { pos: 8 }),
+            ("/foo/bar~", PointerError::new(PointerErrorKind::UnexpectedEof, 8)),
             // unknown pointer escape
-            ("/foo/bar~3", PointerError::InvalidEscapeSequence { pos: 9 }),
+            ("/foo/bar~3", PointerError::new(PointerErrorKind::UnknownEscapedCharacter { byte: b'3' }, 9)),
             // unpaired pointer escape represented as Unicode sequence
-            ("/\\u007e", PointerError::InvalidEscapeSequence { pos: 6 }),
-            ("/\\u007e4", PointerError::InvalidEscapeSequence { pos: 7 }),
-            ("/foo/+1", PointerError::InvalidIndex { message: format!("index can not be prefixed with a sign, syntax : {}", ARRAY_INDEX_SYNTAX), pos: 5 }),
-            ("/foo/+", PointerError::InvalidIndex { message: format!("invalid array index, syntax: {}", ARRAY_INDEX_SYNTAX), pos: 5 }),
-            ("/foo/01", PointerError::InvalidIndex { message: format!("leading zeros are not allowed, syntax: {}", ARRAY_INDEX_SYNTAX), pos: 5 })
+            ("/\\u007e", PointerError::new(PointerErrorKind::UnexpectedEof, 6)),
+            ("/\\u007e4", PointerError::new(PointerErrorKind::UnknownEscapedCharacter { byte: b'4' }, 7)),
+            ("/foo/+1",PointerError::new(PointerErrorKind::InvalidIndex { message: format!("index can not be prefixed with a sign, syntax : {}", ARRAY_INDEX_SYNTAX) }, 5)),
+            ("/foo/01", PointerError::new(PointerErrorKind::InvalidIndex { message: format!("leading zeros are not allowed, syntax: {}", ARRAY_INDEX_SYNTAX) }, 5)),
+            ("/foo/+", PointerError::new(PointerErrorKind::InvalidIndex { message: format!("invalid array index, syntax: {}", ARRAY_INDEX_SYNTAX) }, 5))
         ]
     }
 
-    // setup with a macro! it is much easier to create a value from a macro
+    // toDo: setup with a macro! it is much easier to create a value from a macro
     fn valid_paths() -> Vec<(&'static str, Value)> {
         vec![]
     }
@@ -347,10 +343,13 @@ mod tests {
         map.insert("foo".to_string(), Value::Array(vec![Value::Number(Number::from_u64(1))]));
         let val = Value::Object(map);
 
-        for(path, err) in invalid_paths() {
-            if let Err(e) = val.pointer(path) { // toDo: if the call to pointer() returned Ok() the test passes but that is not what we want
-                assert_eq!(e, err);
-            }
+        for(path, error) in invalid_paths() {
+            // problem: if the call to pointer() returned Ok() the test passes but that is not what we want
+            // if let Err(e) = val.pointer(path) { 
+            //     assert_eq!(e, err);
+            // }
+            let result = val.pointer(path);
+            assert_eq!(result, Err(error), "invalid path: {path}");
         }
 
     }

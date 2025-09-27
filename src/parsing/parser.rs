@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use linked_hash_map::LinkedHashMap;
 use super::tokenizer::{TokenizerToken, TokenizerTokenType};
 use super::value::Value;
-use crate::parsing::error::{ErrorKind, JsonError};
+use crate::parsing::error::{JsonErrorKind, JsonError};
 use crate::parsing::{escapes, utf8};
 use crate::parsing::escapes::len;
 use crate::parsing::number::Number;
@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
         // false5, "abc"123, {}null
         if self.pos < self.tokens.len() {
             // after successfully parsing a value we can't have leftover tokens
-            return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: None }, Some(self.tokens[self.pos].start_index())));
+            return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: None }, Some(self.tokens[self.pos].start_index())));
         }
         // someone could call parsing() multiples, for the same input we return the same node by resetting the indices
         self.token_idx = 0;
@@ -90,9 +90,9 @@ impl<'a> Parser<'a> {
                  TokenizerTokenType::String => self.parse_string(),
                  TokenizerTokenType::Boolean => self.parse_boolean(),
                  TokenizerTokenType::Null => self.parse_null(),
-                 _ => return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value")} , Some(token.start_index())))
+                 _ => return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("json value")}, Some(token.start_index())))
              }
-             None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)))
+             None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)))
          }
          self.advance();
          Ok(())
@@ -110,7 +110,7 @@ impl<'a> Parser<'a> {
     // will be consumed by the caller (parse_value()) after this function returns.
     fn parse_object(&mut self) -> Result<(), JsonError> {
         if self.depth + 1 > MAX_DEPTH {
-            return Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
+            return Err(JsonError::new(JsonErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
         }
 
         let current = &self.tokens[self.pos];
@@ -126,7 +126,7 @@ impl<'a> Parser<'a> {
                 // {"foo": "bar",}
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
-                        return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") } , Some(next.start_index())));
+                        return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("object name") }, Some(next.start_index())));
                     }
                     // {}
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ObjectEnd));
@@ -140,7 +140,7 @@ impl<'a> Parser<'a> {
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
                     if names.contains(name) {
-                        return Err(JsonError::new(ErrorKind::DuplicateName { name: String::from_utf8(Vec::from(name)).unwrap() } , Some(next.start_index())));
+                        return Err(JsonError::new(JsonErrorKind::DuplicateName { name: String::from_utf8(Vec::from(name)).unwrap() }, Some(next.start_index())));
                     }
                     names.insert(name);
                     self.parse_string();
@@ -148,9 +148,9 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") } , Some(next.start_index())));
+                    return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("object name") }, Some(next.start_index())));
                 }
-                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1)))
+                None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(buffer_len - 1)))
             }
 
             match self.peek() {
@@ -160,9 +160,9 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("colon ':'") } , Some(next.start_index())));
+                    return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("colon ':'") }, Some(next.start_index())));
                 }
-                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1)))
+                None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(buffer_len - 1)))
             }
 
             self.parse_value()?;
@@ -178,8 +178,8 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 // mismatch
-                Some(next) => return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("'}' or ','") } , Some(next.start_index()))),
-                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
+                Some(next) => return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("'}' or ','") }, Some(next.start_index()))),
+                None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
         }
         Ok(())
@@ -194,7 +194,7 @@ impl<'a> Parser<'a> {
     // by the caller (parse_value()) after this function returns.
     fn parse_array(&mut self) -> Result<(), JsonError> {
         if self.depth + 1 > MAX_DEPTH {
-            return Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
+            return Err(JsonError::new(JsonErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None));
         }
 
         let current = &self.tokens[self.pos];
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
                 // [1,2,]
                 Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
                     if self._tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
-                        return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value") } , Some(next.start_index())));
+                        return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("json value") }, Some(next.start_index())));
                     }
                     // []
                     self._tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ArrayEnd));
@@ -216,7 +216,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(_) => self.parse_value()?,
-                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
+                None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
 
             match self.peek() {
@@ -230,8 +230,8 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(next) =>
-                    return Err(JsonError::new(ErrorKind::UnexpectedToken { expected: Some("',' or ']'") } , Some(next.start_index()))),
-                None => return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(buffer_len - 1))),
+                    return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("',' or ']'") }, Some(next.start_index()))),
+                None => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(buffer_len - 1))),
             }
         }
         Ok(())
@@ -408,24 +408,24 @@ mod tests {
 
     fn invalid_objects() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"{", JsonError::new(ErrorKind::UnexpectedEof, Some(0))),
-            (b"{ null : 1 }", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("object name") }, Some(1))),
-            (b"{ \"foo\": 5,", JsonError::new(ErrorKind::UnexpectedEof, Some(10))),
-            (b"{ \"foo\": 5", JsonError::new(ErrorKind::UnexpectedEof, Some(9))),
-            (b"{ \"foo\"", JsonError::new(ErrorKind::UnexpectedEof, Some(6))),
-            (b"{ \"foo\" 3", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("colon ':'") }, Some(1))),
-            (b"{ \"foo\": \"value\" } 123", JsonError::new(ErrorKind::UnexpectedToken { expected: None }, Some(19))),
-            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", JsonError::new(ErrorKind::DuplicateName { name: String::from("foo") }, Some(16)))
+            (b"{", JsonError::new(JsonErrorKind::UnexpectedEof, Some(0))),
+            (b"{ null : 1 }", JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("object name") }, Some(2))),
+            (b"{ \"foo\": 5,", JsonError::new(JsonErrorKind::UnexpectedEof, Some(10))),
+            (b"{ \"foo\": 5", JsonError::new(JsonErrorKind::UnexpectedEof, Some(9))),
+            (b"{ \"foo\"", JsonError::new(JsonErrorKind::UnexpectedEof, Some(6))),
+            (b"{ \"foo\" 3", JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("colon ':'") }, Some(8))),
+            (b"{ \"foo\": \"value\" } 123", JsonError::new(JsonErrorKind::UnexpectedToken { expected: None }, Some(19))),
+            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", JsonError::new(JsonErrorKind::DuplicateName { name: String::from("foo") }, Some(16)))
         ]
     }
 
     fn invalid_arrays() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"[", JsonError::new(ErrorKind::UnexpectedEof, Some(0))),
-            (b"[116, 943", JsonError::new(ErrorKind::UnexpectedEof, Some(8))),
-            (b"[116, 943,", JsonError::new(ErrorKind::UnexpectedEof, Some(9))),
-            (b"[116 true]", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("',' or ']'") }, Some(5))),
-            (b"[:]", JsonError::new(ErrorKind::UnexpectedToken { expected: Some("json value") }, Some(1))),
+            (b"[", JsonError::new(JsonErrorKind::UnexpectedEof, Some(0))),
+            (b"[116, 943", JsonError::new(JsonErrorKind::UnexpectedEof, Some(8))),
+            (b"[116, 943,", JsonError::new(JsonErrorKind::UnexpectedEof, Some(9))),
+            (b"[116 true]", JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("',' or ']'") }, Some(5))),
+            (b"[:]", JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("json value") }, Some(1))),
         ]
     }
 
@@ -529,7 +529,7 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse();
 
-        assert_eq!(result, Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
+        assert_eq!(result, Err(JsonError::new(JsonErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
     }
 
     #[test]
@@ -548,6 +548,6 @@ mod tests {
         let mut parser = Parser::new(buffer, &tokens);
         let result = parser.parse();
 
-        assert_eq!(result, Err(JsonError::new(ErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
+        assert_eq!(result, Err(JsonError::new(JsonErrorKind::DepthLimitExceeded { depth: MAX_DEPTH }, None)));
     }
 }

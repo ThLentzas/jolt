@@ -92,7 +92,6 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
                 (0xF0, 0x90..=0xBF) | (0xF1..=0xF3, 0x80..=0xBF) | (0xF4, 0x80..=0x8F) => {}
                 _ => return Err(Utf8Error::InvalidByteSequence { len: 4, pos }),
             }
-
             // 2 trailing bytes
             for _ in 0..2 {
                 let Some(next) = next(buffer, &mut i) else {
@@ -108,7 +107,7 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
     Ok(())
 }
 
-// returns the width(number of bytes) of an utf8-sequence
+// returns the width(number of bytes) of a sequence
 pub(super) fn utf8_char_width(byte: u8) -> usize {
     UTF8_CHAR_WIDTH[byte as usize] as usize
 }
@@ -122,12 +121,12 @@ pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
     (buffer[0], buffer[1], buffer[2]) == (0xEF, 0xBB, 0xBF)
 }
 
-fn next(bytes: &[u8], index: &mut usize) -> Option<u8> {
-    *index += 1;
-    if *index >= bytes.len() {
+fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
+    *pos += 1;
+    if *pos >= bytes.len() {
         return None;
     }
-    Some(bytes[*index])
+    Some(bytes[*pos])
 }
 
 #[derive(Debug, PartialEq)]
@@ -140,15 +139,68 @@ impl error::Error for Utf8Error {}
 impl fmt::Display for Utf8Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidByteSequence { len, pos } => write!(f, "invalid {} byte utf-8 sequence from index {}", len, *pos)
+            Self::InvalidByteSequence { len, pos } => write!(f, "invalid {} byte utf-8 sequence from index {}", len, pos) // toDo: how to test if we need to deref len and pos
         }
     }
 }
 
-// toDo: complete good cases for 4 byte, group them in 1 method as valid sequences and create test cases for invalid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_sequences() -> Vec<&'static [u8]> {
+        vec![
+            &[0xC2, 0x90],
+            &[0xE0, 0xBC, 0xB5],
+            &[0xE8, 0xA0, 0xB1],
+            &[0xED, 0x91, 0x87],
+            &[0xEF, 0x94, 0xA2],
+            &[0xF0, 0xBA, 0x9A, 0xB3],
+            &[0xF2, 0xBE, 0x88, 0x93],
+            &[0xF4, 0x83, 0x86, 0xB4]
+        ]
+    }
+
+    fn invalid_sequences() -> Vec<(&'static [u8], Utf8Error)> {
+        vec![
+            // tail byte as start
+            (&[0x82], Utf8Error::InvalidByteSequence { len: 1, pos: 0 }),
+            // invalid start byte
+            (&[0xFF], Utf8Error::InvalidByteSequence { len: 1, pos: 0 }),
+            // incomplete 2-byte
+            (&[0xC7], Utf8Error::InvalidByteSequence { len: 2, pos: 0 }),
+            // invalid tail
+            (&[0xC2, 0x7F], Utf8Error::InvalidByteSequence { len: 2, pos: 0 }),
+            // incomplete 3-byte
+            (&[0xE0], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            (&[0xE0, 0xA2], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // E0 needs A0-BF as 2nd byte
+            (&[0xE0, 0xC1, 0x82], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // E1..=EC needs 0x80..=0xBF as 2nd byte
+            (&[0xE8, 0x72, 0x89], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // E0 needs 80-9F as 2nd byte
+            (&[0xED, 0xB1, 0x83], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // EE..=EF needs 0x80..=0xBF as 2nd byte
+            (&[0xEE, 0x63, 0x94], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // 3rd byte must always be tail no matter the first two, 0x80..=0xBF
+            (&[0xE0, 0xA7, 0xD1], Utf8Error::InvalidByteSequence { len: 3, pos: 0 }),
+            // incomplete 4-byte
+            (&[0xF0], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            (&[0xF2, 0x99], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            (&[0xF4, 0x81, 0x82], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            // F0 needs 90-BF as 2nd byte
+            (&[0xF0, 0x41, 0xBD, 0xAF], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            // 0xF1..=0xF3 needs 0x80..=0xBF as 2nd byte
+            (&[0xF2, 0xD2, 0x92, 0x98], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            // 0xF4, needs 0x80..=0x8F as 2nd byte
+            (&[0xF4, 0xAB, 0xB3, 0xB5], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            // any 4-byte sequence needs 2 trail bytes
+            // out of range 3rd byte
+            (&[0xF3, 0x97, 0x52, 0x8D], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+            // out of range 4th byte
+            (&[0xF3, 0x97, 0xBB, 0x022], Utf8Error::InvalidByteSequence { len: 4, pos: 0 }),
+        ]
+    }
 
     #[test]
     fn next_out_of_bounds() {
@@ -165,55 +217,19 @@ mod tests {
     }
 
     #[test]
-    fn valid_2_byte_sequence() {
-        let buffer = &[0xC2, 0x90];
+    fn test_valid_sequences() {
         let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_ok())
+        for buffer in valid_sequences() {
+            assert!(check_utf8_sequence(buffer, pos).is_ok(), "failed to validate: {buffer:?}")
+        }
     }
 
     #[test]
-    fn invalid_2_byte_sequence() {
-        // no trailing byte after C2
-        let buffer = &[0xC2, 0x3F];
+    fn test_invalid_sequences() {
         let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_err())
-    }
-
-    #[test]
-    fn valid_3_byte_sequence() {
-        // 1st: E0, 2nd: A0...BF, 3rd: 80...BF (trail)
-        let buffer = &[0xE0, 0xBC, 0xB5];
-        let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_ok())
-    }
-
-    #[test]
-    fn valid_3_byte_sequence_1() {
-        // 1st: E1...EC, 2nd: 80...BF, 3rd: 80...BF (2 trailing)
-        let buffer = &[0xE8, 0xA0, 0xB1];
-        let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_ok())
-    }
-
-    #[test]
-    fn valid_3_byte_sequence_2() {
-        // 1st: ED, 2nd: 80...9F, 3rd: 80...BF (trail)
-        let buffer = &[0xED, 0x91, 0x87];
-        let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_ok())
-    }
-
-    #[test]
-    fn valid_3_byte_sequence_3() {
-        // 1st: ED, 2nd: 80...9F, 3rd: 80...BF (trail)
-        let buffer = &[0xED, 0x91, 0x87];
-        let pos = 0;
-
-        assert!(check_utf8_sequence(buffer, pos).is_ok())
+        for (buffer, error) in invalid_sequences() {
+            let result = check_utf8_sequence(buffer, pos);
+            assert_eq!(result, Err(error), "failed to validate: {buffer:?}")
+        }
     }
 }

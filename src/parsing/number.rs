@@ -97,7 +97,11 @@ pub(super) enum NumericError {
 
 impl fmt::Display for NumericError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match self {
+            // self is auto deref based on rust ergonomics; for digit and pos we have a reference as well,
+            // but we don't need to deref when we pass into the write!()
+            Self::InvalidHexDigit { digit, pos }  => write!(f, "Invalid hex digit (0x{:02X}) at index {}", digit, pos)
+        }
     }
 }
 

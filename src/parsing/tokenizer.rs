@@ -1,4 +1,4 @@
-use crate::parsing::error::{ErrorKind, JsonError};
+use crate::parsing::error::{JsonErrorKind, JsonError};
 use crate::parsing::{escapes, number, utf8};
 
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
@@ -66,8 +66,8 @@ impl<'a> Tokenizer<'a> {
         // [](empty input buffer) or [\n, \t, '\r', ' '](only ws) are not allowed
         // Json text = ws value ws
         if self.buffer.is_empty() || self.pos >= len {
-            let i = if self.pos == 0 { 0 } else { len - 1 };
-            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(i)));
+            let i = if self.pos == 0 { len } else { len - 1 };
+            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(i)));
         }
 
         // skip Byte Order Mark
@@ -111,16 +111,13 @@ impl<'a> Tokenizer<'a> {
                         tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Null));
                     }
                     // unknown ascii has text representation we pass Some()
-                    _ => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
+                    _ => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
                 }
                 self.pos += 1;
             } else {
-                // single byte from utf8 sequence does not have a text representation, we will check how to display it when we implement the display Trait
-                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
+                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
             }
         }
-        // reset the position, so the next tokenize call with the same buffer has the same output
-        self.pos = 0;
 
         Ok(tokens)
     }
@@ -132,17 +129,17 @@ impl<'a> Tokenizer<'a> {
         let next = self.buffer.get(self.pos + 1);
 
         match(current, next) {
-            (b'+' | b'-', None) => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
+            (b'+' | b'-', None) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
             // +9
-            (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+            (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(self.pos))),
             // +a
-            (b'+', Some(_)) => return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
+            (b'+', Some(_)) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
             // -0 is valid
-            (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+            (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(self.pos))),
             // 05 not allowed
-            (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(ErrorKind::InvalidNumber {
+            (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "leading zeros are not allowed" }, Some(self.pos))),
             _ => (),
         }
@@ -172,7 +169,7 @@ impl<'a> Tokenizer<'a> {
             }
         }
         if self.is_out_of_range(start, state) {
-            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
+            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
         }
 
         self.pos -= 1;
@@ -182,15 +179,15 @@ impl<'a> Tokenizer<'a> {
     fn check_decimal_point(&self, state: &mut NumberState) -> Result<(), JsonError> {
         // 1.2.3
         if state.decimal_point {
-            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "double decimal point found" }, Some(self.pos)));
+            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "double decimal point found" }, Some(self.pos)));
         }
         // 1. 2.g
         if self.pos + 1 >= self.buffer.len() || !self.buffer[self.pos + 1].is_ascii_digit() {
-            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(self.pos)));
+            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(self.pos)));
         }
         // 1e4.5
         if state.scientific_notation {
-            return Err(JsonError::new(ErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(self.pos)));
+            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(self.pos)));
         }
         state.decimal_point = true;
 
@@ -204,11 +201,11 @@ impl<'a> Tokenizer<'a> {
             b'e' | b'E' => {
                 // 1e2E3
                 if state.scientific_notation {
-                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(self.pos)));
+                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(self.pos)));
                 }
                 // 1e 1eg
                 if self.pos + 1 >= self.buffer.len() || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
-                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(self.pos)));
+                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(self.pos)));
                 }
                 // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
                 state.scientific_notation = true;
@@ -216,11 +213,11 @@ impl<'a> Tokenizer<'a> {
             b'+' | b'-' => {
                 // 1+2
                 if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
-                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(self.pos)));
+                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(self.pos)));
                 }
                 // 1E+g
                 if self.pos + 1 >= self.buffer.len()  || !self.buffer[self.pos + 1].is_ascii_digit() {
-                    return Err(JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(self.pos)));
+                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(self.pos)));
                 }
             }
             _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
@@ -255,7 +252,7 @@ impl<'a> Tokenizer<'a> {
             // [34, 10, 34] is invalid the control character is passed as raw byte, and it is unescaped
             // but [34, 92, 110, 34] should be considered valid as a new line character
             if current.is_ascii_control() {
-                return Err(JsonError::new(ErrorKind::InvalidControlCharacter { byte: current }, Some(self.pos)));
+                return Err(JsonError::new(JsonErrorKind::InvalidControlCharacter { byte: current }, Some(self.pos)));
             }
             if !current.is_ascii() {
                 utf8::check_utf8_sequence(&self.buffer, self.pos)?;
@@ -268,7 +265,7 @@ impl<'a> Tokenizer<'a> {
             self.pos += 1;
         }
         if self.pos == len {
-            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.pos - 1)));
+            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.pos - 1)));
         }
         Ok(())
     }
@@ -290,15 +287,16 @@ impl<'a> Tokenizer<'a> {
         let remaining = &self.buffer[self.pos..];
 
         if target.len() > remaining.len() {
-            return Err(JsonError::new(ErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)));
+            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)));
         }
 
         for &byte in target.iter() {
             if self.buffer[self.pos] != byte {
-                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte }, Some(self.pos)));
+                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: self.buffer[self.pos] }, Some(self.pos)));
             }
             self.pos += 1;
         }
+        self.pos -= 1;
 
         Ok(())
     }
@@ -309,7 +307,7 @@ impl<'a> Tokenizer<'a> {
             // The only control characters that are allowed as raw bytes according to rfc are '\t', '\n', '\r'
             // ' '(space) is not a control character
             if current.is_ascii_control() && !matches!(current, b'\t' | b'\n' | b'\r' | b' ') { // rfc whitespaces
-                return Err(JsonError::new(ErrorKind::UnexpectedCharacter { byte: current } , Some(self.pos)));
+                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
             }
             if matches!(current, b'\t' | b'\n' | b'\r' | b' ') {
                 self.pos += 1;
@@ -340,24 +338,24 @@ mod tests {
 
     fn invalid_numbers() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"+", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
-            (b"+a", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
-            (b"+9", JsonError::new(ErrorKind::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(0))),
-            (b"-a", JsonError::new(ErrorKind::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(0))),
-            (b"06", JsonError::new(ErrorKind::InvalidNumber { message: "leading zeros are not allowed" }, Some(0))),
-            (b"1.2.3", JsonError::new(ErrorKind::InvalidNumber { message: "double decimal point found" }, Some(3))),
-            (b"1.", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
-            (b"1.a", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
-            (b"4e5.1", JsonError::new(ErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(3))),
-            (b"1e2e5", JsonError::new(ErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(3))),
-            (b"1e", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(1))),
-            (b"246Ef", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(3))),
-            (b"83+1", JsonError::new(ErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(2))),
-            (b"1e+", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
-            (b"1e+f", JsonError::new(ErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
-            (b"1.8e308", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
-            (b"-9223372036854775809", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
-            (b"18446744073709551616", JsonError::new(ErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
+            (b"+", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
+            (b"+a", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
+            (b"+9", JsonError::new(JsonErrorKind::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(0))),
+            (b"-a", JsonError::new(JsonErrorKind::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(0))),
+            (b"06", JsonError::new(JsonErrorKind::InvalidNumber { message: "leading zeros are not allowed" }, Some(0))),
+            (b"1.2.3", JsonError::new(JsonErrorKind::InvalidNumber { message: "double decimal point found" }, Some(3))),
+            (b"1.", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
+            (b"1.a", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
+            (b"4e5.1", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(3))),
+            (b"1e2e5", JsonError::new(JsonErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(3))),
+            (b"1e", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(1))),
+            (b"246Ef", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(3))),
+            (b"83+1", JsonError::new(JsonErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(2))),
+            (b"1e+", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
+            (b"1e+f", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
+            (b"1.8e308", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
+            (b"-9223372036854775809", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
+            (b"18446744073709551616", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
         ]
     }
 
@@ -375,22 +373,22 @@ mod tests {
     fn invalid_strings() -> Vec<(&'static [u8], JsonError)> {
         vec![
             // raw byte control character
-            (b"\"\x00", JsonError::new(ErrorKind::InvalidControlCharacter { byte: 0 }, Some(1))),
+            (b"\"\x00", JsonError::new(JsonErrorKind::InvalidControlCharacter { byte: 0 }, Some(1))),
             // unpaired escaped
-            (b"\"\\", JsonError::new(ErrorKind::UnexpectedEof, Some(1))),
+            (b"\"\\", JsonError::new(JsonErrorKind::UnexpectedEof, Some(1))),
             // unknown escaped
-            (b"\"\\g\"", JsonError::new(ErrorKind::UnknownEscapedCharacter { byte: b'g' }, Some(2))),
+            (b"\"\\g\"", JsonError::new(JsonErrorKind::UnknownEscapedCharacter { byte: b'g' }, Some(2))),
             // incomplete unicode
-            (b"\"\\u\"", JsonError::new(ErrorKind::UnexpectedEof, Some(3))),
+            (b"\"\\u\"", JsonError::new(JsonErrorKind::UnexpectedEof, Some(3))),
             // // not enough bytes to form a low surrogate
-            (b"\"\\uD83D\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"\\uD83D\"", JsonError::new(JsonErrorKind::UnexpectedEof, Some(7))),
             // // high not followed by low
-            (b"\"\\uD83Dabcdef\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"\\uD83Dabcdef\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
             // // high followed by high
-            (b"\"\\uD83D\\uD83D\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"\\uD83D\\uD83D\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
             // // low surrogate
-            (b"\"\\uDC00\"", JsonError::new(ErrorKind::InvalidSurrogate, Some(1))),
-            (b"\"abc", JsonError::new(ErrorKind::UnexpectedEof, Some(3))),
+            (b"\"\\uDC00\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"abc", JsonError::new(JsonErrorKind::UnexpectedEof, Some(3))),
         ]
     }
 
@@ -405,8 +403,8 @@ mod tests {
     // 1 mismatch and 1 not enough characters is enough
     fn invalid_literals() -> Vec<(&'static [u8], JsonError)> {
         vec![
-            (b"falte", JsonError::new(ErrorKind::UnexpectedCharacter { byte: b't' }, Some(3))),
-            (b"tru", JsonError::new(ErrorKind::UnexpectedEof, Some(2))),
+            (b"falte", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b't' }, Some(3))),
+            (b"tru", JsonError::new(JsonErrorKind::UnexpectedEof, Some(2))),
         ]
     }
 
@@ -415,7 +413,7 @@ mod tests {
         let buffer = [];
         let mut tokenizer = Tokenizer::new(&buffer);
         let result = tokenizer.tokenize();
-        let error = JsonError::new(ErrorKind::UnexpectedEof, Some(3));
+        let error = JsonError::new(JsonErrorKind::UnexpectedEof, Some(0));
 
         assert_eq!(result, Err(error));
     }
@@ -426,7 +424,7 @@ mod tests {
         let buffer: [u8; 4] = [9, 10, 13, 32];
         let mut tokenizer = Tokenizer::new(&buffer);
         let result = tokenizer.tokenize();
-        let error = JsonError::new(ErrorKind::UnexpectedEof, Some(3));
+        let error = JsonError::new(JsonErrorKind::UnexpectedEof, Some(3));
 
         assert_eq!(result, Err(error));
     }
@@ -499,7 +497,7 @@ mod tests {
         // @
         let mut tokenizer = Tokenizer::new(&[64]);
         let result = tokenizer.tokenize();
-        let error = JsonError::new(ErrorKind::UnexpectedCharacter { byte: b'@' }, Some(0));
+        let error = JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'@' }, Some(0));
 
         assert_eq!(result, Err(error));
     }
