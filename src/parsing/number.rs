@@ -66,10 +66,10 @@ pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
     Ok(val)
 }
 
+// from_utf8() calls in the is_out_of_range() functions are always called in valid numbers
 pub(super) fn is_out_of_range_u64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<u64>().is_err()
-    // review underflow
 }
 
 // toDo: review loops and patterns in loops, check default values for primitives

@@ -1,4 +1,5 @@
 use std::{error, fmt};
+use crate::parsing::escapes::EscapeError;
 use crate::parsing::number::NumericError;
 use crate::parsing::utf8::Utf8Error;
 
@@ -14,13 +15,15 @@ pub enum JsonErrorKind {
     InvalidNumber { message: &'static str }, // toDo: Why not String
     DuplicateName { name: String },
     UnexpectedToken { expected: Option<&'static str> },
-    DepthLimitExceeded { depth: u16 }
+    NestingDepthLimitExceeded { depth: u16 },
+    InputBufferLimitExceeded { len: usize },
+    StringValueLengthLimitExceed { len: usize }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct JsonError {
     pub kind: JsonErrorKind,
-    pub pos: Option<usize> // For DepthLimitExceeded position is pointless
+    pub pos: Option<usize> // For NestingDepthLimitExceeded, InputBufferLimitExceeded position is pointless
 }
 
 impl JsonError {
@@ -29,19 +32,10 @@ impl JsonError {
     }
 }
 
-// maybe we could use composition for ErrorKind?
-#[derive(Debug, PartialEq)]
-pub enum EscapeError {
-    UnknownEscapedCharacter { byte: u8, pos: usize },
-    UnexpectedEof { pos: usize },
-    InvalidUnicodeSequence { digit: u8, pos: usize },
-    InvalidSurrogate { pos: usize }
-}
-
 #[derive(Debug, PartialEq)]
 pub enum PointerErrorKind {
     InvalidPathSyntax,
-    InvalidControlCharacter { byte: u8 }, // toDo: maybe change to IllegalControlCharacter
+    InvalidControlCharacter { byte: u8 },
     UnknownEscapedCharacter { byte: u8 },
     UnexpectedEof,
     InvalidUnicodeSequence { digit: u8 },
@@ -73,8 +67,9 @@ impl fmt::Display for JsonError {
             JsonErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos.unwrap()),
             JsonErrorKind::UnknownEscapedCharacter { byte } => {
                 match byte {
+                    // can be a byte from a utf8 sequence or a character with no text representation
                     b if b.is_ascii_graphic() => write!(f, "unknown escape character {} at index {}", *b as char, self.pos.unwrap()),
-                    _  => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos.unwrap()), // can be a byte from a utf8 sequence or a character with no text representation
+                    _  => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos.unwrap()),
                 }
             }
             JsonErrorKind::InvalidUnicodeSequence { digit } => write!(f, "invalid hex digit '{}' at index {}", *digit as char, self.pos.unwrap()),
@@ -82,8 +77,9 @@ impl fmt::Display for JsonError {
             JsonErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos.unwrap()),
             JsonErrorKind::UnexpectedCharacter { byte } => {
                 match byte {
+                    // can be a byte from a utf8 sequence or a character with no text representation
                     b if b.is_ascii_graphic() => write!(f, "unexpected character {} at index {}", *b as char, self.pos.unwrap()),
-                    _  => write!(f, "unexpected character (0x{:02X}) at index {}", byte, self.pos.unwrap()), // can be a byte from a utf8 sequence or a character with no text representation
+                    _  => write!(f, "unexpected character (0x{:02X}) at index {}", byte, self.pos.unwrap()),
                 }
             }
             JsonErrorKind::InvalidNumber { message } => write!(f, "{} at index {}", message, self.pos.unwrap()),
@@ -94,7 +90,9 @@ impl fmt::Display for JsonError {
                     None => write!(f, "unexpected token at index {}", self.pos.unwrap()),
                 }
             }
-            JsonErrorKind::DepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth)
+            JsonErrorKind::NestingDepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth),
+            JsonErrorKind::InputBufferLimitExceeded { len } => write!(f, "input size exceeded limit of {} bytes", len),
+            JsonErrorKind::StringValueLengthLimitExceed { len } => write!(f, "string value exceeded limit of {} bytes at index {}", len, self.pos.unwrap())
         }
     }
 }
@@ -129,7 +127,7 @@ impl From<NumericError> for EscapeError {
 impl From<Utf8Error> for JsonError {
     fn from(err: Utf8Error) -> Self {
         match err {
-            Utf8Error::InvalidByteSequence { len, pos} => JsonError::new(JsonErrorKind::InvalidByteSequence { len }, Some(pos)),
+            Utf8Error::InvalidByteSequence { len, pos } => JsonError::new(JsonErrorKind::InvalidByteSequence { len }, Some(pos)),
         }
     }
 }

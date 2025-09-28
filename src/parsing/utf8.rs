@@ -80,6 +80,7 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
             let Some(third) = next(buffer, &mut i) else {
                 return Err(Utf8Error::InvalidByteSequence { len: 3, pos });
             };
+            // 1 tail byte
             if third as i8 >= -64 {
                 return Err(Utf8Error::InvalidByteSequence { len: 3, pos });
             }
@@ -92,7 +93,7 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
                 (0xF0, 0x90..=0xBF) | (0xF1..=0xF3, 0x80..=0xBF) | (0xF4, 0x80..=0x8F) => {}
                 _ => return Err(Utf8Error::InvalidByteSequence { len: 4, pos }),
             }
-            // 2 trailing bytes
+            // 2 tail bytes
             for _ in 0..2 {
                 let Some(next) = next(buffer, &mut i) else {
                     return Err(Utf8Error::InvalidByteSequence { len: 4, pos });
@@ -112,13 +113,8 @@ pub(super) fn utf8_char_width(byte: u8) -> usize {
     UTF8_CHAR_WIDTH[byte as usize] as usize
 }
 
-// https://www.rfc-editor.org/rfc/rfc8259#section-8.1
 pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
-    if buffer.len() < 3 {
-        return false;
-    }
-
-    (buffer[0], buffer[1], buffer[2]) == (0xEF, 0xBB, 0xBF)
+    buffer.len() >= 3 && (buffer[0], buffer[1], buffer[2]) == (0xEF, 0xBB, 0xBF)
 }
 
 fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
@@ -130,7 +126,7 @@ fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Utf8Error {
+pub(super) enum Utf8Error {
     InvalidByteSequence { len: u8, pos: usize }
 }
 

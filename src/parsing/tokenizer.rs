@@ -8,8 +8,8 @@ struct NumberState {
     negative: bool
 }
 
-#[derive(Debug, PartialEq)]
-pub enum TokenizerTokenType {
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(super) enum TokenizerTokenType {
     LeftCurlyBracket,
     RightCurlyBracket,
     LeftSquareBracket,
@@ -22,8 +22,8 @@ pub enum TokenizerTokenType {
     Null,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct TokenizerToken {
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(super) struct TokenizerToken {
     start_index: usize,
     offset: u32,
     token_type: TokenizerTokenType, // type is reserved
@@ -51,77 +51,83 @@ impl TokenizerToken {
 pub(super) struct Tokenizer<'a> {
     buffer: &'a [u8],
     pos: usize,
+    tokens: Vec<TokenizerToken>
 }
 
 impl<'a> Tokenizer<'a> {
     pub(super) fn new(buffer: &'a [u8]) -> Self {
-        Self { buffer, pos: 0 }
+        Self {
+            buffer,
+            tokens: Vec::new(),
+            pos: 0
+        }
     }
 
-    pub(super) fn tokenize(&mut self) -> Result<Vec<TokenizerToken>, JsonError> {
-        let mut tokens: Vec<TokenizerToken> = Vec::new();
-        let len = self.buffer.len();
+    pub(super) fn peek(&mut self) -> Result<Option<TokenizerToken>, JsonError> {
+        if self.pos >= self.buffer.len() {
+            return Ok(None);
+        }
 
+        let len = self.tokens.len();
+        self.tokenize()?;
+        if len == self.tokens.len() {
+            return Ok(None);
+        }
+
+        Ok(Some(self.tokens.last().unwrap().clone()))
+    }
+
+    pub(super) fn advance(&mut self, offset: usize) {
+        self.pos += offset;
+    }
+
+    fn tokenize(&mut self) -> Result<(), JsonError> {
         self.skip_white_spaces()?;
-        // [](empty input buffer) or [\n, \t, '\r', ' '](only ws) are not allowed
-        // Json text = ws value ws
-        if self.buffer.is_empty() || self.pos >= len {
-            let i = if self.pos == 0 { len } else { len - 1 };
-            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(i)));
+        if self.pos >= self.buffer.len() {
+            return Ok(());
         }
 
-        // skip Byte Order Mark
-        if utf8::is_bom_present(&self.buffer) {
-            self.pos = 3;
-        }
-
-        while self.pos < len {
-            self.skip_white_spaces()?;
-            if self.pos >= len {
-                return Ok(tokens);
-            }
-
-            let current = self.buffer[self.pos];
-            if current.is_ascii() {
-                match current {
-                    b'{' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftCurlyBracket)),
-                    b'}' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightCurlyBracket)),
-                    b']' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightSquareBracket)),
-                    b'[' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftSquareBracket)),
-                    b':' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Colon)),
-                    b',' => tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Comma)),
-                    b'-' | b'+' | b'0'..=b'9' => {
-                        let start = self.pos;
-                        self.scan_number()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Number));
-                    }
-                    b'"' => {
-                        let start = self.pos;
-                        self.scan_string()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::String));
-                    }
-                    b't' | b'f' => {
-                        let start = self.pos;
-                        self.scan_boolean()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Boolean));
-                    }
-                    b'n' => {
-                        let start = self.pos;
-                        self.scan_null()?;
-                        tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Null));
-                    }
-                    // unknown ascii has text representation we pass Some()
-                    _ => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
+        let current = self.buffer[self.pos];
+        if current.is_ascii() {
+            match current {
+                b'{' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftCurlyBracket)),
+                b'}' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightCurlyBracket)),
+                b']' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::RightSquareBracket)),
+                b'[' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::LeftSquareBracket)),
+                b':' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Colon)),
+                b',' => self.tokens.push(TokenizerToken::new(self.pos, 1, TokenizerTokenType::Comma)),
+                b'-' | b'+' | b'0'..=b'9' => {
+                    let start = self.pos;
+                    self.scan_number()?;
+                    self.tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Number));
                 }
-                self.pos += 1;
-            } else {
-                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
+                b'"' => {
+                    let start = self.pos;
+                    self.scan_string()?;
+                    self.tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::String));
+                }
+                b't' | b'f' => {
+                    let start = self.pos;
+                    self.scan_boolean()?;
+                    self.tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Boolean));
+                }
+                b'n' => {
+                    let start = self.pos;
+                    self.scan_null()?;
+                    self.tokens.push(TokenizerToken::new(start, (self.pos - start + 1) as u32, TokenizerTokenType::Null));
+                }
+                // unknown ascii has text representation we pass Some()
+                _ => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
             }
+        } else {
+            return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
         }
-
-        Ok(tokens)
+        Ok(())
     }
 
+    // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid number
+    // and the control returns back to tokenize(), back to peek() and eventually advance() is called
+    // which moves self.pos, and we skip that character
     fn scan_number(&mut self) -> Result<(), JsonError> {
         let len = self.buffer.len();
         let start = self.pos;
@@ -241,7 +247,6 @@ impl<'a> Tokenizer<'a> {
         false
     }
 
-    // toDo: consider adding a limit for the length of the string
     fn scan_string(&mut self) -> Result<(), JsonError> {
         let len = self.buffer.len();
         self.pos += 1;
@@ -271,6 +276,10 @@ impl<'a> Tokenizer<'a> {
     }
 
     // An approach with starts_with() could work but in the case of mismatch we won't know the index
+    //
+    // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid literal
+    // and the control returns back to tokenize(), back to peek() and eventually advance() is called
+    // which moves self.pos, and we skip that character
     fn scan_boolean(&mut self) -> Result<(), JsonError> {
         let target = if self.buffer[self.pos] == b't' { "true".as_bytes() } else { "false".as_bytes() };
         self.scan_literal(target)?;
@@ -409,34 +418,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_input() {
-        let buffer = [];
-        let mut tokenizer = Tokenizer::new(&buffer);
-        let result = tokenizer.tokenize();
-        let error = JsonError::new(JsonErrorKind::UnexpectedEof, Some(0));
-
-        assert_eq!(result, Err(error));
-    }
-
-    #[test]
-    fn skip_whitespaces() {
-        // \t, \n, \r, ' '
-        let buffer: [u8; 4] = [9, 10, 13, 32];
-        let mut tokenizer = Tokenizer::new(&buffer);
-        let result = tokenizer.tokenize();
-        let error = JsonError::new(JsonErrorKind::UnexpectedEof, Some(3));
-
-        assert_eq!(result, Err(error));
-    }
-
-    #[test]
     fn test_valid_numbers() {
         for (buffer, token) in valid_numbers() {
             let mut tokenizer = Tokenizer::new(buffer);
-            let tokens = tokenizer.tokenize().unwrap();
+            let t = tokenizer.peek().unwrap().unwrap();
 
-            assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0], token);
+            assert_eq!(t, token);
         }
     }
 
@@ -454,10 +441,9 @@ mod tests {
     fn test_valid_strings() {
         for (buffer, token) in valid_strings() {
             let mut tokenizer = Tokenizer::new(buffer);
-            let tokens = tokenizer.tokenize().unwrap();
+            let t = tokenizer.peek().unwrap().unwrap();
 
-            assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0], token);
+            assert_eq!(t, token);
         }
     }
 
@@ -475,10 +461,9 @@ mod tests {
     fn test_valid_literals() {
         for (buffer, token) in valid_literals() {
             let mut tokenizer = Tokenizer::new(buffer);
-            let tokens = tokenizer.tokenize().unwrap();
+            let t = tokenizer.peek().unwrap().unwrap();
 
-            assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0], token);
+            assert_eq!(t, token);
         }
     }
 

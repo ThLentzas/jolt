@@ -1,5 +1,33 @@
-use crate::parsing::error::EscapeError;
+use std::{error, fmt};
 use crate::parsing::number;
+
+// maybe we could use composition for ErrorKind?
+#[derive(Debug, PartialEq)]
+pub(super) enum EscapeError {
+    UnknownEscapedCharacter { byte: u8, pos: usize },
+    UnexpectedEof { pos: usize },
+    InvalidUnicodeSequence { digit: u8, pos: usize },
+    InvalidSurrogate { pos: usize }
+}
+
+impl error::Error for EscapeError {}
+
+impl fmt::Display for EscapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownEscapedCharacter { byte, pos } => {
+                match byte {
+                    // can be a byte from a utf8 sequence or a character with no text representation
+                    b if b.is_ascii_graphic() => write!(f, "unknown escape character {} at index {}", *b as char, pos),
+                    _ => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, pos),
+                }
+            }
+            Self::UnexpectedEof{ pos } => write!(f, "unexpected end of input at index {}", pos),
+            Self::InvalidUnicodeSequence { digit, pos } => write!(f, "invalid hex digit '{}' at index {}", *digit as char, pos),
+            Self::InvalidSurrogate { pos } => write!(f, "invalid surrogate pair at index {}", pos)
+        }
+    }
+}
 
 pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let len = buffer.len();
@@ -36,8 +64,7 @@ pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
     }
 }
 
-// returns the length of an escape sequence
-// it is always called on valid escape sequences
+// returns the length of an escape sequence, it is always called on valid escape sequences
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     if matches!(buffer[i], b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
@@ -58,8 +85,7 @@ fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let mut i = pos;
     i += 1; // move to the 1st hex digit
     let val = number::hex_to_u16(&buffer[i..i + 4])?;
-    // move past the hex digits
-    i += 3;
+    i += 3; // move past the hex digits
     if is_surrogate(val) {
         validate_surrogate(buffer, i, val)?;
     }
@@ -96,8 +122,7 @@ fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
 
 fn validate_surrogate(buffer: &[u8], pos: usize, hex_sequence: u16) -> Result<(), EscapeError> {
     let len = buffer.len();
-    // pos - 5 is the index at the start of the surrogate
-    let start = pos - 5;
+    let start = pos - 5; // pos - 5 is the index at the start of the surrogate
 
     if is_high_surrogate(hex_sequence) {
         if pos + 6 >= len {
@@ -105,8 +130,7 @@ fn validate_surrogate(buffer: &[u8], pos: usize, hex_sequence: u16) -> Result<()
         }
 
         let mut i = pos;
-        // move to the next value after the last digit of the high surrogate sequence
-        i += 1;
+        i += 1;  // move to the next value after the last digit of the high surrogate
         match (buffer[i], buffer[i + 1]) {
             (b'\\', b'u') => {
                 i += 2;

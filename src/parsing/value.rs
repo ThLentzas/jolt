@@ -1,11 +1,12 @@
 use std::cmp::PartialEq;
 use linked_hash_map::LinkedHashMap;
-use crate::parsing::error::{EscapeError, PointerError, PointerErrorKind};
-use crate::parsing::{escapes, utf8};
+use crate::parsing::error::{PointerError, PointerErrorKind};
+use crate::parsing::utf8;
+use crate::parsing::escapes::{self, EscapeError};
 use crate::parsing::number::Number;
 
 // This can't be String; to_string(), String::from() won't work
-// Constants (const) must be known at compile time, and String operations like String::from() or
+// Constants must be known at compile time, and String operations like String::from() or
 // string literal .to_string() require heap allocation, which can't happen at compile time
 const ARRAY_INDEX_SYNTAX: &str = "%x30 / ( %x31-39 * (%x30-39) )";
 
@@ -195,6 +196,31 @@ impl Value {
     }
 }
 
+//  whenever we encounter '/' we treat it as a delimiter, and we create a token(apart from the 1st one)
+//
+//  if we want to escape and have '/' as part of a key name we need to escape it, ~1 -> /
+//  /foo/bar evaluates to: token_1: foo, token_2: bar but /foo~1bar evaluates to token: foo/bar
+//  the order matters; if we map first and then try to split we will end up with the wrong tokens
+//  /foo~1bar -> /foo/bar -> token_1: foo, token_2: bar which is incorrect
+//  The same logic applies if we want to escape `~` we write it as `~0`
+//
+//  To handle this correctly, we must process the input character-by-character in a single pass:
+//
+//  For input "/foo~1bar", we:
+//  1. Skip the initial '/' delimiter
+//  2. Build the current token character by character: "f", "o", "o"
+//  3. When we hit '~1', we immediately convert it to '/' and add to token: "foo/"
+//  4. Continue building the same token: "foo/b", "foo/ba", "foo/bar"
+//  5. When we hit the end of input (or another unescaped '/'), we finalize the token
+//
+//  This single-pass approach ensures that the '/' from ~1 becomes part of the token's content
+//  rather than being mistaken for a delimiter. We never rescan or reprocess characters, each
+//  character in the input is examined exactly once, preventing any confusion between
+//  delimiters and escaped slashes. With this approach we also handle cases like "~01" where "~0"
+//  becomes '~' and then "~1" becomes "/", "~01" is just "~1"
+//
+//  Because we are modifying the content (replacing ~0 and ~1), RefTokens must own their data
+//  rather than referencing slices of the original input string.
 fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
     let buffer = pointer.as_bytes();
     // neither '/', nor a Unicode sequence that could map to '/'
@@ -216,7 +242,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
     let mut start = 1;
     let mut token = String::new();
     let mut tokens = Vec::new();
-    // similar validation to Json String, the only difference is that because pointer is &str
+    // similar validation to Json String, the only difference is that because pointer is &str,
     // it is guaranteed that any utf8 byte sequence we encounter is always valid so we can skip
     // that step https://doc.rust-lang.org/std/primitive.str.html
     while i < buffer.len() {
@@ -236,8 +262,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
                 let ch = escapes::map_escape_character(buffer,  i);
                 i += escapes::len(buffer, i) - 1;
                 if ch == '~' {
-                    // we need to check the next character in the buffer after the Unicode sequence
-                    // mapped to `~`
+                    // we need to check the next character in the buffer after the Unicode sequence mapped to `~`
                     token.push(check_pointer_escape(buffer, i)?);
                 }
             }
@@ -255,7 +280,7 @@ fn check_pointer_path(pointer: &str) -> Result<Vec<RefToken>, PointerError> {
         i += 1;
     }
 
-    // add the last token
+    // last token
     tokens.push(RefToken { val: token, pos: start });
 
     Ok(tokens)
