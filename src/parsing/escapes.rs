@@ -1,5 +1,10 @@
 use std::{error, fmt};
 use crate::parsing::number;
+use crate::parsing::number::NumericError;
+
+const ESCAPE_CHAR_LEN: u8 = 2;
+const UNICODE_SEQ_LEN: u8 = 6;
+const SURROGATE_PAIR_LEN: u8 = 12;
 
 // maybe we could use composition for ErrorKind?
 #[derive(Debug, PartialEq)]
@@ -25,6 +30,14 @@ impl fmt::Display for EscapeError {
             Self::UnexpectedEof{ pos } => write!(f, "unexpected end of input at index {}", pos),
             Self::InvalidUnicodeSequence { digit, pos } => write!(f, "invalid hex digit '{}' at index {}", *digit as char, pos),
             Self::InvalidSurrogate { pos } => write!(f, "invalid surrogate pair at index {}", pos)
+        }
+    }
+}
+
+impl From<NumericError> for EscapeError {
+    fn from(err: NumericError) -> Self {
+        match err {
+            NumericError::InvalidHexDigit { digit, pos } => EscapeError::InvalidUnicodeSequence { digit, pos }
         }
     }
 }
@@ -68,12 +81,12 @@ pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     if matches!(buffer[i], b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
-        return 2;
+        return ESCAPE_CHAR_LEN as usize;
     }
 
     i += 1;
     let val = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
-    if is_surrogate(val) { 12 } else { 6 }
+    if is_surrogate(val) { SURROGATE_PAIR_LEN as usize } else { UNICODE_SEQ_LEN as usize }
 }
 
 fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
@@ -87,7 +100,7 @@ fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let val = number::hex_to_u16(&buffer[i..i + 4])?;
     i += 3; // move past the hex digits
     if is_surrogate(val) {
-        validate_surrogate(buffer, i, val)?;
+        check_surrogate(buffer, i, val)?;
     }
 
     Ok(())
@@ -96,17 +109,17 @@ fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
 fn decode_unicode(buffer: &[u8], pos: usize) -> char {
     let mut i = pos;
     i += 2; // skip '\u'
-    let code_unit = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
+    let hex = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
     let ch: char;
 
-    if is_surrogate(code_unit) {
-        let high = code_unit;
+    if is_surrogate(hex) {
+        let high = hex;
         i += 6; // 4 hex digits + \u
         let low = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
         let code_point = decode_surrogate_pair(high as u32, low as u32);
         ch = char::from_u32(code_point).unwrap();
     } else {
-        ch = char::from_u32(code_unit as u32).unwrap();
+        ch = char::from_u32(hex as u32).unwrap();
     }
 
     ch
@@ -120,11 +133,11 @@ fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
 
 fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
 
-fn validate_surrogate(buffer: &[u8], pos: usize, hex_sequence: u16) -> Result<(), EscapeError> {
+fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), EscapeError> {
     let len = buffer.len();
     let start = pos - 5; // pos - 5 is the index at the start of the surrogate
 
-    if is_high_surrogate(hex_sequence) {
+    if is_high_surrogate(hex_seq) {
         if pos + 6 >= len {
             return Err(EscapeError::UnexpectedEof { pos: buffer.len() - 1 });
         }

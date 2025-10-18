@@ -1,8 +1,8 @@
 use std::string::String;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
-use linked_hash_map::LinkedHashMap;
-use super::tokenizer::{Tokenizer, TokenizerToken, TokenizerTokenType};
+use indexmap::IndexMap;
+use super::lexer::{Lexer, LexerToken, LexerTokenType};
 use super::value::Value;
 use super::error::{JsonErrorKind, JsonError};
 use super::{escapes, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT};
@@ -40,7 +40,7 @@ impl ParserToken {
 
 pub(super) struct Parser<'a> {
     buffer: &'a [u8],
-    tokenizer: Tokenizer<'a>,
+    lexer: Lexer<'a>,
     tokens: Vec<ParserToken>,
     pos: usize,
     depth: u16
@@ -50,7 +50,7 @@ impl<'a> Parser<'a> {
     pub(super) fn new(buffer: &'a [u8]) -> Self {
         Self {
             buffer,
-            tokenizer: Tokenizer::new(buffer),
+            lexer: Lexer::new(buffer),
             tokens: Vec::new(),
             pos: 0,
             depth: 0,
@@ -64,39 +64,35 @@ impl<'a> Parser<'a> {
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
         if utf8::is_bom_present(self.buffer) {
-            self.tokenizer.advance(3);
+            self.lexer.advance(3);
         }
 
         let token = self.peek()?;
-        // &token would create &Option<TokenizerToken> not Option<&TokenizerToken>
+        // &token would create &Option<LexerToken> not Option<&LexerToken>
         self.parse_value(token.as_ref())?;
         match self.peek()? {
-            // false5, "abc"123, {}null, note that this could return an error, {}001, -> leading zeros are not allowed
             // after successfully parsing a value we can't have leftover tokens
-            Some(token) => return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: None }, Some(token.start_index()))),
-            None => (),
+            // false5, "abc"123, {}null, note that this could return an error, {}001, -> leading zeros are not allowed
+            Some(token) => Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: None }, Some(token.start_index()))),
+            // whoever calls parse() will be the owner of the return value
+            None => Ok(self.compute_value()?)
         }
-
-        // whoever calls parse() will be the owner of the return value
-        // when compute_value() is called, we have already performed validation, and we can map
-        // directly for example escape characters like '\', 'n' to '\n'
-        Ok(self.compute_value()?)
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
-     fn parse_value(&mut self, token: Option<&TokenizerToken>) -> Result<(), JsonError> {
+     fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), JsonError> {
         match token {
             Some(t) => {
                 match t.token_type() {
                     // an alternative to passing the token, would be to have a method that returns
-                    // the tokens produced by the tokenizer and retrieve the last; we could
+                    // the tokens produced by the lexer and retrieve the last; we could
                     // call this method from each parse function
-                    TokenizerTokenType::LeftCurlyBracket => self.parse_object(t)?,
-                    TokenizerTokenType::LeftSquareBracket => self.parse_array(t)?,
-                    TokenizerTokenType::Number => self.parse_number(t),
-                    TokenizerTokenType::String => self.parse_string(t),
-                    TokenizerTokenType::Boolean => self.parse_boolean(t),
-                    TokenizerTokenType::Null => self.parse_null(t),
+                    LexerTokenType::LCurlyBracket => self.parse_object(t)?,
+                    LexerTokenType::LSquareBracket => self.parse_array(t)?,
+                    LexerTokenType::Number => self.parse_number(t),
+                    LexerTokenType::String => self.parse_string(t),
+                    LexerTokenType::Boolean => self.parse_boolean(t),
+                    LexerTokenType::Null => self.parse_null(t),
                     _ => return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("json value") }, Some(t.start_index())))
                 }
             }
@@ -119,7 +115,7 @@ impl<'a> Parser<'a> {
     //
     // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
     // will be consumed by the caller (parse_value()) after this function returns.
-    fn parse_object(&mut self, token: &TokenizerToken) -> Result<(), JsonError> {
+    fn parse_object(&mut self, token: &LexerToken) -> Result<(), JsonError> {
         if self.depth + 1 > NESTING_DEPTH_LIMIT {
             return Err(JsonError::new(JsonErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT }, None));
         }
@@ -134,7 +130,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek()? {
                 // {"foo": "bar",}
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
                     if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("object name") }, Some(next.start_index())));
                     }
@@ -143,9 +139,9 @@ impl<'a> Parser<'a> {
                     self.depth -= 1;
                     break;
                 }
-                Some(next) if expect(next.token_type(), TokenizerTokenType::String) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::String) => {
                     // Drop opening/closing quotes
-                    let name: &[u8] = &self.buffer[next.start_index() + 1..next.start_index() + (next.offset() - 1) as usize];
+                    let name= &self.buffer[next.start_index() + 1..next.start_index() + (next.offset() - 1) as usize];
                     // We don't allow duplicate names at the same depth level
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
@@ -164,7 +160,7 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek()? {
-                Some(next) if expect(next.token_type(), TokenizerTokenType::Colon) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::Colon) => {
                     self.tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::NameSeparator));
                     self.advance(1);
                 }
@@ -178,11 +174,11 @@ impl<'a> Parser<'a> {
             self.parse_value(next.as_ref())?;
 
             match self.peek()? {
-                Some(next) if expect(next.token_type(), TokenizerTokenType::Comma) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::Comma) => {
                     self.tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ValueSeparator));
                     self.advance(1);
                 }
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
                     self.tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ObjectEnd));
                     self.depth -= 1;
                     break;
@@ -202,7 +198,7 @@ impl<'a> Parser<'a> {
     //
     // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
     // by the caller (parse_value()) after this function returns.
-    fn parse_array(&mut self, token: &TokenizerToken) -> Result<(), JsonError> {
+    fn parse_array(&mut self, token: &LexerToken) -> Result<(), JsonError> {
         if self.depth + 1 > NESTING_DEPTH_LIMIT {
             return Err(JsonError::new(JsonErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT }, None));
         }
@@ -215,7 +211,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek()? {
                 // [1,2,]
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
                     if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: Some("json value") }, Some(next.start_index())));
                     }
@@ -230,11 +226,11 @@ impl<'a> Parser<'a> {
                 next => self.parse_value(next.as_ref())?,
             }
             match self.peek()? {
-                Some(next) if expect(next.token_type(), TokenizerTokenType::Comma) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::Comma) => {
                     self.tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ValueSeparator));
                     self.advance(1);
                 }
-                Some(next) if expect(next.token_type(), TokenizerTokenType::RightSquareBracket) => {
+                Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
                     self.tokens.push(ParserToken::new(next.start_index(), next.offset(), ParserTokenType::ArrayEnd));
                     self.depth -= 1;
                     break;
@@ -246,29 +242,29 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_number(&mut self, token: &TokenizerToken) {
+    fn parse_number(&mut self, token: &LexerToken) {
         self.tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Number));
     }
 
-    fn parse_string(&mut self, token: &TokenizerToken) {
+    fn parse_string(&mut self, token: &LexerToken) {
         self.tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::String));
     }
 
-    fn parse_boolean(&mut self, token: &TokenizerToken) {
+    fn parse_boolean(&mut self, token: &LexerToken) {
         self.tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Boolean));
     }
 
-    fn parse_null(&mut self, token: &TokenizerToken) {
+    fn parse_null(&mut self, token: &LexerToken) {
         self.tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Null));
     }
 
     // Why this returns a copy?
     //
-    // Initially the return value was Result<Option<&TokenizerToken>, JsonError> but that wouldn't work
+    // Initially the return value was Result<Option<&LexerToken>, JsonError> but that wouldn't work
     // In parse object:
 
     //      match self.peek()? {
-    //          Some(next) if expect(next.token_type(), TokenizerTokenType::RightCurlyBracket) => {
+    //          Some(next) if expect(next.token_type(), LexerTokenType::RightCurlyBracket) => {
     //              if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator
     //
     // We get an error: cannot borrow `self.tokens` as immutable because it is also borrowed as mutable
@@ -280,7 +276,7 @@ impl<'a> Parser<'a> {
     // In Rust, when we have a method that takes &mut self and returns a reference to something inside
     // self, that reference keeps the mutable borrow alive for as long as the reference exists
     //
-    // 1. self.peek()? mutably borrows self and returns Option<&TokenizerToken>
+    // 1. self.peek()? mutably borrows self and returns Option<&LexerToken>
     // 2. This reference is used in the match expression
     // 3. The mutable borrow must stay active for the entire match
     // 4. Inside the match, you try to access self.tokens, but self is already mutably borrowed
@@ -293,14 +289,16 @@ impl<'a> Parser<'a> {
     //                 ...
     //                 next => self.parse_value(next.as_ref())?,
     //             }
-    //  next that is whatever self.peek() returned, can be passed a reference to parse_value() without
+    //  next: is whatever self.peek() returned, can be passed a reference to parse_value() without
     //  creating a dangling pointer because the value can still be referenced, it has not been dropped yet
-    fn peek(&mut self) -> Result<Option<TokenizerToken>, JsonError> {
-       Ok(self.tokenizer.peek()?)
+    //
+    //  toDo: is it a cheap copy? can we solve this with unsafe?
+    fn peek(&mut self) -> Result<Option<LexerToken>, JsonError> {
+       Ok(self.lexer.peek()?)
     }
 
     fn advance(&mut self, offset: usize) {
-        self.tokenizer.advance(offset)
+        self.lexer.advance(offset)
     }
 
     // peek and advance are used during the parsing process, next is used when we compute the value
@@ -326,8 +324,8 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
-    fn object_value(&mut self) -> Result<LinkedHashMap<String, Value>, JsonError> {
-        let mut map = LinkedHashMap::new();
+    fn object_value(&mut self) -> Result<IndexMap<String, Value>, JsonError> {
+        let mut map = IndexMap::new();
         self.pos += 1; // move past '{'
 
         // empty object
@@ -400,9 +398,9 @@ impl<'a> Parser<'a> {
     fn string_value(&self) -> Result<String, JsonError> {
         let token = &self.tokens[self.pos];
         let mut val = String::new();
-        let mut i = token.start_index + 1; // Skip opening quotation mark
+        let mut i = token.start_index + 1; // Skip opening quotation
 
-        while i < token.start_index + (token.offset - 1) as usize { // Skip closing quotation mark
+        while i < token.start_index + (token.offset - 1) as usize { // Skip closing quotation
             let byte = self.buffer[i];
             match byte {
                 b'\\' => {
@@ -436,7 +434,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn expect(left: &TokenizerTokenType, right: TokenizerTokenType) -> bool {
+fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
     *left == right
 }
 
@@ -509,7 +507,7 @@ mod tests {
         numbers.push(Value::Number(Number::from_f64(2.718281828e-50)));
         numbers.push(Value::Number(Number::from_f64(-456.78)));
 
-        let mut map = LinkedHashMap::new();
+        let mut map = IndexMap::new();
         map.insert("4_byte_sequence".to_string(), Value::String(String::from("💖")));
         map.insert("surrogate_pair".to_string(), Value::String(String::from("😀")));
         map.insert("escape_characters".to_string(), Value::String(String::from("\\\"/\x08\x0C\n\r\t")));
@@ -554,7 +552,7 @@ mod tests {
         let mut parser = Parser::new(buffer);
         let result = parser.parse().unwrap();
 
-        assert_eq!(Value::Object(LinkedHashMap::new()), result);
+        assert_eq!(Value::Object(IndexMap::new()), result);
     }
 
     #[test]

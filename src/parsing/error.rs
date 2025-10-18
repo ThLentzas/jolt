@@ -1,13 +1,12 @@
-use std::{error, fmt};
+use std::{error, fmt, io};
 use crate::parsing::escapes::EscapeError;
-use crate::parsing::number::NumericError;
 use crate::parsing::utf8::Utf8Error;
 
 #[derive(Debug, PartialEq)]
 pub enum JsonErrorKind {
     InvalidByteSequence { len: u8 },
     InvalidSurrogate,
-    UnknownEscapedCharacter { byte: u8 },// the next byte value might be an utf8 sequence, we can conditionally render it in display by calling is ascii
+    UnknownEscapedCharacter { byte: u8 },// the byte value might be an utf8 sequence, we can conditionally render it in display
     InvalidUnicodeSequence { digit: u8 }, // incomplete sequence is just unexpectedEoF
     InvalidControlCharacter { byte: u8 },
     UnexpectedEof,
@@ -30,6 +29,12 @@ impl JsonError {
     pub(super) fn new(kind: JsonErrorKind, pos: Option<usize>) -> Self {
         JsonError { kind, pos }
     }
+}
+
+#[derive(Debug)]
+pub enum FileParseError {
+    IoError(io::Error),
+    ParserError(JsonError),
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,6 +68,7 @@ impl fmt::Display for JsonError {
         match &self.kind {
             // len, byte, digit are copied, we don't need to dereference them
             // toDo: review this and how dereferencing works, what takes ownership and what happens if we had match self.kind
+            // macros like write!, println! and so on do autoderef
             JsonErrorKind::InvalidByteSequence { len } => write!(f, "invalid {} byte utf-8 sequence from index {}", len, self.pos.unwrap()),
             JsonErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos.unwrap()),
             JsonErrorKind::UnknownEscapedCharacter { byte } => {
@@ -100,6 +106,7 @@ impl fmt::Display for JsonError {
 impl fmt::Display for PointerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
+            // macros like write!, println! and so on do autoderef
             PointerErrorKind::InvalidPathSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
             PointerErrorKind::InvalidControlCharacter { byte } => write!(f, "invalid control character (0x{:02X}) at index {}", byte, self.pos),
             PointerErrorKind::UnknownEscapedCharacter { byte } => {
@@ -112,14 +119,6 @@ impl fmt::Display for PointerError {
             PointerErrorKind::InvalidUnicodeSequence { digit } => write!(f, "invalid hex digit '{}' at index {}", *digit as char, self.pos),
             PointerErrorKind::InvalidIndex { message } => write!(f, "{} at index {}", message, self.pos),
             PointerErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos)
-        }
-    }
-}
-
-impl From<NumericError> for EscapeError {
-    fn from(err: NumericError) -> Self {
-        match err {
-            NumericError::InvalidHexDigit { digit, pos } => EscapeError::InvalidUnicodeSequence { digit, pos }
         }
     }
 }

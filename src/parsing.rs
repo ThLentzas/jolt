@@ -1,18 +1,15 @@
-use crate::parsing::error::JsonError;
-use crate::parsing::value::Value;
-use crate::parsing::parser::Parser;
+use crate::parsing::{error::JsonError, parser::Parser, value::Value};
 
-mod tokenizer;
-mod parser;
-pub(super) mod value;
-mod number;
-mod escapes;
-mod utf8;
 pub(super) mod error;
+pub(super) mod value;
+mod escapes;
+mod lexer;
+mod number;
+mod parser;
+mod utf8;
 
 //implementation limits: https://www.ibm.com/docs/en/datapower-gateway/10.6.0?topic=20-json-parser-limits
-// also mentioned as Document size, 4MB
-const INPUT_BUFFER_LIMIT: usize = 4_194_304;
+const INPUT_BUFFER_LIMIT: usize = 4_194_304; // also mentioned as Document size, 4MB
 // this is the length of the [u8] representation of the string after parsing
 // the input buffer can be longer than 8192 bytes because of escape,utf8 sequences
 // in the worst case, where we have only Unicode sequences, the length of the input buffer is roughly 49_000 bytes
