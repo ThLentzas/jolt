@@ -1,11 +1,15 @@
 use std::string::String;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
+#[cfg(feature = "big_decimal")]
+use bigdecimal::BigDecimal;
+#[cfg(feature = "big_decimal")]
+use bigdecimal::num_bigint::BigInt;
 use indexmap::IndexMap;
 use super::lexer::{Lexer, LexerToken, LexerTokenType};
 use super::value::Value;
 use super::error::{JsonErrorKind, JsonError};
-use super::{escapes, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT};
+use super::{escapes, number, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT};
 use super::number::Number;
 
 #[derive(Debug, PartialEq)]
@@ -378,20 +382,38 @@ impl<'a> Parser<'a> {
         let float = slice.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
         let s = std::str::from_utf8(slice).unwrap();
 
+        #[cfg(feature = "big_decimal")]
+        type N = BigDecimal;
+        #[cfg(not(feature = "big_decimal"))]
+        type N = f64;
         if float {
-            return Number::from_f64(s.parse::<f64>().unwrap());
+            return Number::from(s.parse::<N>().unwrap());
         }
 
-        if s.starts_with('-') {
-            Number::from_i64(s.parse::<i64>().unwrap())
-        } else {
-            // Positive that might fit in i64
-            let val = s.parse::<u64>().unwrap();
-            if val <= i64::MAX as u64 {
-                Number::from_i64(val as i64)
-            } else {
-                Number::from_u64(val)
+        // Try to optimize even if big_decimal is true; for any integer we can still store it as i64 or
+        // u64 as long as it is not out of range. In read_number() we don't check if the number is
+        // out of range when big_decimal is enabled
+        match s.starts_with('-') {
+            true => {
+                #[cfg(feature = "big_decimal")]
+                if number::is_out_of_range_i64(slice) {
+                    return Number::from(s.parse::<BigInt>().unwrap());
+                }
+                return Number::from(s.parse::<i64>().unwrap());
             }
+            _ => ()
+        }
+
+        #[cfg(feature = "big_decimal")]
+        if number::is_out_of_range_u64(slice) {
+            return Number::from(s.parse::<BigInt>().unwrap());
+        }
+
+        let num = s.parse::<u64>().unwrap();
+        if num <= i64::MAX as u64 {
+            Number::from(num as i64)
+        } else {
+            Number::from(num)
         }
     }
 
@@ -423,8 +445,6 @@ impl<'a> Parser<'a> {
             return Err(JsonError::new(JsonErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, Some(token.start_index)));
         }
 
-        // for (i, &byte) in self.buffer[token.start_index..token.start_index + token.offset as usize].iter().enumerate() {}
-        // toDo: learn about the &byte pattern and why we don't need to dereference. How references work in literals like &5 passed in a function like the contains()
         Ok(val)
     }
 
@@ -440,6 +460,8 @@ fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "big_decimal")]
+    use std::str::FromStr;
     use super::*;
 
     fn invalid_objects() -> Vec<(&'static [u8], JsonError)> {
@@ -486,6 +508,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "big_decimal")]
+    fn valid_array() {
+        let buffer = "[116, -943, 9223372036854775808, -3.14159265358979e+100, 0.1, 340282366920938463463374607431768211456]".as_bytes();
+
+        let mut numbers = Vec::new();
+        numbers.push(Value::Number(Number::from(116i64)));
+        numbers.push(Value::Number(Number::from(-943i64)));
+        numbers.push(Value::Number(Number::from(9223372036854775808u64)));
+        numbers.push(Value::Number(Number::from(BigDecimal::from_str("-3.14159265358979e+100").unwrap())));
+        numbers.push(Value::Number(Number::from(BigDecimal::from_str("0.1").unwrap())));
+        numbers.push(Value::Number(Number::from(BigInt::from_str("340282366920938463463374607431768211456").unwrap())));
+
+        let mut parser = Parser::new(buffer);
+        let result = parser.parse().unwrap();
+
+        assert_eq!(Value::Array(numbers), result);
+    }
+
+    #[test]
+    #[cfg(not(feature = "big_decimal"))]
     fn valid_object() {
         // can't use br## because 💖 is a Non ASCII character, empty strings as keys are allowed
         let buffer = r#"{
@@ -493,19 +535,19 @@ mod tests {
             "surrogate_pair": "\uD83D\uDE00",
             "escape_characters": "\\\"\/\b\f\n\r\t",
             "boolean" : false,
-            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50, -456.78],
+            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50],
             "": true,
             "null": null
         }"#.as_bytes();
 
+        // couldn't set up with json!() had problems with large numbers
         let mut numbers = Vec::new();
-        numbers.push(Value::Number(Number::from_i64(116)));
-        numbers.push(Value::Number(Number::from_i64(-943)));
-        numbers.push(Value::Number(Number::from_u64(9223372036854775808)));
-        numbers.push(Value::Number(Number::from_f64(-3.14159265358979e+100)));
-        numbers.push(Value::Number(Number::from_f64(6.02214076e+23)));
-        numbers.push(Value::Number(Number::from_f64(2.718281828e-50)));
-        numbers.push(Value::Number(Number::from_f64(-456.78)));
+        numbers.push(Value::Number(Number::from(116i64)));
+        numbers.push(Value::Number(Number::from(-943i64)));
+        numbers.push(Value::Number(Number::from(9223372036854775808u64)));
+        numbers.push(Value::Number(Number::from(-3.14159265358979e+100)));
+        numbers.push(Value::Number(Number::from(6.02214076e+23)));
+        numbers.push(Value::Number(Number::from(2.718281828e-50)));
 
         let mut map = IndexMap::new();
         map.insert("4_byte_sequence".to_string(), Value::String(String::from("💖")));

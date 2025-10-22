@@ -173,7 +173,8 @@ impl<'a> Lexer<'a> {
                 current = self.buffer[self.pos];
             }
         }
-        if self.is_out_of_range(start, state) {
+        
+        if !cfg!(feature = "big_decimal") && self.is_out_of_range(start, state) {
             return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
         }
 
@@ -339,7 +340,7 @@ mod tests {
     }
 
     fn invalid_numbers() -> Vec<(&'static [u8], JsonError)> {
-        vec![
+        let mut entries: Vec<(&'static [u8], JsonError)> =  vec![
             (b"+", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
             (b"+a", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
             (b"+9", JsonError::new(JsonErrorKind::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(0))),
@@ -354,11 +355,16 @@ mod tests {
             (b"246Ef", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(3))),
             (b"83+1", JsonError::new(JsonErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(2))),
             (b"1e+", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
-            (b"1e+f", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
-            (b"1.8e308", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
-            (b"-9223372036854775809", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
-            (b"18446744073709551616", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))),
-        ]
+            (b"1e+f", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2)))
+        ];
+        #[cfg(not(feature = "big_decimal"))]
+        {
+            entries.push((b"1.8e308", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
+            entries.push((b"-9223372036854775809", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
+            entries.push((b"18446744073709551616", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
+        }
+
+        entries
     }
 
     fn valid_strings() -> Vec<(&'static [u8], LexerToken)> {

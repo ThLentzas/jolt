@@ -1,29 +1,38 @@
 use std::{error, fmt};
+#[cfg(feature = "big_decimal")]
+use bigdecimal::BigDecimal;
+#[cfg(feature = "big_decimal")]
+use bigdecimal::num_bigint::BigInt;
 
 #[derive(Debug, PartialEq)]
 pub struct Number (NumberKind);
 
+// The way BigDecimal works is by storing every digit of the number as BigInt, (unscaled value, 
+// an arbitrary-precision integer) and also the number of decimal places as int(scale)
+// 
+//  The number 123.45 is stored as:
+//      Unscaled value: 12345
+//      Scale: 2
+//      Precision: 5
+//
+// The actual value is calculated as: unscaled value * 10^(-scale)
+//
+// To store the unscaled value as an arbitrary precision integer BigInt uses a Vec<u32> under the hood
+//
 #[derive(Debug, PartialEq)]
 enum NumberKind {
     I64(i64),
     U64(u64),
     F64(f64),
+    #[cfg(feature = "big_decimal")]
+    BigInt(BigInt),
+    #[cfg(feature = "big_decimal")]
+    BigDecimal(BigDecimal),
 }
 
-// toDo: implement BigDecimal as feature
 impl Number {
-    pub fn from_i64(val: i64) -> Self {
-        Number(NumberKind::I64(val))
-    }
-
-    pub fn from_u64(val: u64) -> Self {
-        Number(NumberKind::U64(val))
-    }
-
-    pub fn from_f64(val: f64) -> Self {
-        Number(NumberKind::F64(val))
-    }
-
+    // for i64, u64, f64 self.0 will copy v because all those types implement Copy; BigDecimal/Int does
+    // not, so we need to borrow it and clone it, similar to &self.kind in error.rs
     pub fn as_i64(&self) -> Option<i64> {
         match self.0 {
             NumberKind::I64(v) => Some(v),
@@ -43,6 +52,54 @@ impl Number {
             NumberKind::F64(v) => Some(v),
             _ => None,
         }
+    }
+
+    #[cfg(feature = "big_decimal")]
+    pub fn as_big_decimal(&self) -> Option<BigDecimal> {
+        match &self.0 {
+            NumberKind::BigDecimal(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "big_decimal")]
+    pub fn as_big_int(&self) -> Option<BigInt> {
+        match &self.0 {
+            NumberKind::BigInt(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl From<i64> for Number {
+    fn from(val: i64) -> Self {
+        Number(NumberKind::I64(val))
+    }
+}
+
+impl From<u64> for Number {
+    fn from(val: u64) -> Self {
+        Number(NumberKind::U64(val))
+    }
+}
+
+impl From<f64> for Number {
+    fn from(val: f64) -> Self {
+        Number(NumberKind::F64(val))
+    }
+}
+
+#[cfg(feature = "big_decimal")]
+impl From<BigDecimal> for Number {
+    fn from(val: BigDecimal) -> Self {
+        Number(NumberKind::BigDecimal(val))
+    }
+}
+
+#[cfg(feature = "big_decimal")]
+impl From<BigInt> for Number {
+    fn from(val: BigInt) -> Self {
+        Number(NumberKind::BigInt(val))
     }
 }
 

@@ -71,7 +71,6 @@
 // - tt version has the RAW TOKEN null
 macro_rules! json {
     ([]) => { $crate::Value::Array(Vec::new()) };
-    // toDo: IndexMap?
     ({}) => { $crate::Value::Object(IndexMap::new()) };
     (null) => { $crate::Value::Null };
     (true) => { $crate::Value::Boolean(true) };
@@ -79,11 +78,11 @@ macro_rules! json {
     ([ $($elem:tt),+ $(,)? ]) => { $crate::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
         let mut map = IndexMap::new();
-        $(map.insert($key.to_string(), json!($val)))+;
+        $(map.insert($key.to_string(), json!($val));)+
         $crate::Value::Object(map)
     }};
-     // can only be &str or some numeric type, would work with expr as well
-    ($other:literal) => { $crate::Value::from($other) };
+     // can only be &str or some numeric type
+    ($other:expr) => { $crate::Value::from($other) };
 }
 
 // not part of the public api, only for internal usage, no #[macro_export]

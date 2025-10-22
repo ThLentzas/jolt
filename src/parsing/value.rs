@@ -227,6 +227,7 @@ impl Value {
 // in the current crate(our project). We can't not implement Display for u32.
 // It is called the Orphan Rule: https://ianbull.com/notes/rusts-orphan-rule/
 // toDo: fall-through
+// used by the json!()
 impl From<&str> for Value {
     fn from(val: &str) -> Self {
         Value::String(val.to_string())
@@ -235,64 +236,63 @@ impl From<&str> for Value {
 
 impl From<u8> for Value {
     fn from(val: u8) -> Self {
-        Value::Number(Number::from_u64(val as u64))
+        Value::Number(Number::from(val as u64))
     }
 }
 
 impl From<i8> for Value {
     fn from(val: i8) -> Self {
-        Value::Number(Number::from_i64(val as i64))
+        Value::Number(Number::from(val as i64))
     }
 }
 
 impl From<u16> for Value {
     fn from(val: u16) -> Self {
-        Value::Number(Number::from_u64(val as u64))
+        Value::Number(Number::from(val as u64))
     }
 }
 
 impl From<i16> for Value {
     fn from(val: i16) -> Self {
-        Value::Number(Number::from_i64(val as i64))
+        Value::Number(Number::from(val as i64))
     }
 }
 
 impl From<u32> for Value {
     fn from(val: u32) -> Self {
-        Value::Number(Number::from_u64(val as u64))
+        Value::Number(Number::from(val as u64))
     }
 }
 
 impl From<i32> for Value {
     fn from(val: i32) -> Self {
-        Value::Number(Number::from_i64(val as i64))
+        Value::Number(Number::from(val as i64))
     }
 }
 
 impl From<u64> for Value {
     fn from(val: u64) -> Self {
-        Value::Number(Number::from_u64(val))
+        Value::Number(Number::from(val))
     }
 }
 
 impl From<i64> for Value {
     fn from(val: i64) -> Self {
-        Value::Number(Number::from_i64(val))
+        Value::Number(Number::from(val))
     }
 }
 
 impl From<f32> for Value {
     fn from(val: f32) -> Self {
-        Value::Number(Number::from_f64(val as f64))
+        Value::Number(Number::from(val as f64))
     }
 }
 
 impl From<f64> for Value {
     fn from(val: f64) -> Self {
-        Value::Number(Number::from_f64(val))
+        Value::Number(Number::from(val))
     }
 }
-
 
 //  when we encounter '/' we treat it as a delimiter, and we create a token(apart from the 1st one)
 //
@@ -495,6 +495,7 @@ mod tests {
             ("/2", json!([2]), None),
             // unparsable index starting with a digit leads to None
             ("/2e", json!([2]), None),
+            // '-' as array index always returns none according to spec
             ("/-", json!([2,3]), None),
             ("/é", json!({ "é": false }), Some(json!(false))),
             ("/1", json!({ "foo": "bar" }), None),
