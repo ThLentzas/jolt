@@ -1,5 +1,4 @@
 use std::{error, fmt};
-
 // Returns the number of bytes in an utf8 sequence based on the value of the leading byte
 // https://en.wikipedia.org/wiki/UTF-8
 
@@ -115,6 +114,19 @@ pub(super) fn utf8_char_width(byte: u8) -> usize {
 
 pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
     buffer.len() >= 3 && (buffer[0], buffer[1], buffer[2]) == (0xEF, 0xBB, 0xBF)
+}
+
+// In a previous attempt, the returned &str borrows from buffer, but Rust can't infer the lifetime relationship
+// pub(super) fn read_utf8_char<'a>(buffer: &'a [u8], pos: &mut usize) -> &'a str {
+//     let c = buffer[*pos];
+//     let width = utf8_char_width(c);
+//     let s = str::from_utf8(&buffer[*pos..*pos + width]).unwrap();
+//     s
+// }
+// Rust couldnt infer if the lifetime of the reference is tied to buffer's ref or pos
+pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> &str {
+    let width = utf8_char_width(buffer[pos]);
+    str::from_utf8(&buffer[pos..pos + width]).unwrap()
 }
 
 fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {

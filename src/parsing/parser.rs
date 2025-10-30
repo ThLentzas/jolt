@@ -8,7 +8,7 @@ use bigdecimal::num_bigint::BigInt;
 use indexmap::IndexMap;
 use super::lexer::{Lexer, LexerToken, LexerTokenType};
 use super::value::Value;
-use super::error::{JsonErrorKind, JsonError};
+use super::error::{JsonError, JsonErrorKind, StringError, StringErrorKind};
 use super::{escapes, number, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT};
 use super::number::Number;
 
@@ -423,28 +423,24 @@ impl<'a> Parser<'a> {
         let mut i = token.start_index + 1; // Skip opening quotation
 
         while i < token.start_index + (token.offset - 1) as usize { // Skip closing quotation
-            let byte = self.buffer[i];
-            match byte {
+            let current = self.buffer[i];
+            match current {
                 b'\\' => {
                     val.push(escapes::map_escape_character(self.buffer, i));
-                    i += escapes::len(self.buffer, i);
+                    i += escapes::len(self.buffer, i) - 1;
                 }
-                b if b.is_ascii() => {
-                    val.push(b as char);
-                    i += 1;
+                b if !b.is_ascii() => {
+                    val.push_str(utf8::read_utf8_char(self.buffer, i));
+                    i += utf8::utf8_char_width(current) - 1;
                 }
-                _ => {
-                    let width = utf8::utf8_char_width(byte);
-                    val.push_str(str::from_utf8(&self.buffer[i..i + width]).unwrap());
-                    i += width;
-                }
+                _ => val.push(current as char)
             }
+            i += 1;
         }
 
         if val.len() > STRING_VALUE_LENGTH_LIMIT {
-            return Err(JsonError::new(JsonErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, Some(token.start_index)));
+            return Err(JsonError::from(StringError { kind: StringErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, pos: token.start_index }));
         }
-
         Ok(val)
     }
 
@@ -641,7 +637,7 @@ mod tests {
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
 
-        assert_eq!(result, Err(JsonError::new(JsonErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, Some(0))));
+        assert_eq!(result, Err(JsonError::from(StringError { kind: StringErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, pos: 0 })));
     }
 
     // We can't call: let buffer = format!("{}{}", "[".repeat(257), "]".repeat(257)).as_bytes();

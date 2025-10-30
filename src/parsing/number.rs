@@ -13,12 +13,50 @@ pub struct Number (NumberKind);
 //  The number 123.45 is stored as:
 //      Unscaled value: 12345
 //      Scale: 2
-//      Precision: 5
+//      Precision: 5 (number of digits)
 //
 // The actual value is calculated as: unscaled value * 10^(-scale)
 //
-// To store the unscaled value as an arbitrary precision integer BigInt uses a Vec<u32> under the hood
+// To store the unscaled value as an arbitrary precision integer BigInt uses a Vec<u32/u64> under the hood
+
+// In base 10: 1234 = 1 * 10^3 + 2 * 10^2 + 3 * 10^1 + 4 * 10^0
+// In base 2^32: each u32 is a coefficient for powers of 2^32
+
+// 2^32 = 4,294,967,296
+// 10,000,000,000,000 / 4,294,967,296 = 2328 remainder 1,316,134,912
+
+// So it's stored as:
+// vec![1_316_134_912, 2328]
+// Meaning: 1_316_134_912 * (2^32)^0 + 2328 * (2^32)^1
 //
+// The least significant "digit" (the remainder) goes in index 0, and more significant digits go in
+// higher indices. This is called "little-endian" order.
+//
+// 50,000,000,000,000,000,000 (50 quintillion)
+//
+// Step 1: Divide by 2^32
+//  50,000,000,000,000,000,000 ÷ 4,294,967,296 = 11,641,532,182
+//  Remainder: 1,695,547,392
+//
+// Step 2: That quotient is still > 2^32, so divide again
+//  11,641,532,182 / 4,294,967,296 = 2
+//  Remainder: 3,051,597,590
+//
+//  Step 3: Final quotient is 2 (fits in u32)
+//
+//  So our Vec<u32> is: vec![1_695_547_392, 3_051_597_590, 2]
+//  1,695,547,392 * (2^32)^0 + 3,051,597,590 * (2^32)^1 + 2 * (2^32)^2 = 50,000,000,000,000,000,000
+//
+// In parser.rs for the test valid_array() the number 340282366920938463463374607431768211456
+// is vec![0, 0, 1] for u64 and vec![0, 0, 0, 0, 1]
+//
+// 10^40
+//
+// With u32:
+// vec![1661992960, 1808227885, 3721402093, 4028081056, 542101086]
+//
+//With u64:
+// vec![7766279631452241920, 542101086035307936, 2]
 #[derive(Debug, PartialEq)]
 enum NumberKind {
     I64(i64),
@@ -129,7 +167,6 @@ pub(super) fn is_out_of_range_u64(buffer: &[u8]) -> bool {
     s.parse::<u64>().is_err()
 }
 
-// toDo: review loops and patterns in loops, check default values for primitives
 pub(super) fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<i64>().is_err()

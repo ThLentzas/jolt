@@ -7,6 +7,7 @@ mod parsing;
 
 // have a way for them to specify the case they want when they deserialize
 // maybe rename to nobu(trust)
+// check zero copy deserialization
 pub fn from_bytes(buffer: &[u8]) -> Result<Value, JsonError> {
     parsing::parse(buffer)
 }

@@ -1,6 +1,5 @@
 use std::{error, fmt};
-use crate::parsing::number;
-use crate::parsing::number::NumericError;
+use crate::parsing::number::{self, NumericError};
 
 const ESCAPE_CHAR_LEN: u8 = 2;
 const UNICODE_SEQ_LEN: u8 = 6;
@@ -116,8 +115,8 @@ fn decode_unicode(buffer: &[u8], pos: usize) -> char {
         let high = hex;
         i += 6; // 4 hex digits + \u
         let low = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
-        let code_point = decode_surrogate_pair(high as u32, low as u32);
-        ch = char::from_u32(code_point).unwrap();
+        let codepoint = decode_surrogate_pair(high as u32, low as u32);
+        ch = char::from_u32(codepoint).unwrap();
     } else {
         ch = char::from_u32(hex as u32).unwrap();
     }

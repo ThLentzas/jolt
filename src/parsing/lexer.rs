@@ -1,4 +1,4 @@
-use crate::parsing::error::{JsonErrorKind, JsonError};
+use crate::parsing::error::{JsonErrorKind, JsonError, StringErrorKind, StringError};
 use crate::parsing::{escapes, number, utf8};
 
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
@@ -82,7 +82,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex(&mut self) -> Result<(), JsonError> {
-        self.skip_white_spaces()?;
+        // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
+        // would work but the method is also needed in path.rs
+        crate::parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(());
         }
@@ -231,6 +233,8 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    // If we wanted to be more strict about integer ranges we could set the allowed range to [-(2^53) + 1, (2^53) - 1]
+    // https://www.rfc-editor.org/rfc/rfc7493#section-2.2
     fn is_out_of_range(&self, start: usize, state: NumberState) -> bool {
         let slice = &self.buffer[start..self.pos];
 
@@ -247,30 +251,33 @@ impl<'a> Lexer<'a> {
         false
     }
 
-    fn read_string(&mut self) -> Result<(), JsonError> {
+    fn read_string(&mut self) -> Result<(), StringError> {
         let len = self.buffer.len();
         self.pos += 1; // skip opening "
 
         while self.pos < len && self.buffer[self.pos] != b'"' {
             let current = self.buffer[self.pos];
-            // raw control characters are not allowed
-            // [34, 10, 34] is invalid the control character is passed as raw byte, and it is unescaped
-            // but [34, 92, 110, 34] should be considered valid as a new line character
-            if current.is_ascii_control() {
-                return Err(JsonError::new(JsonErrorKind::InvalidControlCharacter { byte: current }, Some(self.pos)));
-            }
-            if !current.is_ascii() {
-                utf8::check_utf8_sequence(&self.buffer, self.pos)?;
-                self.pos += utf8::utf8_char_width(current) - 1;
-            }
-            if current == b'\\' {
-                escapes::check_escape_character(&self.buffer, self.pos)?;
-                self.pos += escapes::len(&self.buffer, self.pos) - 1;
+            match current {
+                // raw control characters are not allowed
+                // [34, 10, 34] is invalid - the control character is passed as raw byte, and it is unescaped
+                // but [34, 92, 110, 34] should be considered valid as a new line character
+                c if c.is_ascii_control() => {
+                    return Err(StringError { kind: StringErrorKind::InvalidControlCharacter { byte: current }, pos: self.pos });
+                }
+                c if !c.is_ascii() => {
+                    utf8::check_utf8_sequence(&self.buffer, self.pos)?;
+                    self.pos += utf8::utf8_char_width(current) - 1;
+                }
+                b'\\' => {
+                    escapes::check_escape_character(&self.buffer, self.pos)?;
+                    self.pos += escapes::len(&self.buffer, self.pos) - 1;
+                }
+                _ => {}
             }
             self.pos += 1;
         }
         if self.pos == len {
-            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.pos - 1)));
+            return Err(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: self.pos - 1 })
         }
         Ok(())
     }
@@ -301,23 +308,6 @@ impl<'a> Lexer<'a> {
         }
         self.pos -= 1;
 
-        Ok(())
-    }
-
-    fn skip_white_spaces(&mut self) -> Result<(), JsonError> {
-        while self.pos < self.buffer.len() {
-            let current = self.buffer[self.pos];
-            // The only control characters that are allowed as raw bytes according to rfc are '\t', '\n', '\r'
-            // ' '(space) is not a control character
-            if current.is_ascii_control() && !matches!(current, b'\t' | b'\n' | b'\r' | b' ') { // rfc whitespaces
-                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
-            }
-            if matches!(current, b'\t' | b'\n' | b'\r' | b' ') {
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
         Ok(())
     }
 }
@@ -381,22 +371,22 @@ mod tests {
     fn invalid_strings() -> Vec<(&'static [u8], JsonError)> {
         vec![
             // raw byte control character
-            (b"\"\x00", JsonError::new(JsonErrorKind::InvalidControlCharacter { byte: 0 }, Some(1))),
+            (b"\"\x00", JsonError::from(StringError { kind: StringErrorKind::InvalidControlCharacter { byte: 0 }, pos: 1 })),
             // unpaired escaped
-            (b"\"\\", JsonError::new(JsonErrorKind::UnexpectedEof, Some(1))),
+            (b"\"\\", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 1 })),
             // unknown escaped
-            (b"\"\\g\"", JsonError::new(JsonErrorKind::UnknownEscapedCharacter { byte: b'g' }, Some(2))),
+            (b"\"\\g\"", JsonError::from(StringError { kind: StringErrorKind::UnknownEscapedCharacter { byte: b'g' }, pos: 2 })),
             // incomplete unicode
-            (b"\"\\u\"", JsonError::new(JsonErrorKind::UnexpectedEof, Some(3))),
+            (b"\"\\u", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 2 })),
             // // not enough bytes to form a low surrogate
-            (b"\"\\uD83D\"", JsonError::new(JsonErrorKind::UnexpectedEof, Some(7))),
+            (b"\"\\uD83D\"", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 7 })),
             // // high not followed by low
-            (b"\"\\uD83Dabcdef\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"\\uD83Dabcdef\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
             // // high followed by high
-            (b"\"\\uD83D\\uD83D\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
+            (b"\"\\uD83D\\uD83D\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
             // // low surrogate
-            (b"\"\\uDC00\"", JsonError::new(JsonErrorKind::InvalidSurrogate, Some(1))),
-            (b"\"abc", JsonError::new(JsonErrorKind::UnexpectedEof, Some(3))),
+            (b"\"\\uDC00\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
+            (b"\"abc", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 3 })),
         ]
     }
 
