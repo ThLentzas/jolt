@@ -84,6 +84,9 @@ impl<'a> Parser<'a> {
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
+    // For cases like object and array we perform a dfs because if an object has a value that is
+    // object or array we need to full instantiate that first and then return to continue with the
+    // rest of values. (similar to recursive descendant in path)
      fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), JsonError> {
         match token {
             Some(t) => {

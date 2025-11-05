@@ -1,7 +1,9 @@
 use std::cmp::PartialEq;
+use std::collections::VecDeque;
 use indexmap::IndexMap;
 use crate::parsing::number::Number;
-use crate::parsing::value::error::PointerError;
+use crate::parsing::value::error::{PathError, PointerError};
+use crate::parsing::value::path::{Query, Segment, SegmentKind, Selector};
 use crate::parsing::value::pointer::Pointer;
 
 mod path;
@@ -226,6 +228,164 @@ impl Value {
             }
         }
         Ok(Some(current))
+    }
+
+    // toDo: A JSONPath implementation MUST raise an error for any query that is not well-formed and
+    // valid. The well-formedness and the validity of JSONPath queries are independent of the JSON
+    // value the query is applied to. No further errors relating to the well-formedness and the
+    // validity of a JSONPath query can be raised during application of the query to a value.
+    pub fn read(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
+        let mut query = Query::new(path_expr.as_bytes());
+        let mut nodelist = VecDeque::new();
+        nodelist.push_back(self);
+
+        // read_seg() returns the segment, so the variable we define takes ownership, we don't need a ref
+        // to the segment, the returned segment is not part of the Query
+        // note that this is the only place that we get an error, when we process the expression,
+        // any other case, like calling a selector in a non-container node returns an empty vec
+        while let Some(segment) = query.read_seg()? {
+            match segment.kind {
+                SegmentKind::Child => {
+                    apply_child_segment(&mut nodelist, &segment);
+                }
+                SegmentKind::Descendant => {
+                    apply_descendant_segment(&mut nodelist, &segment);
+                }
+            }
+        }
+        Ok(nodelist.into())
+    }
+}
+
+// child segments
+//
+//{
+//   "users": [
+//     {
+//       "name": "Alice",
+//       "age": 30,
+//       "city": "NYC"
+//     },
+//     {
+//       "name": "Bob",
+//       "age": 25,
+//       "city": "LA"
+//     },
+//     {
+//       "name": "Charlie",
+//       "age": 35,
+//       "city": "Chicago"
+//     }
+//   ]
+// }
+//
+// $.users[*]['name', 'city']
+//
+// 1. .users returns the array
+// 2. [*] is called on the array, and it returns all the elements
+// 3. for every element in the nodelist the input list we apply each selector, in this case we have
+// 2 name selectors.
+// output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
+// It is important to note that from the output we see that we applied all the selector for the 1st
+// element we got back "Alice", "NYC" and so on
+//
+// applying each segment essentially increases the depth by 1 level
+fn apply_child_segment(nodelist: &mut VecDeque<&Value>, segment: &Segment) {
+    if nodelist.is_empty() {
+        return;
+    }
+
+    let initial_count = nodelist.len();
+    for i in 0..initial_count  {
+        for selector in &segment.selectors {
+            apply_selector(nodelist, selector, nodelist[i]);
+        }
+    }
+    // this is similar to iterating from 0 to initial_count and calling pop_front()
+    nodelist.drain(..initial_count);
+}
+
+fn apply_descendant_segment(nodelist: &mut VecDeque<&Value>, segment: &Segment) {
+    if nodelist.is_empty() {
+        return;
+    }
+
+    let initial_count = nodelist.len();
+    for i in 0..initial_count {
+        for selector in &segment.selectors {
+            recursive_descendant(nodelist, nodelist[i], selector);
+        }
+    }
+    // this is similar to iterating from 0 to initial_count and calling pop_front()
+    nodelist.drain(..initial_count);
+}
+
+fn recursive_descendant<'a>(nodelist: &mut VecDeque<&'a Value>, root: &'a Value, selector: &Selector) {
+    if !root.is_object() && !root.is_array() {
+        return;
+    }
+
+    apply_selector(nodelist, selector, root);
+    match root {
+        Value::Object(map) => {
+            for entry in map.values() {
+                recursive_descendant(nodelist, entry, selector);
+            }
+        }
+        Value::Array(arr) => {
+            for elem in arr {
+                recursive_descendant(nodelist, elem, selector);
+            }
+        }
+        _ => unreachable!()
+    }
+}
+
+// If we don't specify the lifetime, Rust due to lifetime elision will assign lifetimes to the references,
+// but we will get an error when we try to do nodelist.extend(map.values()); with an error 'lifetime may not live long enough'
+// Without explicitly specifying the lifetime, our function signature does not require the passed in
+// value to live as long as the values referenced by nodelist
+//
+// note that not all references get that lifetime, just the contents of VecDeque and value, because
+// those are the two we want to tie together
+//
+// a simplified version
+
+// let mut vec: Vec<&str> = vec![];
+//
+//     {
+//         let s = String::from("hello");
+//         let s_ref = s.as_str();
+//         vec.push(s_ref);  // s doesn't live long enough
+//     }  // s drops here
+//
+//     // vec would contain dangling reference
+fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, value: &'a Value) {
+    match (value, selector) {
+        (Value::Object(map), Selector::Name(name)) => {
+            if let Some(val) = map.get(name) {
+                nodelist.push_back(val);
+            }
+        }
+        // map.values() returns an iterator over &Value, extend() adds all items from the iterator to values
+        (Value::Object(map), Selector::WildCard) => {
+            nodelist.extend(map.values());
+        }
+        // arr.iter() returns an iterator over &Value, extend() adds all items to values
+        (Value::Array(arr), Selector::WildCard) => {
+            nodelist.extend(arr.iter());
+        }
+        (Value::Array(arr), Selector::Index(index)) => {
+            let n_idx = path::normalize_index(*index, arr.len());
+            if let Some(val) = arr.get(n_idx) {
+                nodelist.push_back(val);
+            }
+        }
+        (Value::Array(arr), Selector::Slice { start, end, step}) => {
+            let (lower, upper, step) = path::slice_bounds(*start, *end, *step, arr.len());
+        }
+        // queries can only be applied to containers(object, array)
+        _ => (),
     }
 }
 

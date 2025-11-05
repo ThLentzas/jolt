@@ -136,17 +136,17 @@ impl<'a> Lexer<'a> {
         let next = self.buffer.get(self.pos + 1);
 
         match(current, next) {
-            (b'+' | b'-', None) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
             // +9
-            (b'+', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
+            (b'+', Some(n)) if n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(self.pos))),
-            // +a
-            (b'+', Some(_)) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
+            // +a or +
+            (b'+', _) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
+            (b'-', None) => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.pos))),
             // -0 is valid
-            (b'-', Some(next_byte)) if !next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
+            (b'-', Some(n)) if !n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(self.pos))),
             // 05 not allowed
-            (b'0', Some(next_byte)) if next_byte.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
+            (b'0', Some(n)) if n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
                 message: "leading zeros are not allowed" }, Some(self.pos))),
             _ => (),
         }

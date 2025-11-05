@@ -59,10 +59,11 @@ pub struct PathError {
 
 #[derive(Debug, PartialEq)]
 pub enum PathErrorKind {
-    InvalidNameShorthandCharacter { byte: u8 },
+    InvalidNameShorthandSyntax { byte: u8 }, // This could also just be UnexpectedCharacter
     UnexpectedEndOf,
     MalformedString(StringError),
     UnexpectedCharacter { byte: u8 },
+    InvalidIndex { message: &'static str }
 }
 
 

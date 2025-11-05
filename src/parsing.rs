@@ -35,8 +35,8 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Value, JsonError> {
 //         }
 //         Ok(())
 //     }
-// Initially i had the above code but the check for control characters was not needed because
-// if the current byte is not a whitespace, will fail to match any arm in lex and we would
+// Initially I had the above code but the check for control characters was not needed because
+// if the current byte is not a whitespace, will fail to match any arm in lex, and we would
 // return an UnexpectedChar error
 pub(crate) fn skip_whitespaces(buffer: &[u8], pos: &mut usize)  {
     while *pos < buffer.len() {
