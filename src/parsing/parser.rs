@@ -301,7 +301,7 @@ impl<'a> Parser<'a> {
     //
     //  toDo: is it a cheap copy? can we solve this with unsafe?
     fn peek(&mut self) -> Result<Option<LexerToken>, JsonError> {
-       Ok(self.lexer.peek()?)
+       Ok(self.lexer.lex()?)
     }
 
     fn advance(&mut self, offset: usize) {
@@ -528,9 +528,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "big_decimal"))]
     fn valid_object() {
-        // can't use br## because 💖 is a Non ASCII character, empty strings as keys are allowed
+        // can't use br## because 🙂 is a Non ASCII character, empty strings as keys are allowed
         let buffer = r#"{
-            "4_byte_sequence": "💖",
+            "4_byte_sequence": "🙂",
             "surrogate_pair": "\uD83D\uDE00",
             "escape_characters": "\\\"\/\b\f\n\r\t",
             "boolean" : false,
@@ -549,7 +549,7 @@ mod tests {
         numbers.push(Value::Number(Number::from(2.718281828e-50)));
 
         let mut map = IndexMap::new();
-        map.insert("4_byte_sequence".to_string(), Value::String(String::from("💖")));
+        map.insert("4_byte_sequence".to_string(), Value::String(String::from("🙂")));
         map.insert("surrogate_pair".to_string(), Value::String(String::from("😀")));
         map.insert("escape_characters".to_string(), Value::String(String::from("\\\"/\x08\x0C\n\r\t")));
         map.insert("boolean".to_string(), Value::Boolean(false));

@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt;
-use std::fmt::{Display, Formatter};
 use crate::parsing::error::StringError;
 
 #[derive(Debug, PartialEq)]
@@ -85,8 +84,8 @@ impl From<StringError> for PathError {
 
 impl Error for PointerError {}
 
-impl Display for PathError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }

@@ -1,7 +1,6 @@
 use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::{escapes, utf8};
+use crate::parsing::{self, escapes, utf8};
 use crate::parsing::value::error::{PathError, PathErrorKind};
-use crate::parsing;
 use std::cmp;
 
 // fn read_name_shorthand(buffer: &[u8], pos: &mut usize) -> Result<String, PathError>
@@ -34,14 +33,122 @@ pub(super)enum SegmentKind {
     Descendant
 }
 
+// this is similar to NumberState, otherwise we would have to pass Option<..> 3 times every time we
+// need a slice
+#[derive(Debug, PartialEq)]
+pub(super) struct Slice {
+    pub(super) start: Option<i64>,
+    pub(super) end: Option<i64>,
+    pub(super) step: Option<i64>
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) enum Selector {
     Name(String),
     WildCard,
     // i64 covers the range [-(2^53)+1, (2^53)-1], we don't need to use Number
     Index(i64),
-    Slice { start: Option<i64>, end: Option<i64>, step: Option<i64> },
+    ArraySlice(Slice),
     FilterExpression
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct Range {
+    // current can become negative when traversing from right to left(negative step)
+    // current = 1, step = -2 -> current becomes -1
+    pub(super) current: isize,
+    // end can also be negative when we iterate in reverse order the lower bound is exclusive
+    // len = 5, current = 4, end = -1, step = -1 gives us all elements in reverse order (-1, 4]
+    pub(super) end: isize,
+    pub(super) step: i64
+}
+
+impl Range {
+    // negative indices on slices
+    // len = 10, start = -1, end = -6, step = 1
+    //
+    // first we do normalization: n_start = 9, n_end = 4
+    //
+    // then we have to address the issue mentioned on index where if the number is negative and its
+    // absolute value is greater than the length of the array, len + i still results in a negative
+    // number; for index selectors that is just out of bounds but for range we need to adjust it
+    //
+    // setting the bounds:
+    //
+    //  lower = min(max(9, 0), 10) => 9
+    //  upper = min(max(4, 0), 10) => 4
+    //
+    //  in this case where lower > upper we return an empty vector
+    //
+    //  len = 5, start = -60, end = 70
+    //  n_start = -55, n_end = 65
+    //
+    //  lower = min(max(-55, 0), 10) => 0
+    //  upper = min(max(-65, 0), 10) => 10
+    //
+    // what we observe is that when n_start, n_end is < 0, n_start rounds up to 0 and n_end rounds
+    // down to len; logic is reversed when step is negative
+    //
+    pub(super) fn new(slice: &Slice, len: i64)  -> Self {
+        let start;
+        let end;
+        // equivalent to: if step.is_none() { 1 } else { step.unwrap() }
+        let step = slice.step.unwrap_or(1);
+
+        if step >= 0 {
+            start = slice.start.unwrap_or(0);
+            end = slice.end.unwrap_or(len);
+        } else {
+            start = slice.start.unwrap_or(len - 1);
+            end = slice.end.unwrap_or(-len - 1);
+        }
+
+        let n_start = normalize_index(start, len);
+        let n_end = normalize_index(end, len);
+        let lower;
+        let upper;
+
+        if step >= 0 {
+            lower = cmp::min(cmp::max(n_start, 0), len);
+            upper = cmp::min(cmp::max(n_end, 0), len);
+        } else {
+            upper = cmp::min(cmp::max(n_start, -1), len - 1);
+            lower = cmp::min(cmp::max(n_end, -1), len - 1);
+        }
+
+        Self {
+            // if step is negative, the first element we visit is at upper, otherwise is lower
+            current: if step >= 0 { lower as isize } else { upper as isize },
+            // end keeps track of where our range ends, if step is negative it is the lower bound else the upper
+            end: if step >= 0 { upper as isize } else { lower as isize },
+            step
+        }
+    }
+}
+
+impl Iterator for Range {
+    // why an associated type instead of a generic? https://www.youtube.com/watch?v=yozQ9C69pNs
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.step == 0 {
+            return None;
+        }
+
+        // in the left to right case, the upper bound is exclusive
+        if self.step > 0 && self.current >= self.end as isize {
+            return None;
+        }
+
+        // in the right to left case, the lower bound is exclusive
+        if self.step < 0 && self.current <= self.end as isize {
+            return None;
+        }
+
+        let index = self.current;
+        self.current += self.step as isize;
+        Some(index as usize)
+    }
 }
 
 impl Segment {
@@ -57,14 +164,24 @@ impl<'a> Query<'a> {
 
     // we have already checked for empty input
     // the query(json path expression) is not a json string like pointer, which means that we won't
-    // check a Unicode sequence could map to '$'
+    // check if a Unicode sequence could map to '$'
+    // jsonpath-query = root-identifier *(S segment)
+    //
+    // the syntax means it must start with the root identifier('$') followed by zero or more segments
     pub(super) fn check_root(&mut self) -> Result<(), PathError> {
-        let root = self.buffer[self.pos];
+        let root = self.buffer[0];
+
         if root != b'$' {
-            return Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: root }, pos: self.pos });
+            return Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: root }, pos: 0 });
         }
 
-        // toDo: call advance()
+        self.pos += 1; // move past '$'
+        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        // whitespaces are allowed after '$' only when followed by a segment
+        // " $", "$ " neither is allowed
+        if self.pos >= self.buffer.len() {
+            return Err(PathError { kind: PathErrorKind::UnexpectedEndOf, pos: self.pos - 1 });
+        }
         Ok(())
     }
 
@@ -78,25 +195,20 @@ impl<'a> Query<'a> {
 
         match(current, next) {
             (b'.', Some(b'.')) if self.buffer.get(self.pos + 2).is_none() => Err(PathError { kind: PathErrorKind::UnexpectedEndOf, pos: self.pos + 1 }),
-            (b'.', Some(b'.')) => Ok(Some(self.read_descendant_seg()?)),
+            (b'.', Some(b'.')) => {
+                // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
+                // we have 2 dots(..) followed by either a bracketed-selection or a wildcard or a member name shorthand
+                // move past ..
+                self.pos += 2;
+                Ok(Some(self.read_notation(SegmentKind::Descendant)?))
+            },
             (b'.' | b'[', None) => Err(PathError { kind: PathErrorKind::UnexpectedEndOf, pos: self.pos }),
-            (b'.' | b'[', Some(_)) => Ok(Some(self.read_child_seg()?)),
+            // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
+            // we have either bracketed selection or '.' followed by either a wildcard or a member-name-shorthand
+            (b'.' | b'[', Some(_)) => Ok(Some(self.read_notation(SegmentKind::Child)?)),
             // a segment always starts with '.', '..' or '['
             _ => Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: current }, pos: self.pos })
         }
-    }
-
-    // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
-    // we have either bracketed selection or '.' followed by either a wildcard or a member-name-shorthand
-    fn read_child_seg(&mut self) -> Result<Segment, PathError> {
-        self.read_notation(SegmentKind::Child)
-    }
-
-    // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
-    // we have 2 dots(..) followed by either a bracketed-selection or a wildcard or a member name shorthand
-    fn read_descendant_seg(&mut self) -> Result<Segment, PathError> {
-        self.pos += 2; // move past ..
-        self.read_notation(SegmentKind::Descendant)
     }
 
     fn read_notation(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {
@@ -122,7 +234,11 @@ impl<'a> Query<'a> {
             parsing::skip_whitespaces(self.buffer, &mut self.pos);
 
             match self.pos < len {
-                true if self.buffer[self.pos] == b']' => break,
+                true if self.buffer[self.pos] == b']' => {
+                    // skip pass the closing bracket ']'
+                    self.pos += 1;
+                    break;
+                }
                 // after processing selector if we don't encounter ']', we expect comma to separate
                 // multiple selectors.
                 true if self.buffer[self.pos] != b',' => return Err(PathError { kind: PathErrorKind::UnexpectedCharacter {
@@ -172,13 +288,12 @@ impl<'a> Query<'a> {
         let num;
 
         if self.buffer[self.pos] == b':' {
-            self.pos += 1;
             return self.read_slice(None);
         }
 
         num = self.read_index()?;
         // from the slice syntax: start *S ":" *S end *S ":" *S step  we need to skip whitespaces
-        // between 1st index and ':'. If we don't encounter ':' we have an index case not a slice
+        // between first index and ':'. If we don't encounter ':' we have an index case not a slice
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos < self.buffer.len() && self.buffer[self.pos] == b':' {
             return self.read_slice(Some(num));
@@ -190,14 +305,16 @@ impl<'a> Query<'a> {
     // rfc syntax: start *S ":" *S end *S ":" *S step
     fn read_slice(&mut self, start: Option<i64>) -> Result<Selector, PathError> {
         let len = self.buffer.len();
-        let mut step: Option<i64> = None;// default step value
+        let mut step: Option<i64> = Some(1);// default step value
         let mut end: Option<i64> = None;
+        // skip the first ':'(we encountered that during the read_numeric() and read_slice() was called)
+        self.pos += 1;
 
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
 
         // 1: or :
-        if self.pos > len {
-            return Ok(Selector::Slice { start, end, step });
+        if self.pos >= len {
+            return Ok(Selector::ArraySlice(Slice { start, end, step }));
         }
 
         // the cases where end and step are omitted(: or 1:) still need a right square bracket
@@ -206,28 +323,31 @@ impl<'a> Query<'a> {
         // syntax
         match self.buffer[self.pos] {
             // 0:: or ::
-            b':' => self.pos += 1,// end is None by default
+            b':' => self.pos += 1,
+            // set end when present
             c if c == b'-' || c.is_ascii_digit() => end = Some(self.read_index()?),
-            _ =>  return Ok(Selector::Slice { start, end, step }),
+            _ =>  return Ok(Selector::ArraySlice(Slice { start, end, step })),
         }
 
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         // 1::, ::, 1:5
         if self.pos > len {
-            return Ok(Selector::Slice { start, end, step });
+            return Ok(Selector::ArraySlice(Slice { start, end, step }));
         }
+        // 1:2: or :2:
         if end.is_some() && self.buffer[self.pos] == b':'{
-            self.pos += 1;
+            self.pos += 1; // skip the second ':'
             parsing::skip_whitespaces(self.buffer, &mut self.pos);
         }
 
         match self.buffer.get(self.pos) {
+            // set step when present
             Some(c) if *c == b'-' || c.is_ascii_digit() => step = Some(self.read_index()?),
             // 1::, 1::(*S any number of whitespaces), 1:2 or 1:2(*S), similar to the : and 1: cases
             // above all are valid slice selectors it is the bracket syntax that is incorrect
-            _ => return Ok(Selector::Slice { start, end, step }),
+            _ => return Ok(Selector::ArraySlice(Slice { start, end, step })),
         }
-        Ok(Selector::Slice { start, end, step })
+        Ok(Selector::ArraySlice(Slice { start, end, step }))
     }
 
     fn read_index(&mut self) -> Result<i64, PathError> {
@@ -289,7 +409,10 @@ impl<'a> Query<'a> {
         let mut segment = Segment::new(kind);
 
         match current {
-            b'*' => segment.selectors.push(Selector::WildCard),
+            b'*' => {
+                segment.selectors.push(Selector::WildCard);
+                self.pos += 1;
+            },
             _ => {
                 let name = self.read_name_shorthand()?;
                 segment.selectors.push(Selector::Name(name));
@@ -306,7 +429,6 @@ impl<'a> Query<'a> {
         let quote = self.buffer[self.pos];
         let len = self.buffer.len();
         let mut name = String::new();
-        name.push(quote as char);
         self.pos += 1; // skip opening quote
 
         while self.pos < len && self.buffer[self.pos] != quote {
@@ -322,9 +444,17 @@ impl<'a> Query<'a> {
                     match next {
                         // This is the extra edge case where ' has to be escaped when the name is in single quotes
                         // Not part of the escape characters defined for json string
-                        Some(b'\'') if quote == b'\''=> name.push('\''),
+                        Some(b'\'') if quote == b'\''=> {
+                            name.push('\'');
+                            // pos is at \, next is ', move pos to ' so when we exit this arm and
+                            // self.pos += 1 will move pos past '. If we don't do this increment
+                            // pos would be moved to after exiting the arm, and our loop will end
+                            // because incorrectly will treat the escaped ' as a closing quote
+                            self.pos += 1;
+                        },
                         _ => {
                             escapes::check_escape_character(self.buffer, self.pos)?;
+                            name.push(escapes::map_escape_character(self.buffer, self.pos));
                             self.pos += escapes::len(self.buffer, self.pos) - 1;
                         }
                     }
@@ -336,7 +466,6 @@ impl<'a> Query<'a> {
         if self.pos == len {
             return Err(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: self.pos - 1 });
         }
-        name.push(quote as char);
         self.pos += 1;// skip closing quote
 
         Ok(name)
@@ -356,23 +485,33 @@ impl<'a> Query<'a> {
         // . and  [ will indicate the start of a new segment
         while self.pos < len && current != b'.' && current != b'[' {
             match current {
-                c if !c.is_ascii() => name.push_str(utf8::read_utf8_char(self.buffer, self.pos)),
-                // name_first
+                c if !c.is_ascii() => {
+                    name.push_str(utf8::read_utf8_char(self.buffer, self.pos));
+                    self.pos += utf8::utf8_char_width(current) - 1;
+                },
+                // name_first check
+                //
+                // name_first/char can be any non ascii character in the range 0x80..=0xD7FF | 0xE000..=0x10FFFF
+                // but in is_valid_name_first() we only check: byte.is_ascii_alphabetic() || byte == b'_', this
+                // is because we already checked for a non-ascii character, it is the 1st arm so no matter if it
+                // is the first character or not it will always be valid.
+                //
+                // if we didn't follow this logic we would have to pass the 1st character to the function not
+                // just the byte value
                 c if start == self.pos => {
                     if !is_valid_name_first(c) || c.is_ascii_digit() {
                         return Err(PathError { kind: PathErrorKind::InvalidNameShorthandSyntax { byte: c }, pos: self.pos });
                     }
                     name.push(c as char);
-                    self.pos += 1;
                 }
                 c => {
                     if !is_valid_name_char(c) {
                         return Err(PathError { kind: PathErrorKind::InvalidNameShorthandSyntax { byte: c }, pos: self.pos });
                     }
                     name.push(c as char);
-                    self.pos += 1;
                 }
             }
+            self.pos += 1;
             if self.pos < len {
                 current = self.buffer[self.pos];
             }
@@ -394,47 +533,22 @@ fn is_valid_name_char(byte: u8) -> bool {
     is_valid_name_first(byte) || byte.is_ascii_digit()
 }
 
-pub(super) fn normalize_index(index: i64, len: usize) -> usize {
-    if index >= 0 { index as usize } else { len + index as usize }
-}
-
-pub(super) fn slice_bounds(start: Option<i64>, end: Option<i64>, step: Option<i64>, len: usize) -> (i64, i64, i64) {
-    let step_val = if step.is_none() { 1 } else { step.unwrap() };
-    let start_val;
-    let end_val;
-
-    match step_val >= 0 {
-        true => {
-            start_val = if start.is_none() { 0 } else { start.unwrap() };
-            end_val = if end.is_none() { len as i64 } else { end.unwrap() };
-        }
-        false => {
-            start_val = if start.is_none() { len as i64 - 1 } else { start.unwrap() };
-            end_val = if end.is_none() { -(len as i64) - 1 } else { end.unwrap() };
-        }
-    }
-
-    let n_start = normalize_index(start_val, len) as i64;
-    let n_end = normalize_index(end_val, len) as i64;
-    let lower;
-    let upper;
-
-    match step_val >= 0 {
-        true => {
-            lower = cmp::min(cmp::max(n_start, 0), len as i64);
-            upper = cmp::min(cmp::max(n_end, 0), len as i64);
-        }
-        false => {
-            upper = cmp::min(cmp::max(n_start, -1), (len - 1) as i64);
-            lower = cmp::min(cmp::max(n_end, -1), (len - 1) as i64);
-        }
-    }
-    (lower, upper, step_val)
+pub(super) fn normalize_index(index: i64, len: i64) -> i64 {
+    if index >= 0 { index } else { len + index }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn invalid_root() -> Vec<(&'static str, PathError)> {
+        vec![
+            // mismatch
+            (" ", PathError { kind: PathErrorKind::UnexpectedCharacter { byte: b' ' }, pos: 0 }),
+            // whitespaces not followed by a segment
+            ("$ \n\r", PathError { kind: PathErrorKind::UnexpectedEndOf, pos: 3 }),
+        ]
+    }
 
     fn invalid_notations() -> Vec<(&'static str, PathError)> {
         vec![
@@ -445,8 +559,8 @@ mod tests {
         ]
     }
 
-    // Name selectors return member names which are json strings. We have already covered all those
-    // cases in lexer.rs(invalid strings)
+    // Name selectors return member names which are json strings. We have already covered the invalid
+    // cases in lexer.rs(invalid_strings())
     fn invalid_name_selectors() -> Vec<(&'static str, PathError)> {
         vec![
             // name-first from name-shorthand notation can not start with a digit
@@ -482,12 +596,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_root() {
-        let path_expr = "a";
-        let mut query = Query::new(path_expr.as_bytes());
-        let result = query.check_root();
+    fn test_invalid_root() {
+        for(path_expr, err) in invalid_root() {
+            let mut query = Query::new(path_expr.as_bytes());
+            let result = query.check_root();
 
-        assert_eq!(result, Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: b'a' }, pos: 0 }));
+            assert_eq!(result, Err(err));
+        }
     }
 
     #[test]

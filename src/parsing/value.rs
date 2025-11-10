@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use indexmap::IndexMap;
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
-use crate::parsing::value::path::{Query, Segment, SegmentKind, Selector};
+use crate::parsing::value::path::{Query, Segment, SegmentKind, Selector, Range};
 use crate::parsing::value::pointer::Pointer;
 
 mod path;
@@ -140,6 +140,8 @@ impl Value {
     // "users" exists as key in val, update val with the value of the users key, val = [{"name": "Alice"}, {"name": "Bob"}]
     // 1 is an index and val is an array, update val with the value of at the given index, val = {"name": "Bob"}
     // "name" exists as key in val, update val with the value of the name key, val = "Bob"
+    //
+    // pointer always returns 1 value, path expressions can return more than 1 and are more flexible
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -230,19 +232,34 @@ impl Value {
         Ok(Some(current))
     }
 
-    // toDo: A JSONPath implementation MUST raise an error for any query that is not well-formed and
+    // A JSONPath implementation MUST raise an error for any query that is not well-formed and
     // valid. The well-formedness and the validity of JSONPath queries are independent of the JSON
     // value the query is applied to. No further errors relating to the well-formedness and the
     // validity of a JSONPath query can be raised during application of the query to a value.
+    //
+    // As mentioned above invalid paths should always return an error which means even if we process
+    // some segment and returned an empty list we can NOT stop and return immediately because the
+    // path expression might still be invalid.
+    //
+    // path_expr = "$[1]['foo]"
+    // val = "3"
+    //
+    // If we try to apply [1] to val it returns an empty list because it is not an array and in theory
+    // we could return without processing the rest of the segments, but we return something from an
+    // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
+    // case.
     pub fn read(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes());
         let mut nodelist = VecDeque::new();
         nodelist.push_back(self);
 
+        query.check_root()?;
+
         // read_seg() returns the segment, so the variable we define takes ownership, we don't need a ref
-        // to the segment, the returned segment is not part of the Query
+        // to the segment, the returned segment is not part of the Query, similar to how our lexer
+        // returned lexer tokens but did not keep track of them
         // note that this is the only place that we get an error, when we process the expression,
-        // any other case, like calling a selector in a non-container node returns an empty vec
+        // any other case, calling a selector to a value that can't be applied we return an empty list
         while let Some(segment) = query.read_seg()? {
             match segment.kind {
                 SegmentKind::Child => {
@@ -290,6 +307,9 @@ impl Value {
 // element we got back "Alice", "NYC" and so on
 //
 // applying each segment essentially increases the depth by 1 level
+//
+// note that the selectors are only applied to the input nodelist, the initial_count keeps track
+// of that, no selector is applied to a node added by a previous selector
 fn apply_child_segment(nodelist: &mut VecDeque<&Value>, segment: &Segment) {
     if nodelist.is_empty() {
         return;
@@ -305,6 +325,51 @@ fn apply_child_segment(nodelist: &mut VecDeque<&Value>, segment: &Segment) {
     nodelist.drain(..initial_count);
 }
 
+// {
+//   "store": {
+//     "book": [
+//       {
+//         "title": "Book 1",
+//         "price": 10,
+//         "author": {
+//           "name": "Alice",
+//           "price": 5
+//         }
+//       },
+//       {
+//         "title": "Book 2",
+//         "price": 15
+//       }
+//     ],
+//     "bicycle": {
+//       "price": 100
+//     }
+//   }
+// }
+//
+// $..price
+//
+// price is a member name shorthand selector, we look if our object has any keys that match
+// If so we push the value of the price key in nodelist, then we dfs for EVERY value in current object
+//
+// no key matches price and at the root object, iterate through the values and call dfs
+//
+// values of store(only key in the root object) gives us store and book, try to apply the selector
+// again on the keys of store, no match, dfs again for all values of store
+// book is an array, can't apply name selector, dfs into its values, we have our first match 10,
+// we add to the list the moment we visit it(have to according to the rfc) and recurse again for
+// book[0], author is an object that name selector can be applied, has a key price, visit it and recurse
+// for the values of author, no container nodes return
+//
+// now we check book[1], match, add 15, so far we have 10, 5, 15
+// recurse into each values, no container nodes and recursion returns to the level where no we have
+// to visit the 2nd key of store, 'bicycle' again check its values we have a match price, 10,5,15,100
+// recurse again no more nodes we return at the start
+//
+// it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
+// not when recursion backtracks(postorder) we append them in the list
+//
+// in the end we apply the same logic as child segment remove from the front queue
 fn apply_descendant_segment(nodelist: &mut VecDeque<&Value>, segment: &Segment) {
     if nodelist.is_empty() {
         return;
@@ -325,6 +390,7 @@ fn recursive_descendant<'a>(nodelist: &mut VecDeque<&'a Value>, root: &'a Value,
         return;
     }
 
+    // toDo: why recursive desc needs lifetimes  before calling apply_selector? why child/desc segm dont?
     apply_selector(nodelist, selector, root);
     match root {
         Value::Object(map) => {
@@ -337,7 +403,7 @@ fn recursive_descendant<'a>(nodelist: &mut VecDeque<&'a Value>, root: &'a Value,
                 recursive_descendant(nodelist, elem, selector);
             }
         }
-        _ => unreachable!()
+        _ => unreachable!("recursive_descendant() was called in a non container node")
     }
 }
 
@@ -376,15 +442,26 @@ fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, v
             nodelist.extend(arr.iter());
         }
         (Value::Array(arr), Selector::Index(index)) => {
-            let n_idx = path::normalize_index(*index, arr.len());
-            if let Some(val) = arr.get(n_idx) {
+            // if index is negative and its absolute value is greater than length, the n_idx can
+            // still be negative, and we can not call get() with anything other than usize
+            // len = 2, index = -4 => n_idx = -2
+            let n_idx = path::normalize_index(*index, arr.len() as i64);
+            if let Some(val) = usize::try_from(n_idx)
+                .ok()
+                .and_then(|idx| arr.get(idx)) {
                 nodelist.push_back(val);
             }
         }
-        (Value::Array(arr), Selector::Slice { start, end, step}) => {
-            let (lower, upper, step) = path::slice_bounds(*start, *end, *step, arr.len());
+        (Value::Array(arr), Selector::ArraySlice(slice)) => {
+            let range = Range::new(slice, arr.len() as i64);
+
+            for i in range {
+                if let Some(val) = arr.get(i) {
+                    nodelist.push_back(val);
+                }
+            }
         }
-        // queries can only be applied to containers(object, array)
+        // selectors can only be applied to containers(object, array)
         _ => (),
     }
 }
@@ -398,6 +475,7 @@ fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, v
 // It is called the Orphan Rule: https://ianbull.com/notes/rusts-orphan-rule/
 //
 // used by the json!()
+// toDo: if this part of the public api can someone call .from() and pass an invalid json string?
 impl From<&str> for Value {
     fn from(val: &str) -> Self {
         Value::String(val.to_string())
@@ -473,7 +551,7 @@ mod tests {
 
     // We could also move those tests to pointer and break it down to the 3 methods called by pointer()
     // check_start(), gen_ref_token(), check_array_index()
-    fn invalid_paths() -> Vec<(&'static str, PointerError)> {
+    fn invalid_pointer_paths() -> Vec<(&'static str, PointerError)> {
         vec![
             // does not start with '/'
             ("foo/bar", PointerError::new(PointerErrorKind::InvalidPathSyntax, 0)),
@@ -499,8 +577,8 @@ mod tests {
         ]
     }
 
-    // this could be a struct?
-    fn valid_paths() -> Vec<(&'static str, Value, Option<Value>)> {
+    // path, source, result
+    fn valid_pointer_paths() -> Vec<(&'static str, Value, Option<Value>)> {
         vec![
             ("", json!({ "foo": "bar" }), Some(json!({ "foo": "bar" }))),
             ("/foo/1", json!({ "foo": [false, null] }), Some(json!(null))),
@@ -523,26 +601,174 @@ mod tests {
         ]
     }
 
+    // path_expr, source, result
+    // in the cases below selectors are applied to objects and return values
+    // cases like applying selectors to a non-object value or not finding keys with the given name
+    // are part of this test
+    //
+    // we don't have to repeat all the cases for both single and double-quoted names since we use
+    // the same function
+    fn valid_names() -> Vec<(&'static str, Value, Vec<Value>)> {
+        vec![
+            ("$.foo", json!({ "foo": "bar" }), vec![json!("bar")]),
+            // é: 2-byte sequence
+            ("$.namé", json!({ "namé": "Joe" }), vec![json!("Joe")]),
+            ("$._j0lt", json!({ "_j0lt": ":)" }), vec![json!(":)")]),
+            ("$[\"foo\"]", json!({ "foo": "bar" }), vec![json!("bar")]),
+            // in double-quoted name ' can appear as char literal
+            ("$[\"hello ' world\"]", json!({ "hello ' world": "://" }), vec![json!("://")]),
+            // in double-quoted name " must be escaped at the parser level like we did with json strings
+            ("$[\"hello \\\" world\"]", json!({ "hello \" world": "://" }), vec![json!("://")]),
+            // in single-quoted name " must be escaped, similar to how we handle json strings(merge / and ' into ')
+            // at runtime the value is $['hello \' world'] and we map to $['hello ' world']
+            ("$['hello \\' world']", json!({ "hello ' world": "://" }), vec![json!("://")]),
+            // in single-quoted name " can appear unescaped at the parser level
+            // at runtime the value is $['hello " world'] and " is just a char literal
+            ("$['hello \" world']", json!({ "hello \" world": "://" }), vec![json!("://")]),
+            ("$[\"\"]", json!({ "": "empty key" }), vec![json!("empty key")]),
+            ("$['foo']", json!({ "foo": "bar" }), vec![json!("bar")]),
+            ("$['\\u263A']", json!({ "☺": "smiley_face" }), vec![json!("smiley_face")]),
+            // surrogate pair
+            ("$['\\uD83D\\uDE80']", json!({ "🚀": "rocket" }), vec![json!("rocket")]),
+            // called in an Object that does not have 'foo' as key
+            ("$['foo']", json!({ "key": "value" }), vec![]),
+            // called in a non-Object value
+            ("$['foo']", json!([1, 2, 3]), vec![]),
+        ]
+    }
+
+    fn valid_indices() -> Vec<(&'static str, Value, Vec<Value>)> {
+        vec![
+            // n_idx = 3 + (-3) = 0
+            ("$[-3]", json!([2, 5, 1]), vec![json!(2)]),
+            ("$[2]", json!([2, 5, 1]), vec![json!(1)]),
+            // n_idx = 3 + (-5) = -2
+            ("$[-5]", json!([2, 5, 1]), vec![]),
+            // out of bounds
+            ("$[5]", json!([2, 5, 1]), vec![]),
+        ]
+    }
+
+    fn valid_slices() -> Vec<(&'static str, Value, Vec<Value>)> {
+        vec![
+            ("$[2:4]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(2), json!(3)]),
+            ("$[1:8:2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(1), json!(3), json!(5), json!(7)]),
+            // [0, 10)
+            ("$[:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2), json!(3), json!(4), json!(5), json!(6), json!(7), json!(8), json!(9)]),
+            // [0, 10)
+            ("$[::]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2), json!(3), json!(4), json!(5), json!(6), json!(7), json!(8), json!(9)]),
+            // [0, 3)
+            ("$[:3]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2)]),
+            // [0, 10) step by 2
+            ("$[::2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(2), json!(4), json!(6), json!(8)]),
+            // [0, 10) in reverse order
+            ("$[::-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(9), json!(8), json!(7), json!(6), json!(5), json!(4), json!(3), json!(2), json!(1), json!(0)]),
+            // (0, 10) in reverse order
+            ("$[:0:-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(9), json!(8), json!(7), json!(6), json!(5), json!(4), json!(3), json!(2), json!(1)]),
+            // (-1, 4] in reverse order
+            ("$[4::-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(4), json!(3), json!(2), json!(1), json!(0)]),
+            // [1, 1)
+            ("$[1:1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![]),
+            // read new() from Range for the cases below
+            // [9, 4)
+            ("$[-1:-6:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![]),
+            // [0, 10)
+            ("$[-11:12:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2), json!(3), json!(4), json!(5), json!(6), json!(7), json!(8), json!(9)]),
+            // (2, 9] in reverse order and step by 2
+            ("$[-1:-8:-2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(9), json!(7), json!(5), json!(3)]),
+            // [2, 8)
+            ("$[2:-2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(2), json!(3), json!(4), json!(5), json!(6), json!(7)]),
+            // [8, 9)
+            ("$[-2:9]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(8)]),
+            // [6, 10)
+            ("$[-4:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(6), json!(7), json!(8), json!(9)]),
+            // [0, 7)
+            ("$[:-3]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2), json!(3), json!(4), json!(5), json!(6)]),
+        ]
+    }
+
     // maybe instead of expected/actual change it to left/right?
     #[test]
-    fn test_valid_paths() {
-        for (path, val, expected) in valid_paths() {
-            let actual = val.pointer(path);
-            assert_eq!(actual, Ok(expected.as_ref()), "invalid path: {path}");
+    fn test_valid_pointer_paths() {
+        for (path, source, expected) in valid_pointer_paths() {
+            let actual = source.pointer(path);
+            assert_eq!(actual, Ok(expected.as_ref()));
         }
     }
 
     #[test]
-    fn test_invalid_paths() {
+    fn test_invalid_pointer_paths() {
         let val = json!({ "foo": [1] });
 
-        for(path, err) in invalid_paths() {
+        for(path, err) in invalid_pointer_paths() {
             // problem: if the call to pointer() returned Ok() the test passes but that is not what we want
             // if let Err(e) = val.pointer(path) {
             //     assert_eq!(e, err);
             // }
             let result = val.pointer(path);
             assert_eq!(result, Err(err), "invalid path: {path}");
+        }
+    }
+
+    #[test]
+    fn test_valid_names() {
+        for(path_expr, source, nodelist) in valid_names() {
+            let res = source.read(path_expr).unwrap();
+
+            assert_eq!(res.len(), nodelist.len());
+            for (i, val) in res.into_iter().enumerate() {
+                assert_eq!(*val, nodelist[i], "invalid path: {path_expr}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_valid_indices() {
+        for(path_expr, source, nodelist) in valid_indices() {
+            let res = source.read(path_expr).unwrap();
+
+            assert_eq!(res.len(), nodelist.len());
+            for (i, val) in res.into_iter().enumerate() {
+                assert_eq!(*val, nodelist[i], "invalid path: {path_expr}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_valid_slices() {
+        for(path_expr, source, nodelist) in valid_slices() {
+            let res = source.read(path_expr).unwrap();
+
+            assert_eq!(res.len(), nodelist.len());
+            for (i, val) in res.into_iter().enumerate() {
+                assert_eq!(*val, nodelist[i], "invalid path: {path_expr}");
+            }
+        }
+    }
+
+    #[test]
+    fn wildcard_on_object() {
+        let val = json!({
+            "key": "value",
+            "key_1": "value_1"
+        });
+        let res = val.read("$.*").unwrap();
+
+        if let Value::Object(ref map) = val {
+            let expected: Vec<&Value> = map.values().collect();
+            assert_eq!(res, expected);
+        }
+        // maybe panic! here with an else because the test will pass if val is not an object
+    }
+
+    #[test]
+    fn wildcard_on_array() {
+        let val = json!([1, 5, 3, 9]);
+        let res = val.read("$[*]").unwrap();
+
+        if let Value::Array(ref vec) = val {
+            let expected: Vec<&Value> = vec.iter().collect();
+            assert_eq!(res, expected);
         }
     }
 }

@@ -35,6 +35,7 @@ impl LexerToken {
         Self { start_index, offset, token_type }
     }
 
+    // toDo: this should be an immutable borrow? copying here is fine?
     pub(super) fn start_index(&self) -> usize {
         self.start_index
     }
@@ -51,79 +52,63 @@ impl LexerToken {
 pub(super) struct Lexer<'a> {
     buffer: &'a [u8],
     pos: usize,
-    tokens: Vec<LexerToken>
 }
 
 impl<'a> Lexer<'a> {
     pub(super) fn new(buffer: &'a [u8]) -> Self {
         Self {
             buffer,
-            tokens: Vec::new(),
             pos: 0
         }
-    }
-
-    pub(super) fn peek(&mut self) -> Result<Option<LexerToken>, JsonError> {
-        if self.pos >= self.buffer.len() {
-            return Ok(None);
-        }
-
-        let len = self.tokens.len();
-        self.lex()?;
-        if len == self.tokens.len() {
-            return Ok(None);
-        }
-
-        Ok(Some(self.tokens.last().unwrap().clone()))
     }
 
     pub(super) fn advance(&mut self, n: usize) {
         self.pos += n;
     }
 
-    fn lex(&mut self) -> Result<(), JsonError> {
+    // toDo: explain why we moved away from storing the tokens in a vector?
+    pub(super) fn lex(&mut self) -> Result<Option<LexerToken>, JsonError> {
         // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
         // would work but the method is also needed in path.rs
         crate::parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
-            return Ok(());
+            return Ok(None);
         }
 
         let current = self.buffer[self.pos];
         if current.is_ascii() {
             match current {
-                b'{' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::LCurlyBracket)),
-                b'}' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::RCurlyBracket)),
-                b']' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::RSquareBracket)),
-                b'[' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::LSquareBracket)),
-                b':' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::Colon)),
-                b',' => self.tokens.push(LexerToken::new(self.pos, 1, LexerTokenType::Comma)),
+                b'{' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::LCurlyBracket))),
+                b'}' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::RCurlyBracket))),
+                b']' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::RSquareBracket))),
+                b'[' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::LSquareBracket))),
+                b':' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::Colon))),
+                b',' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::Comma))),
                 b'-' | b'+' | b'0'..=b'9' => {
                     let start = self.pos;
                     self.read_number()?;
-                    self.tokens.push(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Number));
+                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Number)))
                 }
                 b'"' => {
                     let start = self.pos;
                     self.read_string()?;
-                    self.tokens.push(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::String));
+                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::String)))
                 }
                 b't' | b'f' => {
                     let start = self.pos;
                     self.read_boolean()?;
-                    self.tokens.push(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Boolean));
+                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Boolean)))
                 }
                 b'n' => {
                     let start = self.pos;
                     self.read_null()?;
-                    self.tokens.push(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Null));
+                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Null)))
                 }
-                _ => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
+                _ => Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
             }
         } else {
-            return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)));
+            Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
         }
-        Ok(())
     }
 
     // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid number
@@ -410,7 +395,7 @@ mod tests {
     fn test_valid_numbers() {
         for (buffer, token) in valid_numbers() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.peek().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -430,7 +415,7 @@ mod tests {
     fn test_valid_strings() {
         for (buffer, token) in valid_strings() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.peek().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -450,7 +435,7 @@ mod tests {
     fn test_valid_literals() {
         for (buffer, token) in valid_literals() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.peek().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
