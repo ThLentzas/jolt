@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use crate::parsing::error::StringError;
+use crate::parsing::number::OutOfRangeError;
 
 #[derive(Debug, PartialEq)]
 pub struct PointerError {
@@ -19,18 +20,6 @@ pub enum PointerErrorKind {
 impl PointerError {
     pub(super) fn new(kind: PointerErrorKind, pos: usize) -> Self {
         PointerError { kind, pos }
-    }
-}
-
-impl fmt::Display for PointerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            // macros like write!, println! and so on do autoderef
-            PointerErrorKind::InvalidPathSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
-            PointerErrorKind::MalformedString(err) => write!(f, "{}", err),
-            PointerErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
-            PointerErrorKind::InvalidIndex { message } => write!(f, "{} at index {}", message, self.pos),
-        }
     }
 }
 
@@ -58,13 +47,12 @@ pub struct PathError {
 
 #[derive(Debug, PartialEq)]
 pub enum PathErrorKind {
-    InvalidNameShorthandSyntax { byte: u8 }, // This could also just be UnexpectedCharacter
+    InvalidNameShorthandSyntax { byte: u8 }, // toDo: This could also just be UnexpectedCharacter
     UnexpectedEndOf,
     MalformedString(StringError),
     UnexpectedCharacter { byte: u8 },
     InvalidIndex { message: &'static str }
 }
-
 
 impl From<StringError> for PathError {
     // we can not call, PathError { kind: PathErrorKind::MalformedString(err), err.pos }
@@ -82,12 +70,32 @@ impl From<StringError> for PathError {
     }
 }
 
+impl From<OutOfRangeError> for PathError {
+    fn from(err: OutOfRangeError) -> Self {
+       match err { OutOfRangeError::OutOfRange { pos } => {
+           PathError { kind: PathErrorKind::InvalidIndex { message: "number out of range"}, pos }}
+       }
+    }
+}
+
 impl Error for PointerError {}
+
+impl Error for PathError {}
+
+impl fmt::Display for PointerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            // macros like write!, println! and so on do autoderef
+            PointerErrorKind::InvalidPathSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
+            PointerErrorKind::MalformedString(err) => write!(f, "{}", err),
+            PointerErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
+            PointerErrorKind::InvalidIndex { message } => write!(f, "{} at index {}", message, self.pos),
+        }
+    }
+}
 
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
-
-impl Error for PathError {}

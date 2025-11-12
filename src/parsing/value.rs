@@ -1,6 +1,6 @@
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
-use indexmap::IndexMap;
+use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
 use crate::parsing::value::path::{Query, Segment, SegmentKind, Selector, Range};
@@ -141,7 +141,7 @@ impl Value {
     // 1 is an index and val is an array, update val with the value of at the given index, val = {"name": "Bob"}
     // "name" exists as key in val, update val with the value of the name key, val = "Bob"
     //
-    // pointer always returns 1 value, path expressions can return more than 1 and are more flexible
+    // toDo: read Appendix C, pointer always returns 1 value, path expressions can return more than 1 and are more flexible
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -252,7 +252,6 @@ impl Value {
         let mut query = Query::new(path_expr.as_bytes());
         let mut nodelist = VecDeque::new();
         nodelist.push_back(self);
-
         query.check_root()?;
 
         // read_seg() returns the segment, so the variable we define takes ownership, we don't need a ref
@@ -445,6 +444,7 @@ fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, v
             // if index is negative and its absolute value is greater than length, the n_idx can
             // still be negative, and we can not call get() with anything other than usize
             // len = 2, index = -4 => n_idx = -2
+            // toDo: add explanation why we can cast len to i64 without any loss
             let n_idx = path::normalize_index(*index, arr.len() as i64);
             if let Some(val) = usize::try_from(n_idx)
                 .ok()
@@ -684,8 +684,11 @@ mod tests {
             ("$[-4:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(6), json!(7), json!(8), json!(9)]),
             // [0, 7)
             ("$[:-3]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2), json!(3), json!(4), json!(5), json!(6)]),
+            // start *S ":" *S end *S ":" *S step
+            ("$[ 1 : \n\t 5 : \r]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(1), json!(2), json!(3), json!(4)]),
         ]
     }
+    // toDo: in multiple selectors include cases where we get duplicate nodes
 
     // maybe instead of expected/actual change it to left/right?
     #[test]

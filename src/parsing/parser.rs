@@ -79,7 +79,7 @@ impl<'a> Parser<'a> {
             // false5, "abc"123, {}null, note that this could return an error, {}001, -> leading zeros are not allowed
             Some(token) => Err(JsonError::new(JsonErrorKind::UnexpectedToken { expected: None }, Some(token.start_index()))),
             // whoever calls parse() will be the owner of the return value
-            None => Ok(self.compute_value()?)
+            None => Ok(self.build_value()?)
         }
     }
 
@@ -265,41 +265,6 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken::new(token.start_index(), token.offset(), ParserTokenType::Null));
     }
 
-    // Why this returns a copy?
-    //
-    // Initially the return value was Result<Option<&LexerToken>, JsonError> but that wouldn't work
-    // In parse object:
-
-    //      match self.peek()? {
-    //          Some(next) if expect(next.token_type(), LexerTokenType::RightCurlyBracket) => {
-    //              if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator
-    //
-    // We get an error: cannot borrow `self.tokens` as immutable because it is also borrowed as mutable
-    //
-    // self.peek()? takes a mutable borrow of self, and that borrow extends through the entire match expression
-    // Then inside the match arm, we are trying to access self.tokens.last() which requires an
-    // immutable borrow, but self is already mutably borrowed
-    //
-    // In Rust, when we have a method that takes &mut self and returns a reference to something inside
-    // self, that reference keeps the mutable borrow alive for as long as the reference exists
-    //
-    // 1. self.peek()? mutably borrows self and returns Option<&LexerToken>
-    // 2. This reference is used in the match expression
-    // 3. The mutable borrow must stay active for the entire match
-    // 4. Inside the match, you try to access self.tokens, but self is already mutably borrowed
-    //
-    // How we solve this with a copy?
-    //  Whoever calls peek() is the owner of the copy
-    //  In this case, match will keep it alive, the value is not dropped immediately, it will be dropped
-    //  when match exits which allows us to pass a reference to parse_value() in the case of parse_array()
-    //             match self.peek()? {
-    //                 ...
-    //                 next => self.parse_value(next.as_ref())?,
-    //             }
-    //  next: is whatever self.peek() returned, can be passed a reference to parse_value() without
-    //  creating a dangling pointer because the value can still be referenced, it has not been dropped yet
-    //
-    //  toDo: is it a cheap copy? can we solve this with unsafe?
     fn peek(&mut self) -> Result<Option<LexerToken>, JsonError> {
        Ok(self.lexer.lex()?)
     }
@@ -308,13 +273,13 @@ impl<'a> Parser<'a> {
         self.lexer.advance(offset)
     }
 
-    // peek and advance are used during the parsing process, next is used when we compute the value
+    // peek and advance are used during the parsing process, next is used when we build the value
     // to access the tokens produced by the parser
     fn next(&self) -> Option<&ParserToken>{
         self.tokens.get(self.pos)
     }
 
-    fn compute_value(&mut self) -> Result<Value, JsonError> {
+    fn build_value(&mut self) -> Result<Value, JsonError> {
         let token = &self.tokens[self.pos];
         let val = match token.token_type {
             ParserTokenType::ObjectStart => Value::Object(self.object_value()?),
@@ -345,7 +310,7 @@ impl<'a> Parser<'a> {
             let name: &[u8] = &self.buffer[token.start_index + 1 ..token.start_index + (token.offset - 1)  as usize];
             let key = String::from_utf8(Vec::from(name)).unwrap(); // toDo: can this be &str?
             self.pos += 2; // skip key,colon
-            let value = self.compute_value()?;
+            let value = self.build_value()?;
             map.insert(key, value);
             // we expect either ',' or '}'. The structure of the object is always valid at this point
             if let Some(token) = self.next() {
@@ -368,7 +333,7 @@ impl<'a> Parser<'a> {
         }
 
         while let Some(_) = self.next() {
-            values.push(self.compute_value()?);
+            values.push(self.build_value()?);
             if let Some(token) = self.next() {
                 if token.token_type == ParserTokenType::ArrayEnd {
                     break;

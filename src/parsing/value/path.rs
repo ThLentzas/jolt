@@ -1,5 +1,5 @@
 use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::{self, escapes, utf8};
+use crate::parsing::{self, escapes, number, utf8};
 use crate::parsing::value::error::{PathError, PathErrorKind};
 use std::cmp;
 
@@ -136,12 +136,12 @@ impl Iterator for Range {
         }
 
         // in the left to right case, the upper bound is exclusive
-        if self.step > 0 && self.current >= self.end as isize {
+        if self.step > 0 && self.current >= self.end {
             return None;
         }
 
         // in the right to left case, the lower bound is exclusive
-        if self.step < 0 && self.current <= self.end as isize {
+        if self.step < 0 && self.current <= self.end {
             return None;
         }
 
@@ -169,10 +169,10 @@ impl<'a> Query<'a> {
     //
     // the syntax means it must start with the root identifier('$') followed by zero or more segments
     pub(super) fn check_root(&mut self) -> Result<(), PathError> {
-        let root = self.buffer[0];
+        let root = self.buffer[self.pos];
 
         if root != b'$' {
-            return Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: root }, pos: 0 });
+            return Err(PathError { kind: PathErrorKind::UnexpectedCharacter { byte: root }, pos: self.pos });
         }
 
         self.pos += 1; // move past '$'
@@ -351,9 +351,8 @@ impl<'a> Query<'a> {
     }
 
     fn read_index(&mut self) -> Result<i64, PathError> {
-        let mut current = self.buffer[self.pos];
+        let current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
-        let mut sign = 1;
 
         match (current, next) {
             // -a
@@ -363,42 +362,13 @@ impl<'a> Query<'a> {
             }),
             // -
             (b'-', None) =>  return Err(PathError { kind: PathErrorKind::UnexpectedEndOf, pos: self.pos }),
-            (b'-', Some(_)) => {
-                sign = -1;
-                self.pos += 1; // move to the 1st digit
-            },
             (b'0', Some(n)) if n.is_ascii_digit() => return Err(PathError { kind: PathErrorKind::InvalidIndex {
                 message: "leading zeros are not allowed"},
                 pos: self.pos
             }),
             _ => ()
         }
-
-        current = self.buffer[self.pos];
-        let start = self.pos;
-        let mut num: i64 = 0;
-
-        // Leetcode atoi baby let's go!!!!!!!!!!!
-        //
-        // this is different from reading a json number when calling lex(); in that case, we didn't
-        // care about the value of the number, we just needed the range of the number in the initial
-        // buffer, also we didn't know what type of number we had(i64, f64 etc)
-        // we could also try to create a string by keeping track of the starting position and then
-        // call s.parse() but that way we would traverse the same buffer range twice, once to create the
-        // string and once to parse the number
-        //
-        // this way we handle overflow cases and having the number value with a single pass
-        while self.pos < self.buffer.len() && current.is_ascii_digit() {
-            if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
-                return Err(PathError { kind: PathErrorKind::InvalidIndex { message: "number out of range" }, pos: start })
-            }
-            num = num * 10 + (current - 0x30) as i64;
-            self.pos += 1;
-            if self.pos < self.buffer.len() {
-                current = self.buffer[self.pos];
-            }
-        }
-        Ok(sign * num)
+        Ok(number::atoi(self.buffer, &mut self.pos)?)
     }
 
     // when this method gets called pos is at the 1st character after . or ..
@@ -413,10 +383,7 @@ impl<'a> Query<'a> {
                 segment.selectors.push(Selector::WildCard);
                 self.pos += 1;
             },
-            _ => {
-                let name = self.read_name_shorthand()?;
-                segment.selectors.push(Selector::Name(name));
-            }
+            _ => segment.selectors.push(Selector::Name(self.read_name_shorthand()?))
         }
         Ok(segment)
     }

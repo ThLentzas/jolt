@@ -2,10 +2,10 @@ use crate::parsing::error::{JsonErrorKind, JsonError, StringErrorKind, StringErr
 use crate::parsing::{escapes, number, utf8};
 
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
-struct NumberState {
-    decimal_point: bool,
-    scientific_notation: bool,
-    negative: bool
+pub(super) struct NumberState {
+    pub(super) decimal_point: bool,
+    pub(super) scientific_notation: bool,
+    pub(super) negative: bool
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -160,8 +160,9 @@ impl<'a> Lexer<'a> {
                 current = self.buffer[self.pos];
             }
         }
-        
-        if !cfg!(feature = "big_decimal") && self.is_out_of_range(start, state) {
+
+        let slice = &self.buffer[start..self.pos];
+        if !cfg!(feature = "big_decimal") && number::is_out_of_range(slice, state) {
             return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
         }
 
@@ -216,24 +217,6 @@ impl<'a> Lexer<'a> {
             _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
         }
         Ok(())
-    }
-
-    // If we wanted to be more strict about integer ranges we could set the allowed range to [-(2^53) + 1, (2^53) - 1]
-    // https://www.rfc-editor.org/rfc/rfc7493#section-2.2
-    fn is_out_of_range(&self, start: usize, state: NumberState) -> bool {
-        let slice = &self.buffer[start..self.pos];
-
-        if state.decimal_point || state.scientific_notation {
-            return number::is_out_of_range_f64(slice);
-        } else {
-            match number::is_out_of_range_i64(slice) {
-                true if state.negative => return true,
-                // positive and overflow for i64, try u64
-                true => return number::is_out_of_range_u64(slice),
-                false => (),
-            };
-        }
-        false
     }
 
     fn read_string(&mut self) -> Result<(), StringError> {

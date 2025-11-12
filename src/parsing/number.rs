@@ -3,6 +3,7 @@ use std::{error, fmt};
 use bigdecimal::BigDecimal;
 #[cfg(feature = "big_decimal")]
 use bigdecimal::num_bigint::BigInt;
+use crate::parsing::lexer::NumberState;
 
 #[derive(Debug, PartialEq)]
 pub struct Number (NumberKind);
@@ -143,7 +144,7 @@ impl From<BigInt> for Number {
 
 // We return u16 because the valid range for the Unicode sequences are 0x0000-0xFFFF(0-65535)
 // 0-65535 is the range for u16
-pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
+pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, HexError> {
     let mut val: u16 = 0;
 
     // Logic similar to base 10 seen on Leetcode problems
@@ -154,11 +155,27 @@ pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, NumericError> {
             b'0'..=b'9' => byte - b'0',
             b'a'..=b'f' => byte - b'a' + 10,
             b'A'..=b'F' => byte - b'A' + 10,
-            _ => return Err(NumericError::InvalidHexDigit { digit: byte, pos: index })
+            _ => return Err(HexError::InvalidHexDigit { digit: byte, pos: index })
         };
         val = val * 16 + hex_val as u16;
     }
     Ok(val)
+}
+
+// If we wanted to be more strict about integer ranges we could set the allowed range to [-(2^53) + 1, (2^53) - 1]
+// https://www.rfc-editor.org/rfc/rfc7493#section-2.2
+pub(super) fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
+    if state.decimal_point || state.scientific_notation {
+        return is_out_of_range_f64(buffer);
+    } else {
+        match is_out_of_range_i64(buffer) {
+            true if state.negative => return true,
+            // positive and overflow for i64, try u64
+            true => return is_out_of_range_u64(buffer),
+            false => (),
+        };
+    }
+    false
 }
 
 // from_utf8() calls in the is_out_of_range() functions are always called in valid numbers
@@ -184,27 +201,84 @@ pub(super) fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     val.is_infinite()
 }
 
-#[derive(Debug, PartialEq)]
-pub(super) enum NumericError {
-    InvalidHexDigit { digit: u8, pos: usize }
+// Leetcode atoi baby let's go!!!!!!!!!!!
+//
+// this is different from reading a json number when calling lex(); in that case, we didn't
+// care about the value of the number, we just needed the range of the number in the initial
+// buffer, also we didn't know what type of number we had(i64, f64 etc)
+// we could also try to create a string by keeping track of the starting position and then
+// call s.parse() but that way we would traverse the same buffer range twice, once to create the
+// string and once to parse the number
+//
+// this way we handle overflow cases and having the number value with a single pass
+pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
+    let mut num: i64 = 0;
+    let sign = if buffer[*pos] == b'-' {
+        *pos += 1;
+        -1
+    } else {
+        1
+    };
+
+    let start = *pos;
+    let mut current = buffer[*pos];
+    while *pos < buffer.len() && current.is_ascii_digit() {
+        if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
+            return Err(OutOfRangeError::OutOfRange { pos: start });
+        }
+        num = num * 10 + (current - 0x30) as i64;
+        *pos += 1;
+        if *pos < buffer.len() {
+            current = buffer[*pos];
+        }
+    }
+    Ok(sign * num)
 }
 
-impl fmt::Display for NumericError {
+// this is probably poor design
+// why not have an enum NumericError with the variants below?
+//
+// a method like atoi() can return NumericError if nobody depended on it, like the case with JsonError
+// we never do From<JsonError> for Foo but for NumericError we do;  we do: impl From<NumericError>
+// for EscapeError then we call match on the NumericError variants, and we see that other than the
+// InvalidHexDigit there is not a variant on EscapeError that maps to OutOfRange so we end up doing
+// _ => unreachable() which is not recommended, from() should not panic!
+//
+// the same logic applies for impl From<NumericError> for PathError where we have the OutOfRange case
+#[derive(Debug, PartialEq)]
+pub(super) enum HexError {
+    InvalidHexDigit { digit: u8, pos: usize }
+}
+#[derive(Debug, PartialEq)]
+pub(super) enum OutOfRangeError {
+    OutOfRange { pos: usize }
+}
+
+impl fmt::Display for HexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // self is auto deref based on rust ergonomics; for digit and pos we have a reference as well,
             // but we don't need to deref when we pass into the write!()
-            Self::InvalidHexDigit { digit, pos }  => write!(f, "Invalid hex digit (0x{:02X}) at index {}", digit, pos)
+            Self::InvalidHexDigit { digit, pos }  => write!(f, "Invalid hex digit (0x{:02X}) at index {}", digit, pos),
         }
     }
 }
 
-impl error::Error for NumericError {}
+impl fmt::Display for OutOfRangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+impl error::Error for HexError {}
+
+impl error::Error for OutOfRangeError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // toDo: change this to 1 test and call is out of range
     fn overflow_f64() -> Vec<&'static [u8]> {
         vec![
             b"1e309",
@@ -250,9 +324,9 @@ mod tests {
     #[test]
     fn invalid_hex_digit() {
         // "12gB"
-        let result = hex_to_u16(&[0x31, 0x32, 0x67, 0x42]);
-        if let Err(e) = result {
-            assert_eq!(e, NumericError::InvalidHexDigit { digit: 0x67, pos: 2});
+        let res = hex_to_u16(&[0x31, 0x32, 0x67, 0x42]);
+        if let Err(e) = res {
+            assert_eq!(e, HexError::InvalidHexDigit { digit: 0x67, pos: 2 });
         }
     }
 }

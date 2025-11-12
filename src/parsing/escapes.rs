@@ -1,5 +1,5 @@
 use std::{error, fmt};
-use crate::parsing::number::{self, NumericError};
+use crate::parsing::number::{self, HexError};
 
 const ESCAPE_CHAR_LEN: u8 = 2;
 const UNICODE_SEQ_LEN: u8 = 6;
@@ -33,10 +33,10 @@ impl fmt::Display for EscapeError {
     }
 }
 
-impl From<NumericError> for EscapeError {
-    fn from(err: NumericError) -> Self {
+impl From<HexError> for EscapeError {
+    fn from(err: HexError) -> Self {
         match err {
-            NumericError::InvalidHexDigit { digit, pos } => EscapeError::InvalidUnicodeSequence { digit, pos }
+            HexError::InvalidHexDigit { digit, pos } => EscapeError::InvalidUnicodeSequence { digit, pos },
         }
     }
 }
