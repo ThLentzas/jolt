@@ -137,6 +137,7 @@ fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
     Some(bytes[*pos])
 }
 
+// toDo: maybe make this a struct?
 #[derive(Debug, PartialEq)]
 pub(super) enum Utf8Error {
     InvalidByteSequence { len: u8, pos: usize }

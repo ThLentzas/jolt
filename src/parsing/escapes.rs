@@ -5,54 +5,18 @@ const ESCAPE_CHAR_LEN: u8 = 2;
 const UNICODE_SEQ_LEN: u8 = 6;
 const SURROGATE_PAIR_LEN: u8 = 12;
 
-// maybe we could use composition for ErrorKind?
-#[derive(Debug, PartialEq)]
-pub(super) enum EscapeError {
-    UnknownEscapedCharacter { byte: u8, pos: usize },
-    UnexpectedEof { pos: usize },
-    InvalidUnicodeSequence { digit: u8, pos: usize },
-    InvalidSurrogate { pos: usize }
-}
-
-impl error::Error for EscapeError {}
-
-impl fmt::Display for EscapeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownEscapedCharacter { byte, pos } => {
-                match byte {
-                    // can be a byte from a utf8 sequence or a character with no text representation
-                    b if b.is_ascii_graphic() => write!(f, "unknown escape character {} at index {}", *b as char, pos),
-                    _ => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, pos),
-                }
-            }
-            Self::UnexpectedEof{ pos } => write!(f, "unexpected end of input at index {}", pos),
-            Self::InvalidUnicodeSequence { digit, pos } => write!(f, "invalid hex digit '{}' at index {}", *digit as char, pos),
-            Self::InvalidSurrogate { pos } => write!(f, "invalid surrogate pair at index {}", pos)
-        }
-    }
-}
-
-impl From<HexError> for EscapeError {
-    fn from(err: HexError) -> Self {
-        match err {
-            HexError::InvalidHexDigit { digit, pos } => EscapeError::InvalidUnicodeSequence { digit, pos },
-        }
-    }
-}
-
 pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let len = buffer.len();
     let mut i = pos;
 
     i += 1;
     if i >= len {
-        return Err(EscapeError::UnexpectedEof { pos: i - 1 });
+        return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: i - 1 });
     }
 
     let next = buffer[i];
     if !matches!(next, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
-        return Err(EscapeError::UnknownEscapedCharacter { byte: next, pos: i });
+        return Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: next }, pos: i });
     }
     if next == b'u' {
         check_unicode_escape(buffer, i)?;
@@ -91,7 +55,7 @@ pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
 fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     // pos is at 'u', need 4 hex digits
     if pos + 4 >= buffer.len() {
-        return Err(EscapeError::UnexpectedEof { pos: buffer.len() - 1 });
+        return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: buffer.len() - 1 });
     }
 
     let mut i = pos;
@@ -138,7 +102,7 @@ fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), Escape
 
     if is_high_surrogate(hex_seq) {
         if pos + 6 >= len {
-            return Err(EscapeError::UnexpectedEof { pos: buffer.len() - 1 });
+            return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: buffer.len() - 1 });
         }
 
         let mut i = pos;
@@ -147,17 +111,17 @@ fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), Escape
             (b'\\', b'u') => {
                 i += 2;
             }
-            _ => return Err(EscapeError::InvalidSurrogate { pos: start })
+            _ => return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start })
         };
 
         // safe to call, it will never be out of bounds
         let next = number::hex_to_u16(&buffer[i..i + 4])?;
         if !is_low_surrogate(next) {
-            return Err(EscapeError::InvalidSurrogate { pos: start });
+            return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start });
         }
     } else {
         // surrogate pairs do not start with low surrogate, it's always high-low
-        return Err(EscapeError::InvalidSurrogate { pos: start });
+        return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start });
     }
     Ok(())
 }
@@ -166,4 +130,43 @@ fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), Escape
 // Read: To decode...
 fn decode_surrogate_pair(high: u32, low: u32) -> u32 {
     (high - 0xD800) * 0x400 + low - 0xDC00 + 0x10000
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct EscapeError {
+    pub(super) kind: EscapeErrorKind,
+    pub(super) pos: usize
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum EscapeErrorKind {
+    UnknownEscapedCharacter { byte: u8 },
+    UnexpectedEof,
+    InvalidUnicodeSequence { digit: u8 },
+    InvalidSurrogate
+}
+
+impl error::Error for EscapeError {}
+
+impl fmt::Display for EscapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            EscapeErrorKind::UnknownEscapedCharacter { byte } => {
+                match byte {
+                    // can be a byte from a utf8 sequence or a character with no text representation
+                    b if b.is_ascii_graphic() => write!(f, "unknown escape character {} at index {}", b, self.pos),
+                    _ => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos),
+                }
+            }
+            EscapeErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
+            EscapeErrorKind::InvalidUnicodeSequence { digit } => write!(f, "invalid hex digit '{}' at index {}", digit as char, self.pos),
+            EscapeErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos)
+        }
+    }
+}
+
+impl From<HexError> for EscapeError {
+    fn from(err: HexError) -> Self {
+        EscapeError { kind: EscapeErrorKind::InvalidUnicodeSequence { digit: err.digit }, pos: err.pos }
+    }
 }

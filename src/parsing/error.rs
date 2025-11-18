@@ -1,5 +1,7 @@
 use std::{error, fmt, io};
-use crate::parsing::escapes::EscapeError;
+use std::string::ParseError;
+use crate::parsing::escapes::{EscapeError, EscapeErrorKind};
+use crate::parsing::number::NumericError;
 use crate::parsing::utf8::Utf8Error;
 
 #[derive(Debug, PartialEq)]
@@ -20,11 +22,11 @@ pub struct StringError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum JsonErrorKind {
+pub enum ParserErrorKind {
     MalformedString(StringError),
     UnexpectedEof,
     UnexpectedCharacter { byte: u8 },
-    InvalidNumber { message: &'static str }, // toDo: Why not String
+    InvalidNumber(NumericError),
     DuplicateName { name: String },
     UnexpectedToken { expected: Option<&'static str> },
     NestingDepthLimitExceeded { depth: u16 },
@@ -32,24 +34,34 @@ pub enum JsonErrorKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct JsonError {
-    pub kind: JsonErrorKind,
+pub struct ParserError {
+    pub kind: ParserErrorKind,
     pub pos: Option<usize> // For NestingDepthLimitExceeded, InputBufferLimitExceeded position is pointless
 }
 
-impl JsonError {
-    pub(super) fn new(kind: JsonErrorKind, pos: Option<usize>) -> Self {
-        JsonError { kind, pos }
-    }
-}
 
 #[derive(Debug)]
 pub enum FileParseError {
     IoError(io::Error),
-    ParserError(JsonError),
+    ParserError(ParserError),
 }
 
-impl fmt::Display for JsonError {
+// this error occurs when we try to parse true, false, null
+// didn't think of a better name and needed to return an Err in read_boolean_or_null()
+// LiteralError does not make sense because all the possible values are literals(string literal, number etc..)
+#[derive(Debug)]
+pub(super) struct KeywordError {
+    pub(super) kind: KeywordErrorKind,
+    pub(super) pos: usize
+}
+
+#[derive(Debug)]
+pub enum KeywordErrorKind {
+    UnexpectedEndOf,
+    UnexpectedCharacter { byte: u8 },
+}
+
+impl fmt::Display for ParserError {
     // because self is borrowed everything inside it is also borrowed
     // ErrorKind::DuplicateName { name } => // This tries to move name out, and we can not move owned data out of share context
     // we end up with &self.kind
@@ -59,25 +71,25 @@ impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             // this delegates to the Display of StringError
-            JsonErrorKind::MalformedString(str_err) => write!(f, "{} ", str_err),
-            JsonErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos.unwrap()),
-            JsonErrorKind::UnexpectedCharacter { byte } => {
+            ParserErrorKind::MalformedString(str_err) => write!(f, "{} ", str_err),
+            ParserErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos.unwrap()),
+            ParserErrorKind::UnexpectedCharacter { byte } => {
                 match byte {
                     // can be a byte from a utf8 sequence or a character with no text representation
                     b if b.is_ascii_graphic() => write!(f, "unexpected character {} at index {}", *b as char, self.pos.unwrap()),
                     _  => write!(f, "unexpected character (0x{:02X}) at index {}", byte, self.pos.unwrap()),
                 }
             }
-            JsonErrorKind::InvalidNumber { message } => write!(f, "{} at index {}", message, self.pos.unwrap()),
-            JsonErrorKind::DuplicateName { name } => write!(f, "duplicate object name {} at index {}", name, self.pos.unwrap()),
-            JsonErrorKind::UnexpectedToken { expected } => {
+            ParserErrorKind::InvalidNumber(err) => write!(f, "{}", err),
+            ParserErrorKind::DuplicateName { name } => write!(f, "duplicate object name {} at index {}", name, self.pos.unwrap()),
+            ParserErrorKind::UnexpectedToken { expected } => {
                 match expected {
                     Some(token) => write!(f, "unexpected token at index {}. Expected {}", self.pos.unwrap(), token),
                     None => write!(f, "unexpected token at index {}", self.pos.unwrap()),
                 }
             }
-            JsonErrorKind::NestingDepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth),
-            JsonErrorKind::InputBufferLimitExceeded { len } => write!(f, "input size exceeded limit of {} bytes", len),
+            ParserErrorKind::NestingDepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth),
+            ParserErrorKind::InputBufferLimitExceeded { len } => write!(f, "input size exceeded limit of {} bytes", len),
         }
     }
 }
@@ -110,7 +122,7 @@ impl From<Utf8Error> for StringError {
     }
 }
 
-impl From<StringError> for JsonError {
+impl From<StringError> for ParserError {
     // we can not call, JsonError { kind: JsonErrorKind::MalformedString(err), err.pos }
     // because err is already move to MalformedString, and we are trying to access pos via err which
     // is no longer valid
@@ -122,22 +134,37 @@ impl From<StringError> for JsonError {
     // http://doc.rust-lang.org/book/ch04-01-what-is-ownership.html above figure 4.4
     fn from(err: StringError) -> Self {
         let pos = err.pos;
-        JsonError { kind: JsonErrorKind::MalformedString(err), pos: Some(pos) }
+        ParserError { kind: ParserErrorKind::MalformedString(err), pos: Some(pos) }
+    }
+}
+
+impl From<KeywordError> for ParserError {
+    fn from(err: KeywordError) -> Self {
+        match err.kind {
+            KeywordErrorKind::UnexpectedCharacter { byte } => ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte },
+                pos: Some(err.pos)
+            },
+            KeywordErrorKind::UnexpectedEndOf => ParserError {
+                kind: ParserErrorKind::UnexpectedEof,
+                pos: Some(err.pos)
+            }
+        }
     }
 }
 
 impl From<EscapeError> for StringError {
     fn from(err: EscapeError) -> Self {
-        match err {
-            EscapeError::UnknownEscapedCharacter { byte, pos } => StringError { kind: StringErrorKind::UnknownEscapedCharacter { byte }, pos },
-            EscapeError::UnexpectedEof { pos } => StringError { kind: StringErrorKind::UnexpectedEndOf, pos },
-            EscapeError::InvalidUnicodeSequence { digit, pos } => StringError { kind: StringErrorKind::InvalidUnicodeSequence { digit }, pos },
-            EscapeError::InvalidSurrogate { pos } => StringError { kind: StringErrorKind::InvalidSurrogate, pos }
+        match err.kind {
+            EscapeErrorKind::UnknownEscapedCharacter { byte} => StringError { kind: StringErrorKind::UnknownEscapedCharacter { byte }, pos: err.pos },
+            EscapeErrorKind::UnexpectedEof => StringError { kind: StringErrorKind::UnexpectedEndOf, pos: err.pos },
+            EscapeErrorKind::InvalidUnicodeSequence { digit } => StringError { kind: StringErrorKind::InvalidUnicodeSequence { digit }, pos: err.pos },
+            EscapeErrorKind::InvalidSurrogate => StringError { kind: StringErrorKind::InvalidSurrogate, pos: err.pos }
         }
     }
 }
 
-impl error::Error for JsonError {}
+impl error::Error for ParserError {}
 impl error::Error for StringError {}
 
 

@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
-use crate::parsing::error::StringError;
-use crate::parsing::number::OutOfRangeError;
+use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError};
+use crate::parsing::number::{NumericError, OutOfRangeError};
 
 #[derive(Debug, PartialEq)]
 pub struct PointerError {
@@ -11,16 +11,10 @@ pub struct PointerError {
 
 #[derive(Debug, PartialEq)]
 pub enum PointerErrorKind {
-    InvalidPathSyntax,
+    InvalidPointerSyntax,
     MalformedString(StringError),
     UnexpectedEof,
-    InvalidIndex { message: String },// can't use &'static str, we concatenate the index syntax
-}
-
-impl PointerError {
-    pub(super) fn new(kind: PointerErrorKind, pos: usize) -> Self {
-        PointerError { kind, pos }
-    }
+    InvalidIndex { message: &'static str },
 }
 
 impl From<StringError> for PointerError {
@@ -47,11 +41,11 @@ pub struct PathError {
 
 #[derive(Debug, PartialEq)]
 pub enum PathErrorKind {
-    InvalidNameShorthandSyntax { byte: u8 }, // toDo: This could also just be UnexpectedCharacter
     UnexpectedEndOf,
     MalformedString(StringError),
     UnexpectedCharacter { byte: u8 },
-    InvalidIndex { message: &'static str }
+    InvalidIndex { message: &'static str },
+    Numeric(NumericError)
 }
 
 impl From<StringError> for PathError {
@@ -70,11 +64,24 @@ impl From<StringError> for PathError {
     }
 }
 
+impl From<KeywordError> for PathError {
+    fn from(err: KeywordError) -> Self {
+        match err.kind {
+            KeywordErrorKind::UnexpectedCharacter { byte } => PathError { 
+                kind: PathErrorKind::UnexpectedCharacter { byte }, 
+                pos: err.pos 
+            },
+            KeywordErrorKind::UnexpectedEndOf => PathError {
+                kind: PathErrorKind::UnexpectedEndOf,
+                pos: err.pos
+            }
+        }
+    }
+}
+
 impl From<OutOfRangeError> for PathError {
-    fn from(err: OutOfRangeError) -> Self {
-       match err { OutOfRangeError::OutOfRange { pos } => {
-           PathError { kind: PathErrorKind::InvalidIndex { message: "number out of range"}, pos }}
-       }
+    fn from(err: OutOfRangeError) -> Self { 
+        PathError { kind: PathErrorKind::InvalidIndex { message: "number out of range"}, pos: err.pos }
     }
 }
 
@@ -86,7 +93,7 @@ impl fmt::Display for PointerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             // macros like write!, println! and so on do autoderef
-            PointerErrorKind::InvalidPathSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
+            PointerErrorKind::InvalidPointerSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
             PointerErrorKind::MalformedString(err) => write!(f, "{}", err),
             PointerErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
             PointerErrorKind::InvalidIndex { message } => write!(f, "{} at index {}", message, self.pos),

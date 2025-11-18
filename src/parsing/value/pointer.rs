@@ -1,12 +1,7 @@
-use crate::parsing::{escapes, utf8};
+use crate::parsing::utf8;
 use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::escapes::EscapeError;
+use crate::parsing::escapes::{self, EscapeError, EscapeErrorKind};
 use crate::parsing::value::error::{PointerError, PointerErrorKind};
-
-// This can't be String; to_string(), String::from()
-// Constants must be known at compile time, and String operations like String::from() or
-// string literal .to_string() require heap allocation, which can't happen at compile time
-pub(super) const ARRAY_INDEX_SYNTAX: &str = "%x30 / ( %x31-39 * (%x30-39) )";
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
 // where the token started based on the underline buffer for better error messaging
@@ -112,7 +107,7 @@ impl<'a> Pointer<'a> {
         // a pointer path always starts with '/', unless it is empty which we already checked by the time
         // this method gets called
         if self.buffer[0] != b'/' && self.buffer[0] != b'\\' {
-            return Err(PointerError::new(PointerErrorKind::InvalidPathSyntax, 0));
+            return Err(PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 });
         }
         self.pos += 1;// move past '/' or '\'
 
@@ -122,7 +117,7 @@ impl<'a> Pointer<'a> {
                 return Err(PointerError::from(StringError::from(e)));
             }
             if escapes::map_escape_character(self.buffer, 0) != '/' {
-                return Err(PointerError::new(PointerErrorKind::InvalidPathSyntax, 0));
+                return Err(PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 });
             }
             self.pos += 5;  // move past the sequence that mapped to '\'
         }
@@ -159,16 +154,15 @@ impl<'a> Pointer<'a> {
                         self.pos += 6;
                         Ok('/')
                     }
-                    _ => Err(EscapeError::UnknownEscapedCharacter { byte: b'\\', pos: self.pos + 1 })
+                    _ => Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\'}, pos: self.pos + 1 })
                 }
             }
             // ~8
-            Some(b) => Err(EscapeError::UnknownEscapedCharacter { byte: *b, pos: self.pos + 1 }),
+            Some(b) => Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: *b }, pos: self.pos + 1 }),
             // ~ unpaired
-            None => Err(EscapeError::UnexpectedEof { pos: self.pos } )
+            None => Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: self.pos })
         }
     }
-
 }
 
 // This method does not depend on the state of the pointer
@@ -177,17 +171,20 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
     let second = token.val.chars().nth(1);
 
     match (first, second) {
-        (Some('+') | Some('-'), Some('0'..='9')) => return Err(PointerError::new(
-            PointerErrorKind::InvalidIndex { message: format!("index can not be prefixed with a sign, syntax : {}", ARRAY_INDEX_SYNTAX) },
-            token.pos)),
-        (Some('0'), Some('0'..='9')) => return Err(PointerError::new(
-            PointerErrorKind::InvalidIndex { message: format!("leading zeros are not allowed, syntax: {}", ARRAY_INDEX_SYNTAX) },
-            token.pos)),
+        (Some('+') | Some('-'), Some('0'..='9')) => return Err(PointerError {
+            kind: PointerErrorKind::InvalidIndex { message: "index can not be prefixed with a sign" },
+            pos: token.pos
+        }),
+        (Some('0'), Some('0'..='9')) => return Err(PointerError {
+            kind: PointerErrorKind::InvalidIndex { message: "leading zeros are not allowed" },
+            pos: token.pos
+        }),
         (Some('-'), None) => return Ok(None),
         // if the token val does not start with a digit, it is invalid
-        (Some(d), _) if !d.is_ascii_digit() => return Err(PointerError::new(
-            PointerErrorKind::InvalidIndex { message: format!("invalid array index, syntax: {}", ARRAY_INDEX_SYNTAX) },
-            token.pos)),
+        (Some(d), _) if !d.is_ascii_digit() => return Err(PointerError {
+            kind: PointerErrorKind::InvalidIndex { message: "invalid array index" },
+            pos: token.pos
+        }),
         _ => ()
     }
 

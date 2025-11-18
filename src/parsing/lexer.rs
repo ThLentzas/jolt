@@ -1,12 +1,5 @@
-use crate::parsing::error::{JsonErrorKind, JsonError, StringErrorKind, StringError};
-use crate::parsing::{escapes, number, utf8};
-
-// much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
-pub(super) struct NumberState {
-    pub(super) decimal_point: bool,
-    pub(super) scientific_notation: bool,
-    pub(super) negative: bool
-}
+use crate::parsing::error::{ParserErrorKind, ParserError, StringErrorKind, StringError};
+use crate::parsing::{self, escapes, number, utf8};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(super) enum LexerTokenType {
@@ -31,10 +24,6 @@ pub(super) struct LexerToken {
 
 
 impl LexerToken {
-    fn new(start_index: usize, offset: u32, token_type: LexerTokenType) -> Self {
-        Self { start_index, offset, token_type }
-    }
-
     // toDo: this should be an immutable borrow? copying here is fine?
     pub(super) fn start_index(&self) -> usize {
         self.start_index
@@ -67,155 +56,127 @@ impl<'a> Lexer<'a> {
     }
 
     // toDo: explain why we moved away from storing the tokens in a vector?
-    pub(super) fn lex(&mut self) -> Result<Option<LexerToken>, JsonError> {
+    pub(super) fn lex(&mut self) -> Result<Option<LexerToken>, ParserError> {
         // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
         // would work but the method is also needed in path.rs
-        crate::parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);
         }
 
         let current = self.buffer[self.pos];
-        if current.is_ascii() {
-            match current {
-                b'{' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::LCurlyBracket))),
-                b'}' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::RCurlyBracket))),
-                b']' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::RSquareBracket))),
-                b'[' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::LSquareBracket))),
-                b':' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::Colon))),
-                b',' => Ok(Some(LexerToken::new(self.pos, 1, LexerTokenType::Comma))),
-                b'-' | b'+' | b'0'..=b'9' => {
-                    let start = self.pos;
-                    self.read_number()?;
-                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Number)))
-                }
-                b'"' => {
-                    let start = self.pos;
-                    self.read_string()?;
-                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::String)))
-                }
-                b't' | b'f' => {
-                    let start = self.pos;
-                    self.read_boolean()?;
-                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Boolean)))
-                }
-                b'n' => {
-                    let start = self.pos;
-                    self.read_null()?;
-                    Ok(Some(LexerToken::new(start, (self.pos - start + 1) as u32, LexerTokenType::Null)))
-                }
-                _ => Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
+        match current {
+            b'{' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::LCurlyBracket
+            })),
+            b'}' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::RCurlyBracket
+            })),
+            b'[' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::LSquareBracket
+            })),
+            b']' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::RSquareBracket
+            })),
+            b':' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::Colon
+            })),
+            b',' => Ok(Some(LexerToken {
+                start_index: self.pos,
+                offset: 1,
+                token_type: LexerTokenType::Comma
+            })),
+            b'-' | b'+' | b'0'..=b'9' => {
+                let start = self.pos;
+                self.read_number()?;
+                Ok(Some(LexerToken {
+                    start_index: start,
+                    offset: (self.pos - start + 1) as u32,
+                    token_type: LexerTokenType::Number
+                }))
             }
-        } else {
-            Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos)))
+            b'"' => {
+                let start = self.pos;
+                self.read_string()?;
+                Ok(Some(LexerToken {
+                    start_index: start,
+                    offset: (self.pos - start + 1) as u32,
+                    token_type: LexerTokenType::String
+                }))
+            }
+            b't' | b'f' => {
+                let start = self.pos;
+                self.read_boolean()?;
+                Ok(Some(LexerToken {
+                    start_index: start,
+                    offset: (self.pos - start + 1) as u32,
+                    token_type: LexerTokenType::Boolean
+                }))
+            }
+            b'n' => {
+                let start = self.pos;
+                self.read_null()?;
+                Ok(Some(LexerToken {
+                    start_index: start,
+                    offset: (self.pos - start + 1) as u32,
+                    token_type: LexerTokenType::Null
+                }))
+            }
+            _ => Err(ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: current },
+                pos: Some(self.pos)
+            })
         }
     }
 
     // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid number
-    // and the control returns back to tokenize(), back to peek() and eventually advance() is called
-    // which moves self.pos, and we skip that character
-    fn read_number(&mut self) -> Result<(), JsonError> {
-        let len = self.buffer.len();
-        let start = self.pos;
-        let mut current = self.buffer[self.pos];
+    // and the control returns back to lex(), back to peek() and eventually advance() is called
+    // which moves self.pos, and we skip that character if we don't move pos
+    fn read_number(&mut self) -> Result<(), ParserError> {
+        let current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
+        let start = self.pos;
 
         match(current, next) {
+            // sign into eof
+            (b'-', None) => return Err(ParserError {
+                kind: ParserErrorKind::UnexpectedEof,
+                pos: Some(self.pos)
+            }),
             // +9
-            (b'+', Some(n)) if n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
-                message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(self.pos))),
-            // +a or +
-            (b'+', _) => return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: current }, Some(self.pos))),
-            (b'-', None) => return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.pos))),
-            // -0 is valid
-            (b'-', Some(n)) if !n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
-                message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(self.pos))),
-            // 05 not allowed
-            (b'0', Some(n)) if n.is_ascii_digit() => return Err(JsonError::new(JsonErrorKind::InvalidNumber {
-                message: "leading zeros are not allowed" }, Some(self.pos))),
-            _ => (),
+            (b'+', Some(n)) if !n.is_ascii_digit() => return Err(ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: current },
+                pos: Some(self.pos)
+            }),
+            (b'+', None) => return Err(ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: current },
+                pos: Some(self.pos)
+            }),
+            _ => number::read(self.buffer, &mut self.pos)
+                // why not from? This the only case where we have to convert from a NumericError to
+                // a ParserError, so I thought to do it via map_err(). The body of the closure would
+                // be the body of the from() impl.
+                .map_err(|err| {
+                    let pos = err.pos;
+                    ParserError { kind: ParserErrorKind::InvalidNumber(err), pos: Some(pos) }
+                })?,
         }
 
-        // edge case for the logic mention in the comment above; this is the case for single digit
-        // numbers '3' where next is none, self.pos is at the digit itself, not in the 1st character
-        // after reading the number, we don't need to reset the position, later advance() is called
-        // self.pos moves correctly to the next character without skipping one
-        if next.is_none() {
-            return Ok(());
+        // 1 edge case to consider, single digit numbers, read the comment in number::read()
+        if self.pos != start {
+            self.pos -= 1;
         }
 
-        self.pos += 1;
-        current = *next.unwrap();
-        let mut state = NumberState { decimal_point: false, scientific_notation: false, negative: self.buffer[start] == b'-' };
-        while self.pos < len {
-            match current {
-                b'0'..=b'9' => (),
-                b'.' => self.check_decimal_point(&mut state)?,
-                b'e' | b'E' | b'-' | b'+'=> self.check_scientific_notation(&mut state)?,
-                _ => break
-            }
-            self.pos += 1;
-            // update current only if we did not reach the end of the buffer
-            if self.pos < len {
-                current = self.buffer[self.pos];
-            }
-        }
-
-        let slice = &self.buffer[start..self.pos];
-        if !cfg!(feature = "big_decimal") && number::is_out_of_range(slice, state) {
-            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(start)));
-        }
-
-        self.pos -= 1;
-        Ok(())
-    }
-
-    fn check_decimal_point(&self, state: &mut NumberState) -> Result<(), JsonError> {
-        // 1.2.3
-        if state.decimal_point {
-            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "double decimal point found" }, Some(self.pos)));
-        }
-        // 1. 2.g
-        if self.pos + 1 >= self.buffer.len() || !self.buffer[self.pos + 1].is_ascii_digit() {
-            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(self.pos)));
-        }
-        // 1e4.5
-        if state.scientific_notation {
-            return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(self.pos)));
-        }
-        state.decimal_point = true;
-
-        Ok(())
-    }
-
-    fn check_scientific_notation(&self, state: &mut NumberState) -> Result<(), JsonError> {
-        let current = self.buffer[self.pos];
-
-        match current {
-            b'e' | b'E' => {
-                // 1e2E3
-                if state.scientific_notation {
-                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(self.pos)));
-                }
-                // 1e 1eg
-                if self.pos + 1 >= self.buffer.len() || !matches!(self.buffer[self.pos + 1], b'-' | b'+' | b'0'..b'9') {
-                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(self.pos)));
-                }
-                // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
-                state.scientific_notation = true;
-            }
-            b'+' | b'-' => {
-                // 1+2
-                if !matches!(self.buffer[self.pos - 1], b'e' | b'E') {
-                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(self.pos)));
-                }
-                // 1E+g
-                if self.pos + 1 >= self.buffer.len()  || !self.buffer[self.pos + 1].is_ascii_digit() {
-                    return Err(JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(self.pos)));
-                }
-            }
-            _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
-        }
         Ok(())
     }
 
@@ -230,7 +191,10 @@ impl<'a> Lexer<'a> {
                 // [34, 10, 34] is invalid - the control character is passed as raw byte, and it is unescaped
                 // but [34, 92, 110, 34] should be considered valid as a new line character
                 c if c.is_ascii_control() => {
-                    return Err(StringError { kind: StringErrorKind::InvalidControlCharacter { byte: current }, pos: self.pos });
+                    return Err(StringError {
+                        kind: StringErrorKind::InvalidControlCharacter { byte: current },
+                        pos: self.pos
+                    });
                 }
                 c if !c.is_ascii() => {
                     utf8::check_utf8_sequence(&self.buffer, self.pos)?;
@@ -251,29 +215,20 @@ impl<'a> Lexer<'a> {
     }
 
     // an approach with starts_with() could work but in the case of mismatch we won't know the index
-    fn read_boolean(&mut self) -> Result<(), JsonError> {
+    //
+    // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid literal
+    // and the control returns back to lex(), back to peek() and eventually advance() is called
+    // which moves self.pos, and we skip that character
+    fn read_boolean(&mut self) -> Result<(), ParserError> {
         let target = if self.buffer[self.pos] == b't' { "true".as_bytes() } else { "false".as_bytes() };
-        Ok(self.read_literal(target)?)
+        parsing::read_boolean_or_null(self.buffer, &mut self.pos, target)?;
+        self.pos -= 1;
+
+        Ok(())
     }
 
-    fn read_null(&mut self) -> Result<(), JsonError> { Ok(self.read_literal(b"null")?) }
-
-    // before we return we call self.pos -= 1; self.pos is at the 1st character after a valid literal
-    // and the control returns back to tokenize(), back to peek() and eventually advance() is called
-    // which moves self.pos, and we skip that character
-    fn read_literal(&mut self, target: &[u8]) -> Result<(), JsonError> {
-        let remaining = &self.buffer[self.pos..];
-
-        if target.len() > remaining.len() {
-            return Err(JsonError::new(JsonErrorKind::UnexpectedEof, Some(self.buffer.len() - 1)));
-        }
-
-        for byte in target.iter() {
-            if self.buffer[self.pos] != *byte {
-                return Err(JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: self.buffer[self.pos] }, Some(self.pos)));
-            }
-            self.pos += 1;
-        }
+    fn read_null(&mut self) -> Result<(), ParserError> {
+        parsing::read_boolean_or_null(self.buffer, &mut self.pos, "null".as_bytes())?;
         self.pos -= 1;
 
         Ok(())
@@ -287,90 +242,131 @@ mod tests {
 
     fn valid_numbers() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"0", LexerToken::new(0, 1, LexerTokenType::Number)),
-            (b"-0", LexerToken::new(0, 2, LexerTokenType::Number)),
-            (b"123", LexerToken::new(0, 3, LexerTokenType::Number)),
-            (b"-45", LexerToken::new(0, 3, LexerTokenType::Number)),
-            (b"123.45", LexerToken::new(0, 6, LexerTokenType::Number)),
-            (b"1e10", LexerToken::new(0, 4, LexerTokenType::Number)),
-            (b"-0.1e-2", LexerToken::new(0, 7, LexerTokenType::Number)),
+            (b"0", LexerToken { start_index: 0, offset: 1, token_type: LexerTokenType::Number }),
+            (b"-0", LexerToken { start_index: 0, offset: 2, token_type: LexerTokenType::Number }),
+            (b"123", LexerToken { start_index: 0, offset: 3, token_type: LexerTokenType::Number }),
+            (b"-45", LexerToken { start_index: 0, offset: 3, token_type: LexerTokenType::Number }),
+            (b"123.45", LexerToken { start_index: 0, offset: 6, token_type: LexerTokenType::Number }),
+            (b"1e10", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Number }),
+            (b"-0.1e-2", LexerToken { start_index: 0, offset: 7, token_type: LexerTokenType::Number }),
         ]
     }
 
-    fn invalid_numbers() -> Vec<(&'static [u8], JsonError)> {
-        let mut entries: Vec<(&'static [u8], JsonError)> =  vec![
-            (b"+", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
-            (b"+a", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'+' }, Some(0))),
-            (b"+9", JsonError::new(JsonErrorKind::InvalidNumber { message: "json specification prohibits numbers from being prefixed with a plus sign" }, Some(0))),
-            (b"-a", JsonError::new(JsonErrorKind::InvalidNumber { message: "a valid numeric value requires a digit (0-9) after the minus sign" }, Some(0))),
-            (b"06", JsonError::new(JsonErrorKind::InvalidNumber { message: "leading zeros are not allowed" }, Some(0))),
-            (b"1.2.3", JsonError::new(JsonErrorKind::InvalidNumber { message: "double decimal point found" }, Some(3))),
-            (b"1.", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
-            (b"1.a", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point must be followed by a digit" }, Some(1))),
-            (b"4e5.1", JsonError::new(JsonErrorKind::InvalidNumber { message: "decimal point is not allowed after exponential notation" }, Some(3))),
-            (b"1e2e5", JsonError::new(JsonErrorKind::InvalidNumber { message: "double exponential notation('e' or 'E') found" }, Some(3))),
-            (b"1e", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(1))),
-            (b"246Ef", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit or a sign" }, Some(3))),
-            (b"83+1", JsonError::new(JsonErrorKind::InvalidNumber { message: "sign ('+' or '-') is only allowed as part of exponential notation" }, Some(2))),
-            (b"1e+", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2))),
-            (b"1e+f", JsonError::new(JsonErrorKind::InvalidNumber { message: "exponential notation must be followed by a digit" }, Some(2)))
-        ];
-        #[cfg(not(feature = "big_decimal"))]
-        {
-            entries.push((b"1.8e308", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
-            entries.push((b"-9223372036854775809", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
-            entries.push((b"18446744073709551616", JsonError::new(JsonErrorKind::InvalidNumber { message: "number out of range" }, Some(0))));
-        }
-
-        entries
+    // rest of the cases are tested in number::read()
+    fn invalid_signs() -> Vec<(&'static [u8], ParserError)> {
+        vec![
+            (b"-", ParserError {
+                kind: ParserErrorKind::UnexpectedEof,
+                pos: Some(0)
+            }),
+            (b"+", ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
+                pos: Some(0)
+            }),
+            (b"+a", ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
+                pos: Some(0)
+            }),
+        ]
     }
 
     fn valid_strings() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"\"abc\"", LexerToken::new(0, 5, LexerTokenType::String)),
-            (b"\"A\\uD83D\\uDE00B\"", LexerToken::new(0, 16, LexerTokenType::String)),
-            (b"\"b\\n\"", LexerToken::new(0, 5, LexerTokenType::String)),
-            (b"\"\\u00E9\"", LexerToken::new(0, 8, LexerTokenType::String)),
+            (b"\"abc\"", LexerToken {
+                start_index: 0,
+                offset: 5,
+                token_type: LexerTokenType::String
+            }),
+            (b"\"A\\uD83D\\uDE00B\"", LexerToken {
+                start_index: 0,
+                offset: 16,
+                token_type: LexerTokenType::String
+            }),
+            (b"\"b\\n\"", LexerToken {
+                start_index: 0,
+                offset: 5,
+                token_type: LexerTokenType::String
+            }),
+            (b"\"\\u00E9\"", LexerToken {
+                start_index: 0,
+                offset: 8,
+                token_type: LexerTokenType::String
+            }),
             // 2-byte sequence same as (b"\"\xC3\xA9\"", 0, 4)
-            ("\"é\"".as_bytes(), LexerToken::new(0, 4, LexerTokenType::String)),
+            ("\"é\"".as_bytes(), LexerToken {
+                start_index: 0,
+                offset: 4,
+                token_type: LexerTokenType::String
+            }),
         ]
     }
 
-    fn invalid_strings() -> Vec<(&'static [u8], JsonError)> {
+    fn invalid_strings() -> Vec<(&'static [u8], ParserError)> {
         vec![
             // raw byte control character
-            (b"\"\x00", JsonError::from(StringError { kind: StringErrorKind::InvalidControlCharacter { byte: 0 }, pos: 1 })),
+            (b"\"\x00", ParserError::from(StringError {
+                kind: StringErrorKind::InvalidControlCharacter { byte: 0 },
+                pos: 1
+            })),
             // unpaired escaped
-            (b"\"\\", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 1 })),
+            (b"\"\\", ParserError::from(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: 1
+            })),
             // unknown escaped
-            (b"\"\\g\"", JsonError::from(StringError { kind: StringErrorKind::UnknownEscapedCharacter { byte: b'g' }, pos: 2 })),
+            (b"\"\\g\"", ParserError::from(StringError {
+                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'g' },
+                pos: 2
+            })),
             // incomplete unicode
-            (b"\"\\u", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 2 })),
+            (b"\"\\u", ParserError::from(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: 2
+            })),
             // // not enough bytes to form a low surrogate
-            (b"\"\\uD83D\"", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 7 })),
+            (b"\"\\uD83D\"", ParserError::from(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: 7
+            })),
             // // high not followed by low
-            (b"\"\\uD83Dabcdef\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
+            (b"\"\\uD83Dabcdef\"", ParserError::from(StringError {
+                kind: StringErrorKind::InvalidSurrogate,
+                pos: 1
+            })),
             // // high followed by high
-            (b"\"\\uD83D\\uD83D\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
+            (b"\"\\uD83D\\uD83D\"", ParserError::from(StringError {
+                kind: StringErrorKind::InvalidSurrogate,
+                pos: 1
+            })),
             // // low surrogate
-            (b"\"\\uDC00\"", JsonError::from(StringError { kind: StringErrorKind::InvalidSurrogate, pos: 1 })),
-            (b"\"abc", JsonError::from(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: 3 })),
+            (b"\"\\uDC00\"", ParserError::from(StringError {
+                kind: StringErrorKind::InvalidSurrogate,
+                pos: 1
+            })),
+            (b"\"abc", ParserError::from(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: 3
+            })),
         ]
     }
 
     fn valid_literals() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"false", LexerToken::new(0, 5, LexerTokenType::Boolean)),
-            (b"true", LexerToken::new(0, 4, LexerTokenType::Boolean)),
-            (b"null", LexerToken::new(0, 4, LexerTokenType::Null)),
+            (b"false", LexerToken { start_index: 0, offset: 5, token_type: LexerTokenType::Boolean }),
+            (b"true", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Boolean }),
+            (b"null", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Null }),
         ]
     }
 
     // 1 mismatch and 1 not enough characters is enough
-    fn invalid_literals() -> Vec<(&'static [u8], JsonError)> {
+    fn invalid_literals() -> Vec<(&'static [u8], ParserError)> {
         vec![
-            (b"falte", JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b't' }, Some(3))),
-            (b"tru", JsonError::new(JsonErrorKind::UnexpectedEof, Some(2))),
+            (b"falte", ParserError {
+                kind: ParserErrorKind::UnexpectedCharacter { byte: b't' },
+                pos: Some(3)
+            }),
+            (b"tru", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(2)
+            }),
         ]
     }
 
@@ -386,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_invalid_numbers() {
-        for (buffer, error) in invalid_numbers() {
+        for (buffer, error) in invalid_signs() {
             let mut lexer = Lexer::new(buffer);
             let result = lexer.lex();
 
@@ -439,7 +435,10 @@ mod tests {
         // @
         let mut lexer = Lexer::new(&[64]);
         let result = lexer.lex();
-        let error = JsonError::new(JsonErrorKind::UnexpectedCharacter { byte: b'@' }, Some(0));
+        let error = ParserError {
+            kind: ParserErrorKind::UnexpectedCharacter { byte: b'@' },
+            pos: Some(0)
+        };
 
         assert_eq!(result, Err(error));
     }

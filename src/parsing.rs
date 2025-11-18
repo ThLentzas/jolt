@@ -1,4 +1,5 @@
-use crate::parsing::{error::JsonError, parser::Parser, value::Value};
+use crate::parsing::{error::ParserError, parser::Parser, value::Value};
+use crate::parsing::error::{KeywordError, KeywordErrorKind};
 
 pub(super) mod error;
 pub(super) mod value;
@@ -16,8 +17,34 @@ const INPUT_BUFFER_LIMIT: usize = 4_194_304; // also mentioned as Document size,
 const STRING_VALUE_LENGTH_LIMIT: usize = 8192;
 const NESTING_DEPTH_LIMIT: u16 = 128;
 
-pub(super) fn parse(buffer: &[u8]) -> Result<Value, JsonError> {
+pub(super) fn parse(buffer: &[u8]) -> Result<Value, ParserError> {
     Parser::new(buffer).parse()
+}
+
+fn read_boolean_or_null(buffer: &[u8], pos: &mut usize, target: &[u8]) -> Result<(), KeywordError> {
+    let remaining = &buffer[*pos..];
+
+    if target.len() > remaining.len() {
+        return Err(KeywordError {
+            kind: KeywordErrorKind::UnexpectedEndOf,
+            pos: buffer.len() - 1
+        });
+    }
+
+    for byte in target.iter() {
+        if buffer[*pos] != *byte {
+            return Err(KeywordError {
+                kind: KeywordErrorKind::UnexpectedCharacter { byte: buffer[*pos] },
+                pos: *pos
+            });
+        }
+        *pos += 1;
+    }
+    Ok(())
+}
+
+fn is_rfc_whitespace(byte: u8)  -> bool {
+    matches!(byte, b'\t' | b'\n' | b'\r' | b' ')
 }
 
 //         while self.pos < self.buffer.len() {
@@ -38,9 +65,9 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Value, JsonError> {
 // Initially I had the above code but the check for control characters was not needed because
 // if the current byte is not a whitespace, will fail to match any arm in lex, and we would
 // return an UnexpectedChar error
-pub(crate) fn skip_whitespaces(buffer: &[u8], pos: &mut usize)  {
+fn skip_whitespaces(buffer: &[u8], pos: &mut usize)  {
     while *pos < buffer.len() {
-        if matches!(buffer[*pos], b'\t' | b'\n' | b'\r' | b' ') {
+        if is_rfc_whitespace(buffer[*pos]) {
             *pos += 1;
         } else {
             break;

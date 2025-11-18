@@ -3,7 +3,15 @@ use std::{error, fmt};
 use bigdecimal::BigDecimal;
 #[cfg(feature = "big_decimal")]
 use bigdecimal::num_bigint::BigInt;
-use crate::parsing::lexer::NumberState;
+
+// https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
+
+// much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
+struct NumberState {
+    decimal_point: bool,
+    scientific_notation: bool,
+    negative: bool
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Number (NumberKind);
@@ -144,18 +152,18 @@ impl From<BigInt> for Number {
 
 // We return u16 because the valid range for the Unicode sequences are 0x0000-0xFFFF(0-65535)
 // 0-65535 is the range for u16
-pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, HexError> {
+pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {
     let mut val: u16 = 0;
 
     // Logic similar to base 10 seen on Leetcode problems
     // digit - b'a' returns a value in the [0,25] range but in base 16 a/A is 10 not 0, b/B is 11
     // + 10 brings into that range
-    for (index, &byte) in hex_bytes.iter().enumerate() {
+    for (index, &byte) in buffer.iter().enumerate() {
         let hex_val = match byte {
             b'0'..=b'9' => byte - b'0',
             b'a'..=b'f' => byte - b'a' + 10,
             b'A'..=b'F' => byte - b'A' + 10,
-            _ => return Err(HexError::InvalidHexDigit { digit: byte, pos: index })
+            _ => return Err(HexError { digit: byte, pos: index })
         };
         val = val * 16 + hex_val as u16;
     }
@@ -164,7 +172,7 @@ pub(super) fn hex_to_u16(hex_bytes: &[u8]) -> Result<u16, HexError> {
 
 // If we wanted to be more strict about integer ranges we could set the allowed range to [-(2^53) + 1, (2^53) - 1]
 // https://www.rfc-editor.org/rfc/rfc7493#section-2.2
-pub(super) fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
+fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
     if state.decimal_point || state.scientific_notation {
         return is_out_of_range_f64(buffer);
     } else {
@@ -179,12 +187,12 @@ pub(super) fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
 }
 
 // from_utf8() calls in the is_out_of_range() functions are always called in valid numbers
-pub(super) fn is_out_of_range_u64(buffer: &[u8]) -> bool {
+fn is_out_of_range_u64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<u64>().is_err()
 }
 
-pub(super) fn is_out_of_range_i64(buffer: &[u8]) -> bool {
+fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<i64>().is_err()
 }
@@ -194,11 +202,216 @@ pub(super) fn is_out_of_range_i64(buffer: &[u8]) -> bool {
 // infinity and nan are not supported in the json rfc we can safely say that the number is out of range
 //
 // If we actually had to parsing parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
-pub(super) fn is_out_of_range_f64(buffer: &[u8]) -> bool {
+fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     let val = s.parse::<f64>().unwrap();
 
     val.is_infinite()
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct NumericError {
+    pub(super) kind: NumericErrorKind,
+    pub(super) pos: usize
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum NumericErrorKind {
+    LeadingZeros,
+    InvalidSign { message: &'static str },
+    InvalidScientific { message: &'static str },
+    InvalidDecimal { message: &'static str },
+    OutOfRange(OutOfRangeError)
+}
+
+pub(super) fn parse(buffer: &[u8]) -> Number {
+    let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
+    let s = std::str::from_utf8(buffer).unwrap();
+
+    #[cfg(feature = "big_decimal")]
+    type N = BigDecimal;
+    #[cfg(not(feature = "big_decimal"))]
+    type N = f64;
+    if float {
+        return Number::from(s.parse::<N>().unwrap());
+    }
+
+    // Try to optimize even if big_decimal is true; for any integer we can still store it as i64 or
+    // u64 as long as it is not out of range. In read_number() we don't check if the number is
+    // out of range when big_decimal is enabled
+    match s.starts_with('-') {
+        true => {
+            #[cfg(feature = "big_decimal")]
+            if is_out_of_range_i64(buffer) {
+                return Number::from(s.parse::<BigInt>().unwrap());
+            }
+            return Number::from(s.parse::<i64>().unwrap());
+        }
+        _ => ()
+    }
+
+    #[cfg(feature = "big_decimal")]
+    if is_out_of_range_u64(buffer) {
+        return Number::from(s.parse::<BigInt>().unwrap());
+    }
+
+    let num = s.parse::<u64>().unwrap();
+    if num <= i64::MAX as u64 {
+        Number::from(num as i64)
+    } else {
+        Number::from(num)
+    }
+}
+
+pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
+    let len = buffer.len();
+    let start = *pos;
+    let mut current = buffer[*pos];
+    let next = buffer.get(*pos + 1);
+
+    match(current, next) {
+        // +9
+        (b'+', Some(n)) if n.is_ascii_digit() => return Err(NumericError {
+            kind: NumericErrorKind::InvalidSign {
+                message: "json specification prohibits numbers from being prefixed with a plus sign"
+            },
+            pos: *pos
+        }),
+        // -0 is valid
+        (b'-', Some(n)) if !n.is_ascii_digit() => return Err(NumericError {
+            kind: NumericErrorKind::InvalidSign {
+                message: "a valid numeric value requires a digit (0-9) after the minus sign"
+            },
+            pos: *pos
+        }),
+        // 05 not allowed
+        (b'0', Some(n)) if n.is_ascii_digit() => return Err(NumericError {
+            kind: NumericErrorKind::LeadingZeros,
+            pos: *pos
+        }),
+        _ => (),
+    }
+
+    // edge case for the logic mention in the comment above; this is the case for single digit
+    // numbers '3' where next is none, self.pos is at the digit itself, not in the 1st character
+    // after reading the number, we don't need to reset the position, later advance() is called
+    // self.pos moves correctly to the next character without skipping one
+    if next.is_none() {
+        return Ok(());
+    }
+
+    *pos += 1;
+    current = *next.unwrap();
+    let mut state = NumberState {
+        decimal_point: false,
+        scientific_notation: false,
+        negative: buffer[start] == b'-'
+    };
+    while *pos < len {
+        match current {
+            b'0'..=b'9' => (),
+            b'.' => check_decimal_point(buffer, *pos, &mut state)?,
+            b'e' | b'E' | b'-' | b'+'=> check_scientific_notation(buffer, *pos, &mut state)?,
+            _ => break
+        }
+        *pos += 1;
+        // update current only if we did not reach the end of the buffer
+        if *pos < len {
+            current = buffer[*pos];
+        }
+    }
+
+    let slice = &buffer[start..*pos];
+    if !cfg!(feature = "big_decimal") && is_out_of_range(slice, state) {
+        return Err(NumericError {
+            kind: NumericErrorKind::OutOfRange(OutOfRangeError { pos: start }),
+            pos: start
+        })
+    };
+    Ok(())
+}
+
+fn check_decimal_point(buffer: &[u8], pos: usize, state: &mut NumberState) -> Result<(), NumericError> {
+    // 1.2.3
+    if state.decimal_point {
+        return Err(NumericError {
+            kind: NumericErrorKind::InvalidDecimal {
+                message: "double decimal point found"
+            },
+            pos
+        });
+    }
+    // 1. or 2.g
+    if pos + 1 >= buffer.len() || !buffer[pos + 1].is_ascii_digit() {
+        return Err(NumericError {
+            kind: NumericErrorKind::InvalidDecimal {
+                message: "decimal point must be followed by a digit"
+            },
+            pos
+        });
+    }
+    // 1e4.5
+    if state.scientific_notation {
+        return Err(NumericError {
+            kind: NumericErrorKind::InvalidDecimal {
+                message: "decimal point is not allowed after exponential notation"
+            },
+            pos
+        });
+    }
+    state.decimal_point = true;
+    Ok(())
+}
+
+fn check_scientific_notation(buffer: &[u8], pos: usize, state: &mut NumberState) -> Result<(), NumericError> {
+    let current = buffer[pos];
+
+    match current {
+        b'e' | b'E' => {
+            // 1e2E3
+            if state.scientific_notation {
+                return Err(NumericError {
+                    kind: NumericErrorKind::InvalidScientific {
+                        message: "double exponential notation('e' or 'E') found"
+                    },
+                    pos
+                });
+            }
+            // 1e or 1eg
+            if pos + 1 >= buffer.len() || !matches!(buffer[pos + 1], b'-' | b'+' | b'0'..=b'9') {
+                return Err(NumericError {
+                    kind: NumericErrorKind::InvalidScientific {
+                        message: "exponential notation must be followed by a digit or a sign"
+                    },
+                    pos
+                });
+            }
+            // Leading zeros are allowed on the exponent 1e005 evaluates to 100000
+            state.scientific_notation = true;
+        }
+        b'+' | b'-' => {
+            // 1+2
+            if !matches!(buffer[pos - 1], b'e' | b'E') {
+                return Err(NumericError {
+                    kind: NumericErrorKind::InvalidScientific {
+                        message: "sign ('+' or '-') is only allowed as part of exponential notation"
+                    },
+                    pos
+                });
+            }
+            // 1E+g
+            if pos + 1 >= buffer.len() || !buffer[pos + 1].is_ascii_digit() {
+                return Err(NumericError {
+                    kind: NumericErrorKind::InvalidScientific {
+                        message: "exponential notation must be followed by a digit"
+                    },
+                    pos
+                });
+            }
+        }
+        _ => unreachable!("Called with {} instead of 'e', 'E', '+', or '-'", current)
+    }
+    Ok(())
 }
 
 // Leetcode atoi baby let's go!!!!!!!!!!!
@@ -224,7 +437,7 @@ pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeErro
     let mut current = buffer[*pos];
     while *pos < buffer.len() && current.is_ascii_digit() {
         if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
-            return Err(OutOfRangeError::OutOfRange { pos: start });
+            return Err(OutOfRangeError { pos: start });
         }
         num = num * 10 + (current - 0x30) as i64;
         *pos += 1;
@@ -246,21 +459,19 @@ pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeErro
 //
 // the same logic applies for impl From<NumericError> for PathError where we have the OutOfRange case
 #[derive(Debug, PartialEq)]
-pub(super) enum HexError {
-    InvalidHexDigit { digit: u8, pos: usize }
+pub(super) struct HexError {
+    pub(super) digit: u8,
+    pub(super) pos: usize
 }
+
 #[derive(Debug, PartialEq)]
-pub(super) enum OutOfRangeError {
-    OutOfRange { pos: usize }
+pub(super) struct OutOfRangeError {
+    pub(super) pos: usize
 }
 
 impl fmt::Display for HexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            // self is auto deref based on rust ergonomics; for digit and pos we have a reference as well,
-            // but we don't need to deref when we pass into the write!()
-            Self::InvalidHexDigit { digit, pos }  => write!(f, "Invalid hex digit (0x{:02X}) at index {}", digit, pos),
-        }
+        write!(f, "Invalid hex digit (0x{:02X}) at index {}", self.digit, self.pos)
     }
 }
 
@@ -270,13 +481,102 @@ impl fmt::Display for OutOfRangeError {
     }
 }
 
+impl fmt::Display for NumericError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // for Leading zeros add: "json specification prohibits numbers from being prefixed with a plus sign"
+        todo!()
+    }
+}
+
 impl error::Error for HexError {}
 
 impl error::Error for OutOfRangeError {}
+impl error::Error for NumericError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn invalid_numbers() -> Vec<(&'static [u8], NumericError)> {
+        vec![
+            (b"+9", NumericError {
+                kind: NumericErrorKind::InvalidSign {
+                    message: "json specification prohibits numbers from being prefixed with a plus sign"
+                },
+                pos: 0
+            }),
+            (b"-a", NumericError {
+                kind: NumericErrorKind::InvalidSign {
+                    message: "a valid numeric value requires a digit (0-9) after the minus sign"
+                },
+                pos: 0
+            }),
+            (b"06", NumericError {
+                kind: NumericErrorKind::LeadingZeros,
+                pos: 0
+            }),
+            (b"1.2.3", NumericError {
+                kind: NumericErrorKind::InvalidDecimal {
+                    message: "double decimal point found"
+                },
+                pos: 3
+            }),
+            (b"1.", NumericError {
+                kind: NumericErrorKind::InvalidDecimal {
+                    message: "decimal point must be followed by a digit"
+                },
+                pos: 1
+            }),
+            (b"1.a", NumericError {
+                kind: NumericErrorKind::InvalidDecimal {
+                    message: "decimal point must be followed by a digit"
+                },
+                pos: 1
+            }),
+            (b"4e5.1", NumericError {
+                kind: NumericErrorKind::InvalidDecimal {
+                    message: "decimal point is not allowed after exponential notation"
+                },
+                pos: 3
+            }),
+            (b"1e2e5", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "double exponential notation('e' or 'E') found"
+                },
+                pos: 3
+            }),
+            (b"1e", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "exponential notation must be followed by a digit or a sign"
+                },
+                pos: 1
+            }),
+            (b"246Ef", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "exponential notation must be followed by a digit or a sign"
+                },
+                pos: 3
+            }),
+            (b"83+1", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "sign ('+' or '-') is only allowed as part of exponential notation"
+                },
+                pos: 2
+            }),
+            (b"1e+", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "exponential notation must be followed by a digit"
+                },
+                pos: 2
+            }),
+            (b"1e+f", NumericError {
+                kind: NumericErrorKind::InvalidScientific {
+                    message: "exponential notation must be followed by a digit"
+                },
+                pos: 2
+            })
+        ]
+    }
 
     // toDo: change this to 1 test and call is out of range
     fn overflow_f64() -> Vec<&'static [u8]> {
@@ -326,7 +626,17 @@ mod tests {
         // "12gB"
         let res = hex_to_u16(&[0x31, 0x32, 0x67, 0x42]);
         if let Err(e) = res {
-            assert_eq!(e, HexError::InvalidHexDigit { digit: 0x67, pos: 2 });
+            assert_eq!(e, HexError { digit: 0x67, pos: 2 });
+        }
+    }
+
+    #[test]
+    fn test_invalid_numbers() {
+        for (buffer, error) in invalid_numbers() {
+            let mut pos = 0;
+            let result = read(buffer, &mut pos);
+
+            assert_eq!(result, Err(error), "failed to read: {buffer:?}");
         }
     }
 }

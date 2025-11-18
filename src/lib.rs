@@ -1,5 +1,5 @@
 use crate::parsing::error::FileParseError;
-use crate::parsing::{error::JsonError, value::Value};
+use crate::parsing::{error::ParserError, value::Value};
 use std::fs;
 
 mod macros;
@@ -8,11 +8,11 @@ mod parsing;
 // have a way for them to specify the case they want when they deserialize
 // maybe rename to nobu(trust) or vilya
 // check zero copy deserialization
-pub fn from_bytes(buffer: &[u8]) -> Result<Value, JsonError> {
+pub fn from_bytes(buffer: &[u8]) -> Result<Value, ParserError> {
     parsing::parse(buffer)
 }
 
-pub fn from_str(text: &str) -> Result<Value, JsonError> {
+pub fn from_str(text: &str) -> Result<Value, ParserError> {
     parsing::parse(text.as_bytes())
 }
 
