@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // toDo: advantages of peek/advance and recursive decent parser
+    // toDo: advantages of peek/advance and recursive descendant parser
     pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
         if self.buffer.len() > INPUT_BUFFER_LIMIT {
             return Err(ParserError {
@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
         self.parse_value(token.as_ref())?;
         match self.peek()? {
             // after successfully parsing a value we can't have leftover tokens
-            // false5, "abc"123, {}null, note that this could return an error, {}001, -> leading zeros are not allowed
+            // false5, "abc"123, {}  null, note that this could return an error, {}001, -> leading zeros are not allowed
             Some(token) => Err(ParserError {
                 kind: ParserErrorKind::UnexpectedToken { expected: None },
                 pos: Some(token.start_index())

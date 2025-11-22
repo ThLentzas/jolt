@@ -62,9 +62,7 @@ pub enum KeywordErrorKind {
 }
 
 impl fmt::Display for ParserError {
-    // because self is borrowed everything inside it is also borrowed
-    // ErrorKind::DuplicateName { name } => // This tries to move name out, and we can not move owned data out of share context
-    // we end up with &self.kind
+    // read the comment in filter.rs from ComparisonExpr::evaluate()
     // len, byte, digit are copied, we don't need to dereference them
     // toDo: review this and how dereferencing works, what takes ownership and what happens if we had match self.kind
     // macros like write!, println! and so on do autoderef

@@ -1,17 +1,16 @@
-use std::cmp::PartialEq;
-use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
-use crate::parsing::value::path::{Query};
+use crate::parsing::value::path::Query;
 use crate::parsing::value::pointer::Pointer;
+use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
+use std::cmp::PartialEq;
 
+mod error;
 mod path;
 mod pointer;
-mod error;
 
 #[derive(Debug, PartialEq)]
 pub enum Value {
-    // better reads from a LinkedHashMap, worse in removals
     Object(IndexMap<String, Value>),
     Array(Vec<Value>),
     Number(Number),
@@ -101,7 +100,7 @@ impl Value {
         }
     }
 
-    pub fn as_boolean(&self) -> Option<&bool>{
+    pub fn as_boolean(&self) -> Option<&bool> {
         match self {
             Value::Boolean(b) => Some(b),
             _ => None,
@@ -165,25 +164,19 @@ impl Value {
             // We never check if number of tokens exceed the NestingDepthLimit because even if they did
             // we would get no match at NestingDepthLimit + 1 and we would return None
             match ptr.gen_ref_token()? {
-                Some(token) => {
-                    match current {
-                        Value::Object(map) => {
-                            match map.get(&token.val) {
-                                Some(val) => current = val,
-                                None => return Ok(None)
-                            }
-                        }
-                        Value::Array(values) => {
-                            match pointer::check_array_index(&token)? {
-                                Some(index) if index >= values.len() => return Ok(None),
-                                Some(index) => current = &values[index],
-                                _ => return Ok(None),
-                            }
-                        }
-                        _ => return  Ok(None)
-                    }
-                }
-                None => break
+                Some(token) => match current {
+                    Value::Object(map) => match map.get(&token.val) {
+                        Some(val) => current = val,
+                        None => return Ok(None),
+                    },
+                    Value::Array(values) => match pointer::check_array_index(&token)? {
+                        Some(index) if index >= values.len() => return Ok(None),
+                        Some(index) => current = &values[index],
+                        _ => return Ok(None),
+                    },
+                    _ => return Ok(None),
+                },
+                None => break,
             }
         }
         Ok(Some(current))
@@ -207,25 +200,19 @@ impl Value {
             // We never check if number of tokens exceed the NestingDepthLimit because even if they did
             // we would get no match at NestingDepthLimit + 1 and we would return None
             match ptr.gen_ref_token()? {
-                Some(token) => {
-                    match current {
-                        Value::Object(map) => {
-                            match map.get_mut(&token.val) {
-                                Some(val) => current = val,
-                                None => return Ok(None)
-                            }
-                        }
-                        Value::Array(values) => {
-                            match pointer::check_array_index(&token)? {
-                                Some(index) if index >= values.len() => return Ok(None),
-                                Some(index) => current = &mut values[index],
-                                _ => return Ok(None),
-                            }
-                        }
-                        _ => return  Ok(None)
-                    }
-                }
-                None => break
+                Some(token) => match current {
+                    Value::Object(map) => match map.get_mut(&token.val) {
+                        Some(val) => current = val,
+                        None => return Ok(None),
+                    },
+                    Value::Array(values) => match pointer::check_array_index(&token)? {
+                        Some(index) if index >= values.len() => return Ok(None),
+                        Some(index) => current = &mut values[index],
+                        _ => return Ok(None),
+                    },
+                    _ => return Ok(None),
+                },
+                None => break,
             }
         }
         Ok(Some(current))
@@ -247,10 +234,9 @@ impl Value {
     // we could return without processing the rest of the segments, but we return something from an
     // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
     // case.
-    pub fn read(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
+    pub fn read<>(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
-        query.parse()?;
-        Ok(query.nodelist.into())
+        Ok(query.parse()?)
     }
 }
 
@@ -332,140 +318,228 @@ impl From<f64> for Value {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::macros::json;
     use crate::parsing::error::{StringError, StringErrorKind};
     use crate::parsing::value::error::PointerErrorKind;
-    use super::*;
 
     // We could also move those tests to pointer and break it down to the 3 methods called by pointer()
     // check_start(), gen_ref_token(), check_array_index()
     fn invalid_pointer_paths() -> Vec<(&'static str, PointerError)> {
         vec![
             // does not start with '/'
-            ("foo/bar", PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 }),
+            (
+                "foo/bar",
+                PointerError {
+                    kind: PointerErrorKind::InvalidPointerSyntax,
+                    pos: 0,
+                },
+            ),
             // does not start with the Unicode sequence of  '/'
-            ("\\u005E", PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 }),
+            (
+                "\\u005E",
+                PointerError {
+                    kind: PointerErrorKind::InvalidPointerSyntax,
+                    pos: 0,
+                },
+            ),
             // unpaired pointer escape
-            ("/foo/bar~", PointerError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 8
-            })),
+            (
+                "/foo/bar~",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 8,
+                }),
+            ),
             // unknown pointer escape
-            ("/foo/bar~3", PointerError::from(StringError {
-                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'3' },
-                pos: 9
-            })),
+            (
+                "/foo/bar~3",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'3' },
+                    pos: 9,
+                }),
+            ),
             // ~e
-            ("/foo/bar~\\u0065", PointerError::from(StringError {
-                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
-                pos: 9
-            })),
+            (
+                "/foo/bar~\\u0065",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
+                    pos: 9,
+                }),
+            ),
             // passing it as "/\u{007e}" is wrong because this is not how we use Unicode sequence in json strings
             // the parser has to map the sequence to the character
             // unpaired pointer escape where '~' is represented as Unicode sequence
-            ("/\\u007e", PointerError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 6
-            })),
+            (
+                "/\\u007e",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 6,
+                }),
+            ),
             // unknown pointer escape where '~' is represented as Unicode
-            ("/\\u007e4", PointerError::from(StringError {
-                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'4' },
-                pos: 7
-            })),
+            (
+                "/\\u007e4",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'4' },
+                    pos: 7,
+                }),
+            ),
             // // unknown pointer escape where '~' and the next character are represented as Unicode sequences
-            ("/\\u007e\\u0065", PointerError::from(StringError {
-                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
-                pos: 7
-            })),
-            ("/foo/+1",PointerError {
-                kind: PointerErrorKind::InvalidIndex {
-                    message: "index can not be prefixed with a sign"
+            (
+                "/\\u007e\\u0065",
+                PointerError::from(StringError {
+                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
+                    pos: 7,
+                }),
+            ),
+            (
+                "/foo/+1",
+                PointerError {
+                    kind: PointerErrorKind::InvalidIndex {
+                        message: "index can not be prefixed with a sign",
+                    },
+                    pos: 5,
                 },
-                pos: 5 }),
-            ("/foo/01", PointerError {
-                kind: PointerErrorKind::InvalidIndex { message: "leading zeros are not allowed"},
-                pos: 5
-            }),
-            ("/foo/+", PointerError {
-                kind: PointerErrorKind::InvalidIndex { message: "invalid array index"},
-                pos: 5
-            })
+            ),
+            (
+                "/foo/01",
+                PointerError {
+                    kind: PointerErrorKind::InvalidIndex {
+                        message: "leading zeros are not allowed",
+                    },
+                    pos: 5,
+                },
+            ),
+            (
+                "/foo/+",
+                PointerError {
+                    kind: PointerErrorKind::InvalidIndex {
+                        message: "invalid array index",
+                    },
+                    pos: 5,
+                },
+            ),
         ]
     }
 
     // path, source, result
     fn valid_pointer_paths() -> Vec<(&'static str, Value, Option<Value>)> {
         vec![
-            ("", json!(
-                {
-                    "foo": "bar"
-                }
-            ), Some(json!(
-                {
-                    "foo": "bar"
-                }
-            ))),
-            ("/foo/1", json!(
-                {
-                    "foo": [false, null]
-                }
-            ), Some(json!(null))),
-            ("//1", json!(
-                {
-                    "": [false, null]
-                }
-            ), Some(json!(null))),
-            ("/foo//0", json!(
+            (
+                "",
+                json!(
+                    {
+                        "foo": "bar"
+                    }
+                ),
+                Some(json!(
+                    {
+                        "foo": "bar"
+                    }
+                )),
+            ),
+            (
+                "/foo/1",
+                json!(
+                    {
+                        "foo": [false, null]
+                    }
+                ),
+                Some(json!(null)),
+            ),
+            (
+                "//1",
+                json!(
+                    {
+                        "": [false, null]
+                    }
+                ),
+                Some(json!(null)),
+            ),
+            (
+                "/foo//0",
+                json!(
                 {
                     "foo": {
                         "": [true]
                     }
-                }), Some(json!(true))),
+                }),
+                Some(json!(true)),
+            ),
             // Rust defaults integer literals to i32
-            ("/foo~1bar/baz", json!(
+            (
+                "/foo~1bar/baz",
+                json!(
                 {
                     "foo/bar": {
                         "baz":  9223372036854775808u64
                     }
-                }), Some(json!(9223372036854775808u64))),
-            ("/foo~0bar/baz", json!(
+                }),
+                Some(json!(9223372036854775808u64)),
+            ),
+            (
+                "/foo~0bar/baz",
+                json!(
                 {
                     "foo~bar": {
                         "baz": ":)"
                     }
-                }), Some(json!(":)"))),
-            ("/foo~\\u0030bar/baz", json!(
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo~\\u0030bar/baz",
+                json!(
                 {
                     "foo~bar": {
                         "baz": ":)"
                     }
-                }), Some(json!(":)"))),
-            ("/foo\\u007e0bar/baz", json!(
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo\\u007e0bar/baz",
+                json!(
                 {
                     "foo~bar": {
                         "baz": ":)"
                     }
-                }), Some(json!(":)"))),
-            ("/foo\\u007e\\u0030bar/baz", json!(
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo\\u007e\\u0030bar/baz",
+                json!(
                 {
                     "foo~bar": {
                         "baz": ":)"
                     }
-                }), Some(json!(":)"))),
+                }),
+                Some(json!(":)")),
+            ),
             // index out of bounds
             ("/2", json!([2]), None),
             // unparsable index starting with a digit leads to None
             ("/2e", json!([2]), None),
             // '-' as array index always returns none according to spec
             ("/-", json!([2, 3]), None),
-            ("/é", json!(
+            (
+                "/é",
+                json!(
                 {
                     "é": false
-                }), Some(json!(false))),
-            ("/1", json!(
+                }),
+                Some(json!(false)),
+            ),
+            (
+                "/1",
+                json!(
                 {
                     "foo": "bar"
-                }), None),
+                }),
+                None,
+            ),
         ]
     }
 
@@ -478,67 +552,119 @@ mod tests {
     // the same function
     fn valid_names() -> Vec<(&'static str, Value, Vec<Value>)> {
         vec![
-            ("$.foo \n\r\t", json!(
+            (
+                "$.foo \n\r\t",
+                json!(
                 {
                     "foo": "bar"
-                }), vec![json!("bar")]),
+                }),
+                vec![json!("bar")],
+            ),
             // é: 2-byte sequence
-            ("$.namé", json!(
+            (
+                "$.namé",
+                json!(
                 {
                     "namé": "Joe"
-                }), vec![json!("Joe")]),
-            ("$._j0lt", json!(
+                }),
+                vec![json!("Joe")],
+            ),
+            (
+                "$._j0lt",
+                json!(
                 {
                     "_j0lt": ":)"
-                }), vec![json!(":)")]),
-            ("$[\"foo\"]", json!(
+                }),
+                vec![json!(":)")],
+            ),
+            (
+                "$[\"foo\"]",
+                json!(
                 {
                     "foo": "bar"
-                }), vec![json!("bar")]),
+                }),
+                vec![json!("bar")],
+            ),
             // in double-quoted name ' can appear as char literal
-            ("$[\"hello ' world\"]", json!(
+            (
+                "$[\"hello ' world\"]",
+                json!(
                 {
                     "hello ' world": "://"
-                }), vec![json!("://")]),
+                }),
+                vec![json!("://")],
+            ),
             // in double-quoted name " must be escaped at the parser level like we did with json strings
-            ("$[\"hello \\\" world\"]", json!(
+            (
+                "$[\"hello \\\" world\"]",
+                json!(
                 {
                     "hello \" world": "://"
-                }), vec![json!("://")]),
+                }),
+                vec![json!("://")],
+            ),
             // in single-quoted name " must be escaped, similar to how we handle json strings(merge / and ' into ')
             // at runtime the value is $['hello \' world'] and we map to $['hello ' world']
-            ("$['hello \\' world']", json!(
+            (
+                "$['hello \\' world']",
+                json!(
                 {
                     "hello ' world": "://"
-                }), vec![json!("://")]),
+                }),
+                vec![json!("://")],
+            ),
             // in single-quoted name " can appear unescaped at the parser level
             // at runtime the value is $['hello " world'] and " is just a char literal
-            ("$['hello \" world']", json!(
+            (
+                "$['hello \" world']",
+                json!(
                 {
                     "hello \" world": "://"
-                }), vec![json!("://")]),
-            ("$[\"\"]", json!(
+                }),
+                vec![json!("://")],
+            ),
+            (
+                "$[\"\"]",
+                json!(
                 {
                     "": "empty key"
-                }), vec![json!("empty key")]),
-            ("$['foo']", json!(
+                }),
+                vec![json!("empty key")],
+            ),
+            (
+                "$['foo']",
+                json!(
                 {
                     "foo": "bar"
-                }), vec![json!("bar")]),
-            ("$['\\u263A']", json!(
+                }),
+                vec![json!("bar")],
+            ),
+            (
+                "$['\\u263A']",
+                json!(
                 {
                     "☺": "smiley_face"
-                }), vec![json!("smiley_face")]),
+                }),
+                vec![json!("smiley_face")],
+            ),
             // surrogate pair
-            ("$['\\uD83D\\uDE80']", json!(
+            (
+                "$['\\uD83D\\uDE80']",
+                json!(
                 {
                     "🚀": "rocket"
-                }), vec![json!("rocket")]),
+                }),
+                vec![json!("rocket")],
+            ),
             // called in an Object that does not have 'foo' as key
-            ("$['foo']", json!(
+            (
+                "$['foo']",
+                json!(
                 {
                     "key": "value"
-                }), vec![]),
+                }),
+                vec![],
+            ),
             // called in a non-Object value
             ("$['foo']", json!([1, 2, 3]), vec![]),
         ]
@@ -558,142 +684,167 @@ mod tests {
 
     fn valid_slices() -> Vec<(&'static str, Value, Vec<Value>)> {
         vec![
-            ("$[2:4]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(2), json!(3)]),
-            ("$[1:8:2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(1),
-                json!(3),
-                json!(5),
-                json!(7)
-            ]),
+            (
+                "$[2:4]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(2), json!(3)],
+            ),
+            (
+                "$[1:8:2]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(1), json!(3), json!(5), json!(7)],
+            ),
             // [0, 10)
-            ("$[:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(0),
-                json!(1),
-                json!(2),
-                json!(3),
-                json!(4),
-                json!(5),
-                json!(6),
-                json!(7),
-                json!(8),
-                json!(9)
-            ]),
+            (
+                "$[:]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(0),
+                    json!(1),
+                    json!(2),
+                    json!(3),
+                    json!(4),
+                    json!(5),
+                    json!(6),
+                    json!(7),
+                    json!(8),
+                    json!(9),
+                ],
+            ),
             // [0, 10)
-            ("$[::]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(0),
-                json!(1),
-                json!(2),
-                json!(3),
-                json!(4),
-                json!(5),
-                json!(6),
-                json!(7),
-                json!(8),
-                json!(9)
-            ]),
+            (
+                "$[::]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(0),
+                    json!(1),
+                    json!(2),
+                    json!(3),
+                    json!(4),
+                    json!(5),
+                    json!(6),
+                    json!(7),
+                    json!(8),
+                    json!(9),
+                ],
+            ),
             // [0, 3)
-            ("$[:3]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(0), json!(1), json!(2)]),
+            (
+                "$[:3]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(0), json!(1), json!(2)],
+            ),
             // [0, 10) step by 2
-            ("$[::2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(0),
-                json!(2),
-                json!(4),
-                json!(6),
-                json!(8)
-            ]),
+            (
+                "$[::2]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(0), json!(2), json!(4), json!(6), json!(8)],
+            ),
             // [0, 10) in reverse order
-            ("$[::-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(9),
-                json!(8),
-                json!(7),
-                json!(6),
-                json!(5),
-                json!(4),
-                json!(3),
-                json!(2),
-                json!(1),
-                json!(0)
-            ]),
+            (
+                "$[::-1]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(9),
+                    json!(8),
+                    json!(7),
+                    json!(6),
+                    json!(5),
+                    json!(4),
+                    json!(3),
+                    json!(2),
+                    json!(1),
+                    json!(0),
+                ],
+            ),
             // (0, 10) in reverse order
-            ("$[:0:-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(9),
-                json!(8),
-                json!(7),
-                json!(6),
-                json!(5),
-                json!(4),
-                json!(3),
-                json!(2),
-                json!(1)
-            ]),
+            (
+                "$[:0:-1]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(9),
+                    json!(8),
+                    json!(7),
+                    json!(6),
+                    json!(5),
+                    json!(4),
+                    json!(3),
+                    json!(2),
+                    json!(1),
+                ],
+            ),
             // (-1, 4] in reverse order
-            ("$[4::-1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(4),
-                json!(3),
-                json!(2),
-                json!(1),
-                json!(0)
-            ]),
+            (
+                "$[4::-1]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(4), json!(3), json!(2), json!(1), json!(0)],
+            ),
             // [1, 1)
             ("$[1:1]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![]),
             // read new() from Range for the cases below
             // [9, 4)
             ("$[-1:-6:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![]),
             // [0, 10)
-            ("$[-11:12:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(0),
-                json!(1),
-                json!(2),
-                json!(3),
-                json!(4),
-                json!(5),
-                json!(6),
-                json!(7),
-                json!(8),
-                json!(9)
-            ]),
+            (
+                "$[-11:12:]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(0),
+                    json!(1),
+                    json!(2),
+                    json!(3),
+                    json!(4),
+                    json!(5),
+                    json!(6),
+                    json!(7),
+                    json!(8),
+                    json!(9),
+                ],
+            ),
             // (2, 9] in reverse order and step by 2
-            ("$[-1:-8:-2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(9),
-                json!(7),
-                json!(5),
-                json!(3)
-            ]),
+            (
+                "$[-1:-8:-2]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(9), json!(7), json!(5), json!(3)],
+            ),
             // [2, 8)
-            ("$[2:-2]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(2),
-                json!(3),
-                json!(4),
-                json!(5),
-                json!(6),
-                json!(7)
-            ]),
+            (
+                "$[2:-2]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(2), json!(3), json!(4), json!(5), json!(6), json!(7)],
+            ),
             // [8, 9)
-            ("$[-2:9]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![json!(8)]),
+            (
+                "$[-2:9]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(8)],
+            ),
             // [6, 10)
-            ("$[-4:]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(6),
-                json!(7),
-                json!(8),
-                json!(9)
-            ]),
+            (
+                "$[-4:]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(6), json!(7), json!(8), json!(9)],
+            ),
             // [0, 7)
-            ("$[:-3]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(0),
-                json!(1),
-                json!(2),
-                json!(3),
-                json!(4),
-                json!(5),
-                json!(6)
-            ]),
+            (
+                "$[:-3]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![
+                    json!(0),
+                    json!(1),
+                    json!(2),
+                    json!(3),
+                    json!(4),
+                    json!(5),
+                    json!(6),
+                ],
+            ),
             // start *S ":" *S end *S ":" *S step
-            ("$[ 1 : \n\t 5 : \r]", json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), vec![
-                json!(1),
-                json!(2),
-                json!(3),
-                json!(4)
-            ]),
+            (
+                "$[ 1 : \n\t 5 : \r]",
+                json!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+                vec![json!(1), json!(2), json!(3), json!(4)],
+            ),
         ]
     }
     // toDo: in multiple selectors include cases where we get duplicate nodes
@@ -711,7 +862,7 @@ mod tests {
     fn test_invalid_pointer_paths() {
         let val = json!({ "foo": [1] });
 
-        for(path, err) in invalid_pointer_paths() {
+        for (path, err) in invalid_pointer_paths() {
             // problem: if the call to pointer() returned Ok() the test passes but that is not what we want
             // if let Err(e) = val.pointer(path) {
             //     assert_eq!(e, err);
@@ -721,9 +872,10 @@ mod tests {
         }
     }
 
+    // jpath
     #[test]
     fn test_valid_names() {
-        for(path_expr, source, nodelist) in valid_names() {
+        for (path_expr, source, nodelist) in valid_names() {
             let res = source.read(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
@@ -735,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_valid_indices() {
-        for(path_expr, source, nodelist) in valid_indices() {
+        for (path_expr, source, nodelist) in valid_indices() {
             let res = source.read(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
@@ -747,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_valid_slices() {
-        for(path_expr, source, nodelist) in valid_slices() {
+        for (path_expr, source, nodelist) in valid_slices() {
             let res = source.read(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());

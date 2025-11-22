@@ -55,7 +55,7 @@ impl<'a> Lexer<'a> {
         self.pos += n;
     }
 
-    // toDo: explain why we moved away from storing the tokens in a vector?
+    // toDo: explain why we moved away from storing the tokens in a vector?, this method could also be called next()
     pub(super) fn lex(&mut self) -> Result<Option<LexerToken>, ParserError> {
         // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
         // would work but the method is also needed in path.rs
@@ -221,14 +221,14 @@ impl<'a> Lexer<'a> {
     // which moves self.pos, and we skip that character
     fn read_boolean(&mut self) -> Result<(), ParserError> {
         let target = if self.buffer[self.pos] == b't' { "true".as_bytes() } else { "false".as_bytes() };
-        parsing::read_boolean_or_null(self.buffer, &mut self.pos, target)?;
+        parsing::read_keyword(self.buffer, &mut self.pos, target)?;
         self.pos -= 1;
 
         Ok(())
     }
 
     fn read_null(&mut self) -> Result<(), ParserError> {
-        parsing::read_boolean_or_null(self.buffer, &mut self.pos, "null".as_bytes())?;
+        parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
         self.pos -= 1;
 
         Ok(())
