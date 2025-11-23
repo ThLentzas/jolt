@@ -1,7 +1,7 @@
+use std::cmp::Ordering;
 use crate::parsing::number::Number;
 use crate::parsing::value::Value;
 use crate::parsing::value::path::{Segment, SegmentKind};
-use std::collections::VecDeque;
 
 // https://docs.rs/recursion/latest/recursion/
 //
@@ -13,13 +13,13 @@ use std::collections::VecDeque;
 // Rust needs to know the size of LogicalExpression and because it is a recursive the size grows
 // infinite
 #[derive(Debug, PartialEq)]
-pub(super) enum LogicalExpression {
+pub(super) enum LogicalExpr {
     // toDo: explain how with the order of read methods in logical expression we handle precedence
     Comparison(ComparisonExpr),
     Test(TestExpr),
-    And(Box<LogicalExpression>, Box<LogicalExpression>),
-    Or(Box<LogicalExpression>, Box<LogicalExpression>),
-    Not(Box<LogicalExpression>),
+    And(Box<LogicalExpr>, Box<LogicalExpr>),
+    Or(Box<LogicalExpr>, Box<LogicalExpr>),
+    Not(Box<LogicalExpr>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -55,7 +55,7 @@ pub(super) enum Comparable {
 
 // json literal types
 #[derive(Debug, PartialEq)]
-pub(super) enum Type {
+pub(crate) enum Type {
     String(String),
     Number(Number),
     Boolean(bool),
@@ -79,6 +79,7 @@ pub(super) enum FnArg {
     Literal(Type),
     EmbeddedQuery(EmbeddedQuery),
     FnExpr(Box<FnExpr>),
+    LogicalExpr(LogicalExpr)
 }
 
 #[derive(Debug, PartialEq)]
@@ -87,50 +88,71 @@ pub(super) struct EmbeddedQuery {
     pub(super) segments: Vec<Segment>,
 }
 
-// the result of evaluating Comparable that will be used in the comparison
-enum Operand<'v> {
-    Literal(&'v Type),
-    Nodelist(Vec<&'v Value>),
-    Logical(bool),
+enum Operand<'a> {
+    Value(&'a Value),
+    Literal(&'a Type),
+    Empty,
+    Invalid
 }
 
 enum FnResultType {
-
+    Nothing
 }
 
-impl LogicalExpression {
+impl LogicalExpr {
     pub(super) fn evaluate(&self, root: &Value, current: &Value) -> bool {
         match self {
-            LogicalExpression::Comparison(expr) => {
-
-            }
+            LogicalExpr::Comparison(expr) => expr.evaluate(root, current),
+            LogicalExpr::Test(expr) => expr.evaluate(),
+            LogicalExpr::And(lhs, rhs) => {
+                // short circuit
+                // auto deref by rust to access the expr(deref coercion)
+                if !lhs.evaluate(root, current) {
+                    return false;
+                }
+                lhs.evaluate(root, current) && rhs.evaluate(root, current)
+            },
+            LogicalExpr::Or(lhs, rhs) => {
+                // short circuit
+                if lhs.evaluate(root, current) {
+                    return true;
+                }
+                lhs.evaluate(root, current) || rhs.evaluate(root, current)
+            },
+            LogicalExpr::Not(expr) => !expr.evaluate(root, current),
         }
-
-        1 == 1
     }
 }
 
 impl ComparisonExpr {
+    fn evaluate<'a> (&'a self, root: &Value, current: &Value) -> bool {
+        let lhs = self.lhs.to_operand(root, current);
+        let rhs = self.rhs.to_operand(root, current);
 
-    fn evaluate(&self, root: &Value, current: &Value) -> bool {
-        // match self.lhs - Pattern matching by value (move):
-        //
-        // Tries to move the value out of self.lhs The variants in the match arms (q, t) are owned values
-        // We are accessing lhs, and then we try to move out q and t while we only have a read only ref
-        // We borrow self, and we can not move out from lhs
-        // If we pass a reference to lhs we get a reference to q,t by match ergonomics
-        // we could move out q and t if we actually owned self, but we have &self.
-        let lhs = match &self.lhs {
-            Comparable::EmbeddedQuery(q) => Operand::Nodelist(q.evaluate(root, current)),
-            Comparable::Literal(t) => Operand::Literal(t),
-            _ => todo!()
-        };
-
-        let rhs = match &self.rhs {
-            Comparable::EmbeddedQuery(q) => Operand::Nodelist(q.evaluate(root, current)),
-            Comparable::Literal(t) => Operand::Literal(t),
-            _ => todo!()
-        };
+        match(lhs, rhs) {
+            // both empty('absent'/'nothing' as defined in the rfc) and the operators that include
+            // equals(<=, >=) return true
+            (Operand::Empty, Operand::Empty) => matches!(self.op,
+                ComparisonOp::Equal
+                | ComparisonOp::LessThanOrEqual
+                | ComparisonOp::GreaterThanOrEqual
+            ),
+            (Operand::Empty, _) | (_, Operand::Empty) => matches!(self.op, ComparisonOp::NotEqual),
+            // non-singular queries
+            (Operand::Invalid, _) | (_, Operand::Invalid) => false,
+            (Operand::Literal(t1), Operand::Literal(t2)) => {
+                self.op.apply(t1.partial_cmp(t2))
+            },
+            (Operand::Value(v1), Operand::Value(v2)) => {
+                self.op.apply(v1.partial_cmp(v2))
+            },
+            (Operand::Literal(t), Operand::Value(v)) => {
+                self.op.apply(t.cmp_with(v))
+            },
+            (Operand::Value(v), Operand::Literal(t)) => {
+                self.op.apply(v.cmp_with(t))
+            },
+        }
     }
 }
 
@@ -143,54 +165,148 @@ impl EmbeddedQuery {
     // be the root of the query. For absolute paths we have a reference to the root, we will evaluate
     // once and cache it after.
     fn evaluate<'v>(&self, root: &'v Value, current: &'v Value) -> Vec<&'v Value> {
-        let mut nodelist: VecDeque<&Value> = VecDeque::new();
+        // the values need to live as long as the root value
+        let mut reader: Vec<&'v Value> = Vec::new();
+        let mut writer: Vec<&'v Value> = Vec::new();
 
         match self.query_type {
-            EmbeddedQueryType::Relative => nodelist.push_back(current),
-            EmbeddedQueryType::Absolute => nodelist.push_back(root),
+            EmbeddedQueryType::Relative => reader.push(current),
+            EmbeddedQueryType::Absolute => reader.push(root),
         }
 
         for seg in self.segments.iter() {
+            writer.clear();
             match seg.kind {
-                SegmentKind::Child => super::apply_child_seg(&mut nodelist, seg),
-                SegmentKind::Descendant => super::apply_descendant_seg(&mut nodelist, seg),
+                SegmentKind::Child => super::apply_child_seg(&reader, &mut writer, seg),
+                SegmentKind::Descendant => super::apply_descendant_seg(&reader, &mut writer, seg),
             }
+            std::mem::swap(&mut reader, &mut writer);
         }
-        nodelist.into()
+        // the final nodelist is in reader after the last swap
+        reader
+    }
+}
+
+impl Comparable {
+    // tried to make it closure, couldn't get the lifetimes right
+    fn to_operand<'a>(&'a self, root: &'a Value, current: &'a Value) -> Operand<'a> {
+        match self {
+            Comparable::EmbeddedQuery(q) => {
+                // q.evaluate returns Vec<&'root Value>
+                let nodelist = q.evaluate(root, current);
+                match nodelist.len() {
+                    0 => Operand::Empty,
+                    1 => Operand::Value(nodelist[0]), // borrow from root
+                    _ => Operand::Invalid,
+                }
+            }
+            Comparable::Literal(t) => Operand::Literal(t), // borrow from comparable
+            Comparable::FnExpr(_expr) => todo!(),
+        }
     }
 }
 
 impl ComparisonOp {
-    fn apply(&self, lhs: Operand, rhs: Operand) -> bool {
-        match (lhs, rhs) {
-            (Operand::Nodelist(list_1), Operand::Nodelist(list_2)) => {
-                // only singular queries are allowed
-                if list_1.len() > 1 {
-                    return false;
-                }
-                if list_2.len() > 1 {
-                    return false;
-                }
 
-                if list_1.len() != list_2.len() {
-                    return false;
+    // fn apply<T>(&self, lhs: &T, rhs: &T) -> bool
+    // where
+    //     T: PartialEq + PartialOrd,
+    // {
+    //     match self {
+    //         ComparisonOp::Equal => lhs == rhs,
+    //         ComparisonOp::NotEqual => lhs != rhs,
+    //         ComparisonOp::LessThan => lhs < rhs,
+    //         ComparisonOp::LessThanOrEqual => lhs <= rhs,
+    //         ComparisonOp::GreaterThan => lhs > rhs,
+    //         ComparisonOp::GreaterThanOrEqual => lhs >= rhs,
+    //     }
+    // }
+    //
+    // this is what I had when I would do the conversion from literal to Value, and I would call
+    // it either with Literal as T, no need to convert when both lhs and rhs are Literal; otherwise
+    // convert to literal to Value and now T is Value
+    fn apply(&self, ord: Option<Ordering>) -> bool {
+        match ord {
+            Some(Ordering::Equal) => matches!(self,
+                ComparisonOp::Equal
+                | ComparisonOp::LessThanOrEqual
+                | ComparisonOp::GreaterThanOrEqual
+            ),
+            Some(Ordering::Less) => matches!(self,
+                ComparisonOp::NotEqual
+                | ComparisonOp::LessThan
+                | ComparisonOp::LessThanOrEqual
+            ),
+            Some(Ordering::Greater) => matches!(self,
+                ComparisonOp::NotEqual
+                | ComparisonOp::GreaterThan
+                | ComparisonOp::GreaterThanOrEqual
+            ),
+            None => matches!(self, ComparisonOp::NotEqual), // If incomparable, only != is True
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            ComparisonOp::Equal
+            | ComparisonOp::GreaterThan
+            | ComparisonOp::LessThan => 1,
+            ComparisonOp::NotEqual 
+            | ComparisonOp::LessThanOrEqual 
+            | ComparisonOp::GreaterThanOrEqual => 2
+        }
+    }
+}
+
+impl Type {
+    fn cmp_with(&self, other: &Value) -> Option<Ordering> {
+        match (self, other) {
+            (Type::String(s2), Value::String(s1)) => s1.partial_cmp(s2),
+            (Type::Number(n2), Value::Number(n1), ) => n1.partial_cmp(n2),
+            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
+            // the spec it should result to false
+            (Type::Boolean(b1), Value::Boolean(b2)) => {
+                if b1 == b2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
                 }
-                // check the length first, then each value
-                // because we have PartialEq for &Value and not Value we have autoderef as we have seen
-                // already
-                // https://doc.rust-lang.org/src/core/slice/cmp.rs.html#114-133
-                list_1 == list_2
-            }
-            _ => false
+            },
+            (Type::Null, Value::Null) => Some(Ordering::Equal),
+            // mismatch
+            _ => None
+        }
+    }
+}
+
+impl PartialOrd for Type {
+
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match(self, other) {
+            (Type::Number(n1), Type::Number(n2)) => n1.partial_cmp(n2),
+            (Type::String(s1), Type::String(s2)) => s1.partial_cmp(s2),
+            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
+            // the spec it should result to false
+            (Type::Boolean(b1), Type::Boolean(b2)) => {
+                if b1 == b2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
+                }
+            },
+            (Type::Null, Type::Null) => Some(Ordering::Equal),
+            _ => None,
         }
     }
 }
 
 mod regex {}
 
-// toDo:  try to use Value::from() after parsing the lhs or the rhs operand
-// consider doing both a short circuit evaluation and full evaluation
 // toDo: check this for our `Regex` validation https://docs.rs/regex/latest/regex/
 // toDo: also check section 4 for any Security Concerns
 // toDo: consider writing a LinkedHashMap
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
+// toDo: explain why we moved away from converting 1 side to Value
+// toDo: write about precedence in read_logical
+// toDo: why we need v to t and t to v
+// toDo: explain the lifetimes in each case

@@ -62,7 +62,6 @@ pub enum KeywordErrorKind {
 }
 
 impl fmt::Display for ParserError {
-    // read the comment in filter.rs from ComparisonExpr::evaluate()
     // len, byte, digit are copied, we don't need to dereference them
     // toDo: review this and how dereferencing works, what takes ownership and what happens if we had match self.kind
     // macros like write!, println! and so on do autoderef

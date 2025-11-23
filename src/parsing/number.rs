@@ -1,4 +1,5 @@
 use std::{error, fmt};
+use std::cmp::Ordering;
 #[cfg(feature = "big_decimal")]
 use bigdecimal::BigDecimal;
 #[cfg(feature = "big_decimal")]
@@ -13,7 +14,7 @@ struct NumberState {
     negative: bool
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Number (NumberKind);
 
 // The way BigDecimal works is by storing every digit of the number as BigInt, (unscaled value, 
@@ -66,7 +67,7 @@ pub struct Number (NumberKind);
 //
 //With u64:
 // vec![7766279631452241920, 542101086035307936, 2]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum NumberKind {
     I64(i64),
     U64(u64),
@@ -115,6 +116,12 @@ impl Number {
             NumberKind::BigInt(v) => Some(v.clone()),
             _ => None,
         }
+    }
+}
+
+impl PartialOrd for Number {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        todo!()
     }
 }
 
@@ -210,7 +217,7 @@ fn is_out_of_range_f64(buffer: &[u8]) -> bool {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct NumericError {
+pub struct NumericError {
     pub(super) kind: NumericErrorKind,
     pub(super) pos: usize
 }

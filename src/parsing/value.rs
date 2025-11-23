@@ -2,14 +2,16 @@ use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
 use crate::parsing::value::path::Query;
 use crate::parsing::value::pointer::Pointer;
+use crate::parsing::value::path::filter::Type;
 use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
-use std::cmp::PartialEq;
+use std::cmp::{Ordering, PartialEq};
 
 mod error;
 mod path;
 mod pointer;
 
-#[derive(Debug, PartialEq)]
+// Clone is needed for Cow
+#[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Object(IndexMap<String, Value>),
     Array(Vec<Value>),
@@ -217,26 +219,64 @@ impl Value {
         }
         Ok(Some(current))
     }
-
-    // A JSONPath implementation MUST raise an error for any query that is not well-formed and
-    // valid. The well-formedness and the validity of JSONPath queries are independent of the JSON
-    // value the query is applied to. No further errors relating to the well-formedness and the
-    // validity of a JSONPath query can be raised during application of the query to a value.
-    //
-    // As mentioned above invalid paths should always return an error which means even if we process
-    // some segment and returned an empty list we can NOT stop and return immediately because the
-    // path expression might still be invalid.
-    //
-    // path_expr = "$[1]['foo]"
-    // val = "3"
-    //
-    // If we try to apply [1] to val it returns an empty list because it is not an array and in theory
-    // we could return without processing the rest of the segments, but we return something from an
-    // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
-    // case.
+    
     pub fn read<>(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
         Ok(query.parse()?)
+    }
+
+    fn cmp_with(&self, other: &Type) -> Option<Ordering> {
+        match (self, other) {
+            (Value::String(s1), Type::String(s2)) => s1.partial_cmp(s2),
+            (Value::Number(n1), Type::Number(n2)) => n1.partial_cmp(n2),
+            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
+            // the spec it should result to false
+            (Value::Boolean(b2), Type::Boolean(b1)) => {
+                if b1 == b2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
+                }
+            },
+            (Value::Null, Type::Null) => Some(Ordering::Equal),
+            // mismatch
+            _ => None
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Value::String(s1), Value::String(s2)) => s1.partial_cmp(s2),
+            (Value::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2),
+            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
+            // the spec it should result to false
+            (Value::Boolean(b1), Value::Boolean(b2)) => {
+                if b1 == b2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
+                }
+            },
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
+            (Value::Object(map_1), Value::Object(map_2)) => {
+                if map_1 == map_2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
+                }
+            },
+            (Value::Array(vec_1), Value::Array(vec_2)) => {
+                if vec_1 == vec_2 {
+                    Some(Ordering::Equal)
+                } else {
+                    None
+                }
+            },
+            // mismatch
+            _ => None
+        }
     }
 }
 
