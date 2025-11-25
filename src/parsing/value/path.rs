@@ -7,8 +7,6 @@ use crate::parsing::value::path::filter::{
     ComparisonOp,
     EmbeddedQuery,
     EmbeddedQueryType,
-    FnArg,
-    FnExpr,
     LogicalExpr,
     TestExpr,
     Type,
@@ -16,7 +14,7 @@ use crate::parsing::value::path::filter::{
 use crate::parsing::{self, escapes, number, utf8};
 use std::collections::VecDeque;
 use std::cmp;
-
+use crate::parsing::value::path::filter::function::{FnExprArg, FnExpr};
 // toDo: as_pointer() -> converts an npath to pointer
 
 pub(super) mod filter;
@@ -227,8 +225,9 @@ impl<'a, 'v> Query<'a, 'v> {
         while let Some(segment) = self.parse_seg()? {
             writer.clear();
             match segment.kind {
-                SegmentKind::Child => apply_child_seg(&reader, &mut writer, &segment),
-                SegmentKind::Descendant => apply_descendant_seg(&reader, &mut writer, &segment),
+                // it is self.root and not &self.root because root is already a reference
+                SegmentKind::Child => apply_child_seg(self.root, &reader, &mut writer, &segment),
+                SegmentKind::Descendant => apply_descendant_seg(self.root, &reader, &mut writer, &segment),
             }
             std::mem::swap(&mut reader, &mut writer);
         }
@@ -878,7 +877,7 @@ impl<'a, 'v> Query<'a, 'v> {
         Ok(FnExpr { name, args: self.parse_fn_args()? })
     }
 
-    fn parse_fn_args(&mut self) -> Result<Vec<FnArg>, PathError> {
+    fn parse_fn_args(&mut self) -> Result<Vec<FnExprArg>, PathError> {
         let mut args = Vec::new();
 
         // 1. Consume opening '('
@@ -895,7 +894,7 @@ impl<'a, 'v> Query<'a, 'v> {
         while self.pos < self.buffer.len() && self.buffer[self.pos] != b')' {
             // starts with '!' or '(', it is 100% a LogicalExpr.
             if self.buffer[self.pos] == b'!' || self.buffer[self.pos] == b'(' {
-                args.push(FnArg::LogicalExpr(self.parse_logical_or()?));
+                args.push(FnExprArg::LogicalExpr(self.parse_logical_or()?));
             } else {
                 // B. Read the Ambiguous Head (Literal, Query, or Fn)
                 let arg = self.parse_comparable()?;
@@ -921,14 +920,14 @@ impl<'a, 'v> Query<'a, 'v> {
                     // Pass that result into the OR tail parser
                     expr = self.parse_logical_or_tail(expr)?;
 
-                    args.push(FnArg::LogicalExpr(expr));
+                    args.push(FnExprArg::LogicalExpr(expr));
                 } else {
                     // CASE: Simple Argument (e.g., "length(@)", "5")
                     // No operator followed, so we map it to the specific simple variant.
                     match arg {
-                        Comparable::Literal(l) => args.push(FnArg::Literal(l)),
-                        Comparable::EmbeddedQuery(q) => args.push(FnArg::EmbeddedQuery(q)),
-                        Comparable::FnExpr(f) => args.push(FnArg::FnExpr(Box::new(f))),
+                        Comparable::Literal(l) => args.push(FnExprArg::Literal(l)),
+                        Comparable::EmbeddedQuery(q) => args.push(FnExprArg::EmbeddedQuery(q)),
+                        Comparable::FnExpr(f) => args.push(FnExprArg::FnExpr(Box::new(f))),
                     }
                 }
             }
@@ -1093,14 +1092,14 @@ impl<'a, 'v> Query<'a, 'v> {
 //
 // note that the selectors are only applied to the input nodelist, the initial_count keeps track
 // of that, no selector is applied to a node added by a previous selector
-fn apply_child_seg<'v>(reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
+fn apply_child_seg<'v>(root: &'v Value, reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
     if reader.is_empty() {
         return;
     }
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            apply_selector(writer, selector, v);
+            apply_selector(root, writer, selector, v);
         }
     }
 }
@@ -1150,33 +1149,33 @@ fn apply_child_seg<'v>(reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, seg
 // not when recursion backtracks(postorder) we append them in the list
 //
 // in the end we apply the same logic as child segment remove from the front queue
-fn apply_descendant_seg<'v>(reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
+fn apply_descendant_seg<'v>(root: &'v Value, reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
     if reader.is_empty() {
         return;
     }
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            dfs(v, writer, selector);
+            dfs(root, v, writer, selector);
         }
     }
 }
 
-fn dfs<'v>(root: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector) {
-    if !root.is_object() && !root.is_array() {
+fn dfs<'v>(root: &'v Value, current: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector) {
+    if !current.is_object() && !current.is_array() {
         return;
     }
 
-    apply_selector(writer, selector, root);
-    match root {
+    apply_selector(root, writer, selector, current);
+    match current {
         Value::Object(map) => {
             for entry in map.values() {
-                dfs(entry, writer, selector);
+                dfs(root, entry, writer, selector);
             }
         }
         Value::Array(arr) => {
             for elem in arr {
-                dfs(elem, writer, selector);
+                dfs(root, elem, writer, selector);
             }
         }
         _ => unreachable!("dfs() was called in a non container node"),
@@ -1206,8 +1205,8 @@ fn dfs<'v>(root: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector) {
 //
 // this was the signature before: fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, value: &'a Value)
 // now we already define v
-fn apply_selector<'v>(writer: &mut Vec<&'v Value>, selector: &Selector, value: &'v Value) {
-    match (value, selector) {
+fn apply_selector<'v>(root: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector, current: &'v Value) {
+    match (current, selector) {
         (Value::Object(map), Selector::Name(name)) => {
             if let Some(val) = map.get(name) {
                 writer.push(val);
@@ -1237,14 +1236,24 @@ fn apply_selector<'v>(writer: &mut Vec<&'v Value>, selector: &Selector, value: &
             let range = Range::new(slice, arr.len() as i64);
 
             for i in range {
+                // toDo: we should break in None?
                 if let Some(val) = arr.get(i) {
                     writer.push(val);
                 }
             }
         }
         (Value::Array(arr), Selector::Filter(expr)) => {
-            for v in arr.iter() {
-
+            for elem in arr.iter() {
+                if expr.evaluate(root, elem) {
+                    writer.push(elem);
+                }
+            }
+        }
+        (Value::Object(map), Selector::Filter(expr)) => {
+            for val in map.values() {
+                if expr.evaluate(root, val) {
+                    writer.push(val);
+                }
             }
         }
         // selectors can only be applied to containers(object, array)

@@ -45,18 +45,15 @@ pub(super) struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub(super) fn new(buffer: &'a [u8]) -> Self {
-        Self {
-            buffer,
-            pos: 0
-        }
+        Self { buffer, pos: 0 }
     }
 
     pub(super) fn advance(&mut self, n: usize) {
         self.pos += n;
     }
 
-    // toDo: explain why we moved away from storing the tokens in a vector?, this method could also be called next()
-    pub(super) fn lex(&mut self) -> Result<Option<LexerToken>, ParserError> {
+    // toDo: explain why we moved away from storing the tokens in a vector?
+    pub(super) fn next(&mut self) -> Result<Option<LexerToken>, ParserError> {
         // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
         // would work but the method is also needed in path.rs
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
@@ -220,7 +217,11 @@ impl<'a> Lexer<'a> {
     // and the control returns back to lex(), back to peek() and eventually advance() is called
     // which moves self.pos, and we skip that character
     fn read_boolean(&mut self) -> Result<(), ParserError> {
-        let target = if self.buffer[self.pos] == b't' { "true".as_bytes() } else { "false".as_bytes() };
+        let target = if self.buffer[self.pos] == b't' {
+            "true".as_bytes()
+        } else {
+            "false".as_bytes()
+        };
         parsing::read_keyword(self.buffer, &mut self.pos, target)?;
         self.pos -= 1;
 
@@ -374,7 +375,7 @@ mod tests {
     fn test_valid_numbers() {
         for (buffer, token) in valid_numbers() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.lex().unwrap().unwrap();
+            let t = lexer.next().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -384,7 +385,7 @@ mod tests {
     fn test_invalid_numbers() {
         for (buffer, error) in invalid_signs() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.lex();
+            let result = lexer.next();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -394,7 +395,7 @@ mod tests {
     fn test_valid_strings() {
         for (buffer, token) in valid_strings() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.lex().unwrap().unwrap();
+            let t = lexer.next().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -404,7 +405,7 @@ mod tests {
     fn test_invalid_strings() {
         for (buffer, error) in invalid_strings() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.lex();
+            let result = lexer.next();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -414,7 +415,7 @@ mod tests {
     fn test_valid_literals() {
         for (buffer, token) in valid_literals() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.lex().unwrap().unwrap();
+            let t = lexer.next().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -424,7 +425,7 @@ mod tests {
     fn test_invalid_literals() {
         for (buffer, error) in invalid_literals() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.lex();
+            let result = lexer.next();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -434,7 +435,7 @@ mod tests {
     fn test_unexpected_character() {
         // @
         let mut lexer = Lexer::new(&[64]);
-        let result = lexer.lex();
+        let result = lexer.next();
         let error = ParserError {
             kind: ParserErrorKind::UnexpectedCharacter { byte: b'@' },
             pos: Some(0)

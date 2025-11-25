@@ -1,7 +1,10 @@
 use std::cmp::Ordering;
 use crate::parsing::number::Number;
-use crate::parsing::value::Value;
 use crate::parsing::value::path::{Segment, SegmentKind};
+use crate::parsing::value::path::filter::function::FnExpr;
+use crate::parsing::value::Value;
+
+pub(super) mod function;
 
 // https://docs.rs/recursion/latest/recursion/
 //
@@ -64,22 +67,8 @@ pub(crate) enum Type {
 
 #[derive(Debug, PartialEq)]
 pub(super) enum EmbeddedQueryType {
-    Absolute, // toDo: consider adding a reference to root so you don't have to pass it down everytime
+    Absolute,
     Relative,
-}
-
-#[derive(Debug, PartialEq)]
-pub(super) struct FnExpr {
-    pub(super) name: String,
-    pub(super) args: Vec<FnArg>,
-}
-
-#[derive(Debug, PartialEq)]
-pub(super) enum FnArg {
-    Literal(Type),
-    EmbeddedQuery(EmbeddedQuery),
-    FnExpr(Box<FnExpr>),
-    LogicalExpr(LogicalExpr)
 }
 
 #[derive(Debug, PartialEq)]
@@ -95,15 +84,12 @@ enum Operand<'a> {
     Invalid
 }
 
-enum FnResultType {
-    Nothing
-}
-
 impl LogicalExpr {
+    // toDo: if embedded absolute path query we need to find a way to cache it
     pub(super) fn evaluate(&self, root: &Value, current: &Value) -> bool {
         match self {
             LogicalExpr::Comparison(expr) => expr.evaluate(root, current),
-            LogicalExpr::Test(expr) => expr.evaluate(),
+            LogicalExpr::Test(expr) => false,
             LogicalExpr::And(lhs, rhs) => {
                 // short circuit
                 // auto deref by rust to access the expr(deref coercion)
@@ -177,8 +163,8 @@ impl EmbeddedQuery {
         for seg in self.segments.iter() {
             writer.clear();
             match seg.kind {
-                SegmentKind::Child => super::apply_child_seg(&reader, &mut writer, seg),
-                SegmentKind::Descendant => super::apply_descendant_seg(&reader, &mut writer, seg),
+                SegmentKind::Child => super::apply_child_seg(root, &reader, &mut writer, seg),
+                SegmentKind::Descendant => super::apply_descendant_seg(root, &reader, &mut writer, seg),
             }
             std::mem::swap(&mut reader, &mut writer);
         }
@@ -188,7 +174,7 @@ impl EmbeddedQuery {
 }
 
 impl Comparable {
-    // tried to make it closure, couldn't get the lifetimes right
+    // tried to make it a closure, couldn't get the lifetimes right
     fn to_operand<'a>(&'a self, root: &'a Value, current: &'a Value) -> Operand<'a> {
         match self {
             Comparable::EmbeddedQuery(q) => {
@@ -261,17 +247,15 @@ impl ComparisonOp {
 impl Type {
     fn cmp_with(&self, other: &Value) -> Option<Ordering> {
         match (self, other) {
-            (Type::String(s2), Value::String(s1)) => s1.partial_cmp(s2),
-            (Type::Number(n2), Value::Number(n1), ) => n1.partial_cmp(n2),
-            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
-            // the spec it should result to false
+            (Type::String(s1), Value::String(s2)) => s1.partial_cmp(s2),
+            (Type::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2),
             (Type::Boolean(b1), Value::Boolean(b2)) => {
                 if b1 == b2 {
                     Some(Ordering::Equal)
                 } else {
                     None
                 }
-            },
+            }
             (Type::Null, Value::Null) => Some(Ordering::Equal),
             // mismatch
             _ => None
@@ -296,6 +280,21 @@ impl PartialOrd for Type {
             },
             (Type::Null, Type::Null) => Some(Ordering::Equal),
             _ => None,
+        }
+    }
+}
+
+impl From<Type> for Value {
+    fn from(value: Type) -> Self {
+        match value {
+            Type::String(s) => {
+                Value::from(s)
+            }
+            Type::Number(_) => {}
+            Type::Boolean(b) => {
+                Value::from(b)
+            }
+            Type::Null => {}
         }
     }
 }

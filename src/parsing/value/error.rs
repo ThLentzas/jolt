@@ -45,7 +45,15 @@ pub enum PathErrorKind {
     MalformedString(StringError),
     UnexpectedCharacter { byte: u8 },
     InvalidIndex { message: &'static str },
-    Numeric(NumericError)
+    Numeric(NumericError),
+    FnExpr(FnExprError)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum FnExprError {
+    // the number of arguments that the function has
+    // message: {function name} takes {expected} parameters, but {got} parameters supplied
+    ArityMismatch { name: &'static str, expected: usize, got: usize }
 }
 
 impl From<StringError> for PathError {

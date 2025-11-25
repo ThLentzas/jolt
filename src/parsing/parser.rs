@@ -358,7 +358,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&mut self) -> Result<Option<LexerToken>, ParserError> {
-       Ok(self.lexer.lex()?)
+       Ok(self.lexer.next()?)
     }
 
     fn advance(&mut self, offset: usize) {

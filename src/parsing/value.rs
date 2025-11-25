@@ -13,6 +13,7 @@ mod pointer;
 // Clone is needed for Cow
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value {
+    // why this recursive type does not need a box? containers handle it for us?
     Object(IndexMap<String, Value>),
     Array(Vec<Value>),
     Number(Number),
@@ -229,15 +230,13 @@ impl Value {
         match (self, other) {
             (Value::String(s1), Type::String(s2)) => s1.partial_cmp(s2),
             (Value::Number(n1), Type::Number(n2)) => n1.partial_cmp(n2),
-            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
-            // the spec it should result to false
-            (Value::Boolean(b2), Type::Boolean(b1)) => {
+            (Value::Boolean(b1), Type::Boolean(b2)) => {
                 if b1 == b2 {
                     Some(Ordering::Equal)
                 } else {
                     None
                 }
-            },
+            }
             (Value::Null, Type::Null) => Some(Ordering::Equal),
             // mismatch
             _ => None
