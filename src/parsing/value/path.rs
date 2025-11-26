@@ -8,8 +8,7 @@ use crate::parsing::value::path::filter::{
     EmbeddedQuery,
     EmbeddedQueryType,
     LogicalExpr,
-    TestExpr,
-    Type,
+    TestExpr
 };
 use crate::parsing::{self, escapes, number, utf8};
 use std::collections::VecDeque;
@@ -17,7 +16,7 @@ use std::cmp;
 use crate::parsing::value::path::filter::function::{FnExprArg, FnExpr};
 // toDo: as_pointer() -> converts an npath to pointer
 
-pub(super) mod filter;
+pub(crate) mod filter;
 
 // fn read_name_shorthand(buffer: &[u8], pos: &mut usize) -> Result<String, PathError>
 // fn read_double(buffer: &[u8], pos: &mut usize) -> Result<String, StringError>
@@ -34,7 +33,6 @@ pub(super) struct Query<'a, 'v> {
     buffer: &'a [u8],
     pos: usize,
     root: &'v Value,
-    // toDo: explain why we don't have nodelist as part of the query
 }
 
 // considering caching for each value, like a map where we store path/pointer -> value, but we need a way to consider
@@ -79,6 +77,29 @@ struct Range {
     // len = 5, current = 4, end = -1, step = -1 gives us all elements in reverse order (-1, 4]
     end: isize,
     step: i64,
+}
+
+impl Segment {
+    fn is_singular(&self) -> bool {
+        match self.kind {
+            SegmentKind::Descendant => false,
+            SegmentKind::Child => {
+                self.selectors.len() == 1 && self.selectors[0].is_singular()
+            }
+        }
+    }
+}
+
+impl Selector {
+    fn is_singular(&self) -> bool {
+        match self {
+            Selector::Name(_) => true,
+            Selector::WildCard => false,
+            Selector::Index(_) => true,
+            Selector::Slice(_) => false,
+            Selector::Filter(_) => false,
+        }
+    }
 }
 
 impl Range {
@@ -847,6 +868,7 @@ impl<'a, 'v> Query<'a, 'v> {
     fn parse_fn_expr(&mut self) -> Result<FnExpr, PathError> {
         let current = self.buffer[self.pos];
         let mut name = String::new();
+        let start = self.pos;
 
         match current {
             b'l' => {
@@ -874,7 +896,14 @@ impl<'a, 'v> Query<'a, 'v> {
 
         self.skip_ws()?;
 
-        Ok(FnExpr { name, args: self.parse_fn_args()? })
+        let expr = FnExpr { name, args: self.parse_fn_args()? };
+        expr.type_check()
+            .map_err(|err| PathError {
+                kind: PathErrorKind::FnExpr(err),
+                pos: start
+            })?;
+
+        Ok(expr)
     }
 
     fn parse_fn_args(&mut self) -> Result<Vec<FnExprArg>, PathError> {
@@ -941,22 +970,19 @@ impl<'a, 'v> Query<'a, 'v> {
             }
 
             self.skip_ws()?;
-
-            // Handle Comma
             if self.buffer[self.pos] == b',' {
                 self.pos += 1;
                 self.skip_ws()?;
             }
         }
-
-        // reached at this point, consume ')'
+        // consume ')'
         self.pos += 1;
 
         Ok(args)
     }
 
     // we read literals in 2 cases: filter selectors or function arguments
-    fn parse_literal(&mut self) -> Result<Type, PathError> {
+    fn parse_literal(&mut self) -> Result<Value, PathError> {
         let current = self.buffer[self.pos];
 
         match current {
@@ -972,11 +998,11 @@ impl<'a, 'v> Query<'a, 'v> {
                         pos,
                     }
                 })?;
-                Ok(Type::Number(number::parse(&self.buffer[start..self.pos])))
+                Ok(Value::Number(number::parse(&self.buffer[start..self.pos])))
             }
             b'"' | b'\'' => {
                 let string = self.parse_name()?;
-                Ok(Type::String(string))
+                Ok(Value::String(string))
             }
             b't' | b'f' => {
                 let target = if current == b't' {
@@ -985,11 +1011,11 @@ impl<'a, 'v> Query<'a, 'v> {
                     "false".as_bytes()
                 };
                 parsing::read_keyword(self.buffer, &mut self.pos, target)?;
-                Ok(Type::Boolean(current == b't'))
+                Ok(Value::Boolean(current == b't'))
             }
             b'n' => {
                 parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
-                Ok(Type::Null)
+                Ok(Value::Null)
             }
             _ => unreachable!("parse_literal() called with invalid byte: {}", current),
         }
@@ -1092,7 +1118,12 @@ impl<'a, 'v> Query<'a, 'v> {
 //
 // note that the selectors are only applied to the input nodelist, the initial_count keeps track
 // of that, no selector is applied to a node added by a previous selector
-fn apply_child_seg<'v>(root: &'v Value, reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
+fn apply_child_seg<'v>(
+    root: &'v Value,
+    reader: &Vec<&'v Value>,
+    writer: &mut Vec<&'v Value>,
+    segment: &Segment
+) {
     if reader.is_empty() {
         return;
     }
@@ -1149,7 +1180,12 @@ fn apply_child_seg<'v>(root: &'v Value, reader: &Vec<&'v Value>, writer: &mut Ve
 // not when recursion backtracks(postorder) we append them in the list
 //
 // in the end we apply the same logic as child segment remove from the front queue
-fn apply_descendant_seg<'v>(root: &'v Value, reader: &Vec<&'v Value>, writer: &mut Vec<&'v Value>, segment: &Segment) {
+fn apply_descendant_seg<'v>(
+    root: &'v Value,
+    reader: &Vec<&'v Value>,
+    writer: &mut Vec<&'v Value>,
+    segment: &Segment
+) {
     if reader.is_empty() {
         return;
     }
@@ -1205,7 +1241,12 @@ fn dfs<'v>(root: &'v Value, current: &'v Value, writer: &mut Vec<&'v Value>, sel
 //
 // this was the signature before: fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, value: &'a Value)
 // now we already define v
-fn apply_selector<'v>(root: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector, current: &'v Value) {
+fn apply_selector<'v>(
+    root: &'v Value,
+    writer: &mut Vec<&'v Value>,
+    selector: &Selector,
+    current: &'v Value
+) {
     match (current, selector) {
         (Value::Object(map), Selector::Name(name)) => {
             if let Some(val) = map.get(name) {

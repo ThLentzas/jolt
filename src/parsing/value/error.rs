@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError};
 use crate::parsing::number::{NumericError, OutOfRangeError};
+use crate::parsing::value::path::filter::function::FnType;
 
 #[derive(Debug, PartialEq)]
 pub struct PointerError {
@@ -52,8 +53,11 @@ pub enum PathErrorKind {
 #[derive(Debug, PartialEq)]
 pub enum FnExprError {
     // the number of arguments that the function has
-    // message: {function name} takes {expected} parameters, but {got} parameters supplied
-    ArityMismatch { name: &'static str, expected: usize, got: usize }
+    // message: {expected} parameters, but {got} parameters supplied
+    ArityMismatch { expected: usize, got: usize },
+    // This could also be ParamType as types for expected and got, but we would have to make
+    // ParamType public
+    TypeMismatch { expected: FnType, got: FnType },
 }
 
 impl From<StringError> for PathError {

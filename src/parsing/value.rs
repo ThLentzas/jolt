@@ -2,7 +2,6 @@ use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
 use crate::parsing::value::path::Query;
 use crate::parsing::value::pointer::Pointer;
-use crate::parsing::value::path::filter::Type;
 use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
 
@@ -224,23 +223,6 @@ impl Value {
     pub fn read<>(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
         Ok(query.parse()?)
-    }
-
-    fn cmp_with(&self, other: &Type) -> Option<Ordering> {
-        match (self, other) {
-            (Value::String(s1), Type::String(s2)) => s1.partial_cmp(s2),
-            (Value::Number(n1), Type::Number(n2)) => n1.partial_cmp(n2),
-            (Value::Boolean(b1), Type::Boolean(b2)) => {
-                if b1 == b2 {
-                    Some(Ordering::Equal)
-                } else {
-                    None
-                }
-            }
-            (Value::Null, Type::Null) => Some(Ordering::Equal),
-            // mismatch
-            _ => None
-        }
     }
 }
 

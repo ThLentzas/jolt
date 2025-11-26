@@ -1,10 +1,9 @@
-use std::cmp::Ordering;
-use crate::parsing::number::Number;
+use std::borrow::Cow;
 use crate::parsing::value::path::{Segment, SegmentKind};
-use crate::parsing::value::path::filter::function::FnExpr;
+use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
 
-pub(super) mod function;
+pub(crate) mod function;
 
 // https://docs.rs/recursion/latest/recursion/
 //
@@ -16,7 +15,7 @@ pub(super) mod function;
 // Rust needs to know the size of LogicalExpression and because it is a recursive the size grows
 // infinite
 #[derive(Debug, PartialEq)]
-pub(super) enum LogicalExpr {
+pub(crate) enum LogicalExpr {
     // toDo: explain how with the order of read methods in logical expression we handle precedence
     Comparison(ComparisonExpr),
     Test(TestExpr),
@@ -26,14 +25,14 @@ pub(super) enum LogicalExpr {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct ComparisonExpr {
+pub(crate) struct ComparisonExpr {
     pub(super) lhs: Comparable,
     pub(super) op: ComparisonOp,
     pub(super) rhs: Comparable,
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum TestExpr {
+pub(crate) enum TestExpr {
     EmbeddedQuery(EmbeddedQuery),
     FnExpr(FnExpr)
 }
@@ -51,19 +50,11 @@ pub(super) enum ComparisonOp {
 // maybe write a closure to do the mapping?
 #[derive(Debug, PartialEq)]
 pub(super) enum Comparable {
-    Literal(Type),
+    Literal(Value),
     EmbeddedQuery(EmbeddedQuery),
     FnExpr(FnExpr),
 }
 
-// json literal types
-#[derive(Debug, PartialEq)]
-pub(crate) enum Type {
-    String(String),
-    Number(Number),
-    Boolean(bool),
-    Null,
-}
 
 #[derive(Debug, PartialEq)]
 pub(super) enum EmbeddedQueryType {
@@ -72,14 +63,13 @@ pub(super) enum EmbeddedQueryType {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct EmbeddedQuery {
+pub(crate) struct EmbeddedQuery {
     pub(super) query_type: EmbeddedQueryType,
     pub(super) segments: Vec<Segment>,
 }
 
 enum Operand<'a> {
-    Value(&'a Value),
-    Literal(&'a Type),
+    Value(Cow<'a, Value>),
     Empty,
     Invalid
 }
@@ -89,7 +79,7 @@ impl LogicalExpr {
     pub(super) fn evaluate(&self, root: &Value, current: &Value) -> bool {
         match self {
             LogicalExpr::Comparison(expr) => expr.evaluate(root, current),
-            LogicalExpr::Test(expr) => false,
+            LogicalExpr::Test(expr) => expr.evaluate(root, current),
             LogicalExpr::And(lhs, rhs) => {
                 // short circuit
                 // auto deref by rust to access the expr(deref coercion)
@@ -111,7 +101,7 @@ impl LogicalExpr {
 }
 
 impl ComparisonExpr {
-    fn evaluate<'a> (&'a self, root: &Value, current: &Value) -> bool {
+    fn evaluate (& self, root: &Value, current: &Value) -> bool {
         let lhs = self.lhs.to_operand(root, current);
         let rhs = self.rhs.to_operand(root, current);
 
@@ -126,23 +116,32 @@ impl ComparisonExpr {
             (Operand::Empty, _) | (_, Operand::Empty) => matches!(self.op, ComparisonOp::NotEqual),
             // non-singular queries
             (Operand::Invalid, _) | (_, Operand::Invalid) => false,
-            (Operand::Literal(t1), Operand::Literal(t2)) => {
-                self.op.apply(t1.partial_cmp(t2))
-            },
-            (Operand::Value(v1), Operand::Value(v2)) => {
-                self.op.apply(v1.partial_cmp(v2))
-            },
-            (Operand::Literal(t), Operand::Value(v)) => {
-                self.op.apply(t.cmp_with(v))
-            },
-            (Operand::Value(v), Operand::Literal(t)) => {
-                self.op.apply(v.cmp_with(t))
-            },
+            (Operand::Value(lhs), Operand::Value(rhs)) => self.op.apply(&lhs, &rhs)
         }
     }
 }
 
-// toDo: ask Gemini about the structure of having value.read() how to handle n_paths and passing
+impl TestExpr {
+    fn evaluate (&self, root: &Value, current: &Value) -> bool {
+        match self {
+            TestExpr::EmbeddedQuery(q) => {
+                let nodelist = q.evaluate(root, current);
+                // yields true if the query selects at least one node and yields false if the query
+                // does not select any nodes
+                nodelist.len() != 0
+            }
+            TestExpr::FnExpr(expr) => {
+                match expr.evaluate(root, current) {
+                    FnResult::Value(_) => false,
+                    FnResult::Logical(b) => b,
+                    FnResult::Nothing => false,
+                }
+            }
+        }
+    }
+}
+
+// toDo: ask about the structure of having value.read() how to handle n_paths and passing
 // the root to query
 impl EmbeddedQuery {
     // we want the refs to live as long as the root(they 'live in root')
@@ -171,6 +170,10 @@ impl EmbeddedQuery {
         // the final nodelist is in reader after the last swap
         reader
     }
+
+    fn is_definite(&self) -> bool {
+        self.segments.iter().all(|seg| seg.is_singular())
+    }
 }
 
 impl Comparable {
@@ -182,12 +185,19 @@ impl Comparable {
                 let nodelist = q.evaluate(root, current);
                 match nodelist.len() {
                     0 => Operand::Empty,
-                    1 => Operand::Value(nodelist[0]), // borrow from root
+                    1 => Operand::Value(Cow::Borrowed(nodelist[0])),
                     _ => Operand::Invalid,
                 }
             }
-            Comparable::Literal(t) => Operand::Literal(t), // borrow from comparable
-            Comparable::FnExpr(_expr) => todo!(),
+            Comparable::Literal(t) => Operand::Value(Cow::Borrowed(t)),
+            Comparable::FnExpr(expr) => {
+               match expr.evaluate(root, current) {
+                   FnResult::Value(v) => Operand::Value(v),
+                   // a fn that returns logical true/false can't be used in comparison expr
+                   FnResult::Logical(_) => Operand::Invalid,
+                   FnResult::Nothing => Operand::Empty,
+               }
+            }
         }
     }
 }
@@ -211,25 +221,15 @@ impl ComparisonOp {
     // this is what I had when I would do the conversion from literal to Value, and I would call
     // it either with Literal as T, no need to convert when both lhs and rhs are Literal; otherwise
     // convert to literal to Value and now T is Value
-    fn apply(&self, ord: Option<Ordering>) -> bool {
-        match ord {
-            Some(Ordering::Equal) => matches!(self,
-                ComparisonOp::Equal
-                | ComparisonOp::LessThanOrEqual
-                | ComparisonOp::GreaterThanOrEqual
-            ),
-            Some(Ordering::Less) => matches!(self,
-                ComparisonOp::NotEqual
-                | ComparisonOp::LessThan
-                | ComparisonOp::LessThanOrEqual
-            ),
-            Some(Ordering::Greater) => matches!(self,
-                ComparisonOp::NotEqual
-                | ComparisonOp::GreaterThan
-                | ComparisonOp::GreaterThanOrEqual
-            ),
-            None => matches!(self, ComparisonOp::NotEqual), // If incomparable, only != is True
-        }
+    fn apply(&self, lhs: &Value, rhs: &Value) -> bool {
+            match self {
+                ComparisonOp::Equal => lhs == rhs,
+                ComparisonOp::NotEqual => lhs != rhs,
+                ComparisonOp::LessThan => lhs < rhs,
+                ComparisonOp::LessThanOrEqual => lhs <= rhs,
+                ComparisonOp::GreaterThan => lhs > rhs,
+                ComparisonOp::GreaterThanOrEqual => lhs >= rhs,
+            }
     }
 
     pub(super) fn len(&self) -> usize {
@@ -243,63 +243,6 @@ impl ComparisonOp {
         }
     }
 }
-
-impl Type {
-    fn cmp_with(&self, other: &Value) -> Option<Ordering> {
-        match (self, other) {
-            (Type::String(s1), Value::String(s2)) => s1.partial_cmp(s2),
-            (Type::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2),
-            (Type::Boolean(b1), Value::Boolean(b2)) => {
-                if b1 == b2 {
-                    Some(Ordering::Equal)
-                } else {
-                    None
-                }
-            }
-            (Type::Null, Value::Null) => Some(Ordering::Equal),
-            // mismatch
-            _ => None
-        }
-    }
-}
-
-impl PartialOrd for Type {
-
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match(self, other) {
-            (Type::Number(n1), Type::Number(n2)) => n1.partial_cmp(n2),
-            (Type::String(s1), Type::String(s2)) => s1.partial_cmp(s2),
-            // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
-            // the spec it should result to false
-            (Type::Boolean(b1), Type::Boolean(b2)) => {
-                if b1 == b2 {
-                    Some(Ordering::Equal)
-                } else {
-                    None
-                }
-            },
-            (Type::Null, Type::Null) => Some(Ordering::Equal),
-            _ => None,
-        }
-    }
-}
-
-impl From<Type> for Value {
-    fn from(value: Type) -> Self {
-        match value {
-            Type::String(s) => {
-                Value::from(s)
-            }
-            Type::Number(_) => {}
-            Type::Boolean(b) => {
-                Value::from(b)
-            }
-            Type::Null => {}
-        }
-    }
-}
-
-mod regex {}
 
 // toDo: check this for our `Regex` validation https://docs.rs/regex/latest/regex/
 // toDo: also check section 4 for any Security Concerns
