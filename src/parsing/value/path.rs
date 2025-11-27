@@ -11,7 +11,6 @@ use crate::parsing::value::path::filter::{
     TestExpr
 };
 use crate::parsing::{self, escapes, number, utf8};
-use std::collections::VecDeque;
 use std::cmp;
 use crate::parsing::value::path::filter::function::{FnExprArg, FnExpr};
 // toDo: as_pointer() -> converts an npath to pointer
@@ -39,8 +38,8 @@ pub(super) struct Query<'a, 'v> {
 // if the user mutated val, maybe not possible ?
 #[derive(Debug, PartialEq)]
 struct Segment {
-    pub(super) kind: SegmentKind,
-    pub(super) selectors: Vec<Selector>,
+    kind: SegmentKind,
+    selectors: Vec<Selector>,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -209,9 +208,6 @@ impl Segment {
 
 impl<'a, 'v> Query<'a, 'v> {
     pub(super) fn new(buffer: &'a [u8], root: &'v Value) -> Self {
-        let mut nodelist = VecDeque::new();
-        nodelist.push_back(root);
-
         Self {
             buffer,
             pos: 0,
@@ -237,7 +233,7 @@ impl<'a, 'v> Query<'a, 'v> {
     // case.
     pub(super) fn parse(&mut self) -> Result<Vec<&'v Value>, PathError> {
         self.check_root()?;
-        // the values need to live as long as the root value
+        // the values need to live as long as the root
         let mut reader: Vec<&'v Value> = vec![self.root];
         let mut writer: Vec<&'v Value> = Vec::new();
 
@@ -262,7 +258,7 @@ impl<'a, 'v> Query<'a, 'v> {
     // check if a Unicode sequence could map to '$'
     // jsonpath-query = root-identifier *(S segment)
     //
-    // the syntax means it must start with the root identifier('$') followed by zero or more segments
+    // root identifier('$') followed by zero or more segments
     fn check_root(&mut self) -> Result<(), PathError> {
         let root = self.buffer[self.pos];
 
@@ -328,9 +324,7 @@ impl<'a, 'v> Query<'a, 'v> {
         }
     }
 
-    // also called bracketed-selection
-    //
-    // rfc syntax: bracketed-selection = "[" S selector *(S "," S selector) S "]"
+    // bracketed-selection = "[" S selector *(S "," S selector) S "]"
     // S = *B (optional blank space, zero or more)
     // B = '\t', '\n', '\r', ' '
     fn parse_bracket(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {

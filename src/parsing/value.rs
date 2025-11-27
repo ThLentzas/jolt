@@ -219,8 +219,8 @@ impl Value {
         }
         Ok(Some(current))
     }
-    
-    pub fn read<>(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
+
+    pub fn read(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
         Ok(query.parse()?)
     }
@@ -239,7 +239,7 @@ impl PartialOrd for Value {
                 } else {
                     None
                 }
-            },
+            }
             (Value::Null, Value::Null) => Some(Ordering::Equal),
             (Value::Object(map_1), Value::Object(map_2)) => {
                 if map_1 == map_2 {
@@ -247,16 +247,16 @@ impl PartialOrd for Value {
                 } else {
                     None
                 }
-            },
+            }
             (Value::Array(vec_1), Value::Array(vec_2)) => {
                 if vec_1 == vec_2 {
                     Some(Ordering::Equal)
                 } else {
                     None
                 }
-            },
+            }
             // mismatch
-            _ => None
+            _ => None,
         }
     }
 }
@@ -868,6 +868,152 @@ mod tests {
             ),
         ]
     }
+
+    fn valid_filter() -> Vec<(&'static str, Value, Vec<Value>)> {
+        vec![
+            // // test expression with an embedded relative query with 0 segments
+            // //
+            // // try to apply the filter selector on the root; we can since it is an object
+            // // @ adds the current as root; in this case both current and root are the same
+            // // tries to apply the segments we don't have any and our list returns 1 entry
+            // // because the test expression returned true for the current we add current to the list
+            // // for maps we add their values, for arrays their elements
+            // (
+            //     "$[?@]",
+            //     json!(
+            //     {
+            //         "foo": "bar",
+            //         "buzz": 0
+            //     }),
+            //     vec![json!("bar"), json!(0)],
+            // ),
+            // // test expression with an embedded relative query with 1 segment, 1 selector(name shorthand)
+            // //
+            // // iterate through the array and for each element try to apply
+            // // if the query returns any result, we add the current element into our return list
+            // //
+            // // 1st element -> add the root(very important), in this case we add the object and
+            // // then try to apply .foo in the input list(reader) we add "bar" because it has a key
+            // // named foo, no more segment to process, subquery returns a non-empty list it evaluates
+            // // to true, and we add the 1st element of the array into our list
+            // //
+            // // 2nd element -> add the root, the subquery returns empty list, it evaluates to false
+            // // move to the next element
+            // //
+            // // 3rd element -> can't apply filter selector to numbers we return the list containing
+            // // the 1st element.
+            // (
+            //     "$[?@.foo]",
+            //     // this is an array of objects, initially I would wrap every entry into json!()
+            //     // but I was wrong because this is what the macro does
+            //     // ([ $($elem:tt),+ $(,)? ]) => { $crate::Value::Array(vec![$(json!($elem)),+]) };
+            //     // it takes elem and wraps it in json!()
+            //     json!([
+            //         {
+            //             "foo": "bar",
+            //             "buzz": 0
+            //         },
+            //         {
+            //             "bar": "foo"
+            //         },
+            //         3
+            //     ]),
+            //     vec![json!(
+            //         {
+            //             "foo": "bar",
+            //             "buzz": 0
+            //         }
+            //
+            //     )],
+            // ),
+            // test expression with an embedded absolute query with 0 segments
+            // select all children of root where the test expression $ is true
+            //
+            // try to apply the filter selector on the root; we can since it is an array
+            //
+            // for each entry in the array try to apply the test expr
+            //
+            // 1st element -> $ adds the root; try to apply the segments we don't have any and our
+            // list returns 1 entry, because the test expression returned true for the current element
+            // of the array we add current to the list
+            //
+            // 2nd element/3rd element -> exactly the same as 1st. For the 3rd element which is just
+            // a number we don't apply the filter selector we just check if the test expression returns
+            // true for this node
+            //
+            // This is a special case where the input will always match the output because:
+            // $ (root with zero segments) always returns a nodelist containing exactly one node:
+            // the root itself. So the existence test is always true, regardless of what the
+            // current element is. $[?$] = $[*]
+            //
+            // Note that we return a vector of json values, not a json array containing json values
+            // (
+            //     "$[?$]",
+            //     json!([
+            //         {
+            //             "foo": "bar",
+            //             "buzz": 0
+            //         },
+            //         {
+            //             "bar": "foo"
+            //         },
+            //         3
+            //     ]),
+            //     vec![
+            //         json!(
+            //             {
+            //                 "foo": "bar",
+            //                 "buzz": 0
+            //             }
+            //         ),
+            //         json!(
+            //             {
+            //                 "bar": "foo"
+            //             }
+            //         ),
+            //         json!(3)
+            //     ],
+            // ),
+            // for every element in the array we try check if the test expression returns true
+            // test expression has an absolute query
+            // .* adds all the elements of the root, so our input list is of size and then we apply
+            // the next segment which is [0]
+            // for the first two elements [0] can't be applied but for the last one it can and now
+            // our list consists of just 3, no more segments to apply the test expression returns
+            // true for all 3 elements of the array(applied 3 times) and we add all to the return list
+            //
+            // if it was [1] -> it would have been out of bounds, the subquery will not return anything
+            // and the test expression would evaluate to false; that would also be the case if the
+            // last element of the root was not an array; if it was 3 instead of [3], [0] can't be
+            // applied
+            // (
+            //     "$[?$.*[0]]",
+            //     json!([
+            //         {
+            //             "foo": "bar",
+            //             "buzz": 0
+            //         },
+            //         {
+            //             "bar": "foo"
+            //         },
+            //         [3]
+            //     ]),
+            //     vec![
+            //         json!(
+            //         {
+            //             "foo": "bar",
+            //             "buzz": 0
+            //         }),
+            //         json!(
+            //         {
+            //             "bar": "foo"
+            //         }),
+            //         json!([3]),
+            //     ],
+            // ),
+        ]
+    }
+
     // toDo: in multiple selectors include cases where we get duplicate nodes
 
     // maybe instead of expected/actual change it to left/right?
@@ -953,6 +1099,18 @@ mod tests {
         if let Value::Array(ref vec) = val {
             let expected: Vec<&Value> = vec.iter().collect();
             assert_eq!(res, expected);
+        }
+    }
+
+    #[test]
+    fn test_valid_filters() {
+        for (path_expr, source, nodelist) in valid_filter() {
+            let res = source.read(path_expr).unwrap();
+
+            assert_eq!(res.len(), nodelist.len());
+            for (i, val) in res.into_iter().enumerate() {
+                assert_eq!(*val, nodelist[i], "invalid path: {path_expr}");
+            }
         }
     }
 }

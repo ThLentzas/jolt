@@ -22,7 +22,6 @@ pub(super) struct LexerToken {
     token_type: LexerTokenType, // type is reserved
 }
 
-
 impl LexerToken {
     // toDo: this should be an immutable borrow? copying here is fine?
     pub(super) fn start_index(&self) -> usize {
@@ -54,8 +53,6 @@ impl<'a> Lexer<'a> {
 
     // toDo: explain why we moved away from storing the tokens in a vector?
     pub(super) fn next(&mut self) -> Result<Option<LexerToken>, ParserError> {
-        // defined as private in the parent mod, and it is visible to the child super::parsing::skip_whitespaces()
-        // would work but the method is also needed in path.rs
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);

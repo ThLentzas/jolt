@@ -196,6 +196,11 @@ enum FnArg<'a> {
 // search, match return Logical
 #[derive(Debug, PartialEq)]
 pub(super) enum FnResult<'a> {
+    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
+    // length(), match(), search() and count() all create new data, but value() returns an existing
+    // value that lives in root, so we would have to clone in this case. length() and count() return
+    // ints which we will wrap to Number, match() and search() will return Logical and with Cow
+    // we can return the reference to the value
     Value(Cow<'a, Value>),
     Logical(bool),
     Nothing

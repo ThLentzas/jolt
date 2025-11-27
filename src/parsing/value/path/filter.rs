@@ -252,3 +252,4 @@ impl ComparisonOp {
 // toDo: write about precedence in read_logical
 // toDo: why we need v to t and t to v
 // toDo: explain the lifetimes in each case
+// toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
