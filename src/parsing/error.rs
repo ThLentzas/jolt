@@ -1,5 +1,4 @@
 use std::{error, fmt, io};
-use std::string::ParseError;
 use crate::parsing::escapes::{EscapeError, EscapeErrorKind};
 use crate::parsing::number::NumericError;
 use crate::parsing::utf8::Utf8Error;
@@ -9,8 +8,10 @@ pub enum StringErrorKind {
     UnexpectedEndOf,
     InvalidByteSequence { len: u8 },
     InvalidSurrogate,
-    UnknownEscapedCharacter { byte: u8 },// the byte value might be an utf8 sequence, we can conditionally render it in display
-    InvalidUnicodeSequence { digit: u8 }, // incomplete sequence is just unexpectedEoF
+    // the byte value might be an utf8 sequence, we can conditionally render it in display
+    UnknownEscapedCharacter { byte: u8 },
+    // incomplete sequence is just unexpectedEoF
+    InvalidUnicodeSequence { digit: u8 },
     InvalidControlCharacter { byte: u8 },
     StringValueLengthLimitExceed { len: usize }
 }
@@ -39,7 +40,7 @@ pub struct ParserError {
     pub pos: Option<usize> // For NestingDepthLimitExceeded, InputBufferLimitExceeded position is pointless
 }
 
-
+// toDo: this needs to impl Error?
 #[derive(Debug)]
 pub enum FileParseError {
     IoError(io::Error),
@@ -61,32 +62,57 @@ pub enum KeywordErrorKind {
     UnexpectedCharacter { byte: u8 },
 }
 
+impl error::Error for ParserError {}
+impl error::Error for StringError {}
+impl error::Error for FileParseError {}
+
 impl fmt::Display for ParserError {
-    // len, byte, digit are copied, we don't need to dereference them
-    // toDo: review this and how dereferencing works, what takes ownership and what happens if we had match self.kind
     // macros like write!, println! and so on do autoderef
+    // we access kind via a reference to self and because match takes ownership and kind holds
+    // variants of String that do not implement copy we pass a reference to it instead; similar to
+    // self.kind in Number for the partial_cmp() imp
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             // this delegates to the Display of StringError
-            ParserErrorKind::MalformedString(str_err) => write!(f, "{} ", str_err),
-            ParserErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos.unwrap()),
+            ParserErrorKind::MalformedString(err) => write!(f, "{} ", err),
+            ParserErrorKind::UnexpectedEof => {
+                write!(f, "unexpected end of input at index {}", self.pos.unwrap())
+            },
             ParserErrorKind::UnexpectedCharacter { byte } => {
                 match byte {
                     // can be a byte from a utf8 sequence or a character with no text representation
-                    b if b.is_ascii_graphic() => write!(f, "unexpected character {} at index {}", *b as char, self.pos.unwrap()),
-                    _  => write!(f, "unexpected character (0x{:02X}) at index {}", byte, self.pos.unwrap()),
+                    b if b.is_ascii_graphic() => {
+                        write!(
+                            f,
+                            "unexpected character {} at index {}",
+                            *b as char, self.pos.unwrap()
+                        )
+                    },
+                    _  => write!(
+                        f,
+                        "unexpected character (0x{:02X}) at index {}",
+                        byte, self.pos.unwrap()
+                    ),
                 }
             }
             ParserErrorKind::InvalidNumber(err) => write!(f, "{}", err),
-            ParserErrorKind::DuplicateName { name } => write!(f, "duplicate object name {} at index {}", name, self.pos.unwrap()),
+            ParserErrorKind::DuplicateName { name } => {
+                write!(f, "duplicate object name {} at index {}", name, self.pos.unwrap())
+            },
             ParserErrorKind::UnexpectedToken { expected } => {
                 match expected {
-                    Some(token) => write!(f, "unexpected token at index {}. Expected {}", self.pos.unwrap(), token),
+                    Some(token) => {
+                        write!(f, "unexpected token at index {}. Expected {}", self.pos.unwrap(), token)
+                    },
                     None => write!(f, "unexpected token at index {}", self.pos.unwrap()),
                 }
             }
-            ParserErrorKind::NestingDepthLimitExceeded { depth } => write!(f, "nesting depth exceeded limit of {}", depth),
-            ParserErrorKind::InputBufferLimitExceeded { len } => write!(f, "input size exceeded limit of {} bytes", len),
+            ParserErrorKind::NestingDepthLimitExceeded { depth } => {
+                write!(f, "nesting depth exceeded limit of {}", depth)
+            },
+            ParserErrorKind::InputBufferLimitExceeded { len } => {
+                write!(f, "input size exceeded limit of {} bytes", len)
+            },
         }
     }
 }
@@ -94,9 +120,15 @@ impl fmt::Display for ParserError {
 impl fmt::Display for StringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            StringErrorKind::UnexpectedEndOf => write!(f, "unexpected end of input at index {}", self.pos),
-            StringErrorKind::InvalidByteSequence { len} => write!(f, "invalid {} byte utf-8 sequence from index {}", len, self.pos),
-            StringErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos),
+            StringErrorKind::UnexpectedEndOf => {
+                write!(f, "unexpected end of input at index {}", self.pos)
+            },
+            StringErrorKind::InvalidByteSequence { len} => {
+                write!(f, "invalid {} byte utf-8 sequence from index {}", len, self.pos)
+            },
+            StringErrorKind::InvalidSurrogate => {
+                write!(f, "invalid surrogate pair at index {}", self.pos)
+            },
             StringErrorKind::UnknownEscapedCharacter { byte } => {
                 if byte.is_ascii_graphic() {
                     write!(f, "unknown escape character {} at index {}", byte, self.pos)
@@ -104,9 +136,25 @@ impl fmt::Display for StringError {
                     write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos)
                 }
             }
-            StringErrorKind::InvalidUnicodeSequence { digit } => write!(f, "invalid hex digit '{}' at index {}", digit, self.pos),
-            StringErrorKind::InvalidControlCharacter { byte } => write!(f, "invalid control character (0x{:02X}) at index {}", byte, self.pos),
-            StringErrorKind::StringValueLengthLimitExceed { len } => write!(f, "string value exceeded limit of {} bytes", len),
+            StringErrorKind::InvalidUnicodeSequence { digit } => {
+                write!(f, "invalid hex digit '{}' at index {}", digit, self.pos)
+            },
+            StringErrorKind::InvalidControlCharacter { byte } => {
+                write!(f, "invalid control character (0x{:02X}) at index {}", byte, self.pos)
+            },
+            StringErrorKind::StringValueLengthLimitExceed { len } => {
+                write!(f, "string value exceeded limit of {} bytes", len)
+            },
+        }
+    }
+}
+
+impl fmt::Display for FileParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // delegate
+            FileParseError::IoError(err) => write!(f, "{} ", err),
+            FileParseError::ParserError(err) => write!(f, "{} ", err)
         }
     }
 }
@@ -114,7 +162,10 @@ impl fmt::Display for StringError {
 impl From<Utf8Error> for StringError {
     fn from(err: Utf8Error) -> Self {
         match err {
-            Utf8Error::InvalidByteSequence { len, pos } => StringError { kind: StringErrorKind::InvalidByteSequence { len }, pos }
+            Utf8Error::InvalidByteSequence { len, pos } => StringError {
+                kind: StringErrorKind::InvalidByteSequence { len },
+                pos
+            }
         }
     }
 }
@@ -153,15 +204,24 @@ impl From<KeywordError> for ParserError {
 impl From<EscapeError> for StringError {
     fn from(err: EscapeError) -> Self {
         match err.kind {
-            EscapeErrorKind::UnknownEscapedCharacter { byte} => StringError { kind: StringErrorKind::UnknownEscapedCharacter { byte }, pos: err.pos },
-            EscapeErrorKind::UnexpectedEof => StringError { kind: StringErrorKind::UnexpectedEndOf, pos: err.pos },
-            EscapeErrorKind::InvalidUnicodeSequence { digit } => StringError { kind: StringErrorKind::InvalidUnicodeSequence { digit }, pos: err.pos },
-            EscapeErrorKind::InvalidSurrogate => StringError { kind: StringErrorKind::InvalidSurrogate, pos: err.pos }
+            EscapeErrorKind::UnknownEscapedCharacter { byte} => StringError {
+                kind: StringErrorKind::UnknownEscapedCharacter { byte },
+                pos: err.pos
+            },
+            EscapeErrorKind::UnexpectedEof => StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: err.pos
+            },
+            EscapeErrorKind::InvalidUnicodeSequence { digit } => StringError {
+                kind: StringErrorKind::InvalidUnicodeSequence { digit },
+                pos: err.pos
+            },
+            EscapeErrorKind::InvalidSurrogate => StringError {
+                kind: StringErrorKind::InvalidSurrogate,
+                pos: err.pos
+            }
         }
     }
 }
-
-impl error::Error for ParserError {}
-impl error::Error for StringError {}
 
 

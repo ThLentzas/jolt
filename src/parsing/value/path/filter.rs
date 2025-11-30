@@ -1,7 +1,7 @@
-use std::borrow::Cow;
 use crate::parsing::value::path::{Segment, SegmentKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
+use std::borrow::Cow;
 
 pub(crate) mod function;
 
@@ -55,19 +55,20 @@ pub(super) enum Comparable {
     FnExpr(FnExpr),
 }
 
-
 #[derive(Debug, PartialEq)]
 pub(super) enum EmbeddedQueryType {
     Absolute,
     Relative,
 }
 
+// toDo: cache absolute path queries
 #[derive(Debug, PartialEq)]
 pub(crate) struct EmbeddedQuery {
     pub(super) query_type: EmbeddedQueryType,
     pub(super) segments: Vec<Segment>,
 }
 
+// operand is what we get after evaluating a Comparable
 enum Operand<'a> {
     Value(Cow<'a, Value>),
     Empty,
@@ -76,23 +77,26 @@ enum Operand<'a> {
 
 impl LogicalExpr {
     // toDo: if embedded absolute path query we need to find a way to cache it
+    // short circuiting and well-typedness of functions
+    // because the type checking happens during parsing, we will never encounter a case where we
+    // might have an invalid function(Arity/Type mismatch) that we will miss because the lhs evaluated
+    // to true/false and we returned without evaluating the rhs
     pub(super) fn evaluate(&self, root: &Value, current: &Value) -> bool {
         match self {
             LogicalExpr::Comparison(expr) => expr.evaluate(root, current),
             LogicalExpr::Test(expr) => expr.evaluate(root, current),
             LogicalExpr::And(lhs, rhs) => {
-                // short circuit
+                // short circuit.
+                // the second operand is only evaluated if the result of the expression cannot be
+                // determined from the first operand alone
+                //
+                // if lhs returns false rust will return immediately false without evaluating rhs
+                //
                 // auto deref by rust to access the expr(deref coercion)
-                if !lhs.evaluate(root, current) {
-                    return false;
-                }
+                // lhs.evaluate() is (*lhs).evaluate(root, current) internally
                 lhs.evaluate(root, current) && rhs.evaluate(root, current)
             },
             LogicalExpr::Or(lhs, rhs) => {
-                // short circuit
-                if lhs.evaluate(root, current) {
-                    return true;
-                }
                 lhs.evaluate(root, current) || rhs.evaluate(root, current)
             },
             LogicalExpr::Not(expr) => !expr.evaluate(root, current),
@@ -203,7 +207,6 @@ impl Comparable {
 }
 
 impl ComparisonOp {
-
     // fn apply<T>(&self, lhs: &T, rhs: &T) -> bool
     // where
     //     T: PartialEq + PartialOrd,
@@ -234,22 +237,21 @@ impl ComparisonOp {
 
     pub(super) fn len(&self) -> usize {
         match self {
-            ComparisonOp::Equal
-            | ComparisonOp::GreaterThan
+            ComparisonOp::GreaterThan
             | ComparisonOp::LessThan => 1,
-            ComparisonOp::NotEqual 
-            | ComparisonOp::LessThanOrEqual 
-            | ComparisonOp::GreaterThanOrEqual => 2
+            ComparisonOp::Equal
+            | ComparisonOp::NotEqual
+            | ComparisonOp::LessThanOrEqual
+            | ComparisonOp::GreaterThanOrEqual => 2,
         }
     }
 }
 
 // toDo: check this for our `Regex` validation https://docs.rs/regex/latest/regex/
-// toDo: also check section 4 for any Security Concerns
+// toDo: check section 4 for any Security Concerns
 // toDo: consider writing a LinkedHashMap
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
-// toDo: explain why we moved away from converting 1 side to Value
 // toDo: write about precedence in read_logical
-// toDo: why we need v to t and t to v
 // toDo: explain the lifetimes in each case
 // toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
+// toDo: write some complex queries including nested selectors and descendant segments(include functions that indirectly will test resolve_args() because it is really hard to set up)

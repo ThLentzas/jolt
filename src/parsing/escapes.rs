@@ -154,19 +154,32 @@ impl fmt::Display for EscapeError {
             EscapeErrorKind::UnknownEscapedCharacter { byte } => {
                 match byte {
                     // can be a byte from a utf8 sequence or a character with no text representation
-                    b if b.is_ascii_graphic() => write!(f, "unknown escape character {} at index {}", b, self.pos),
-                    _ => write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos),
+                    b if b.is_ascii_graphic() => {
+                        write!(f, "unknown escape character {} at index {}", b, self.pos)
+                    }
+                    _ => {
+                        write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos)
+                    }
                 }
             }
-            EscapeErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
-            EscapeErrorKind::InvalidUnicodeSequence { digit } => write!(f, "invalid hex digit '{}' at index {}", digit as char, self.pos),
-            EscapeErrorKind::InvalidSurrogate => write!(f, "invalid surrogate pair at index {}", self.pos)
+            EscapeErrorKind::UnexpectedEof => {
+                write!(f, "unexpected end of input at index {}", self.pos)
+            }
+            EscapeErrorKind::InvalidUnicodeSequence { digit } => {
+                write!(f, "invalid hex digit '{}' at index {}", digit as char, self.pos)
+            }
+            EscapeErrorKind::InvalidSurrogate => {
+                write!(f, "invalid surrogate pair at index {}", self.pos)
+            }
         }
     }
 }
 
 impl From<HexError> for EscapeError {
     fn from(err: HexError) -> Self {
-        EscapeError { kind: EscapeErrorKind::InvalidUnicodeSequence { digit: err.digit }, pos: err.pos }
+        EscapeError {
+            kind: EscapeErrorKind::InvalidUnicodeSequence { digit: err.digit },
+            pos: err.pos
+        }
     }
 }

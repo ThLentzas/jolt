@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError};
 use crate::parsing::number::{NumericError, OutOfRangeError};
-use crate::parsing::value::path::filter::function::FnType;
+use crate::parsing::value::path::filter::function::FnExprError;
 
 #[derive(Debug, PartialEq)]
 pub struct PointerError {
@@ -50,16 +50,6 @@ pub enum PathErrorKind {
     FnExpr(FnExprError)
 }
 
-#[derive(Debug, PartialEq)]
-pub enum FnExprError {
-    // the number of arguments that the function has
-    // message: {expected} parameters, but {got} parameters supplied
-    ArityMismatch { expected: usize, got: usize },
-    // This could also be ParamType as types for expected and got, but we would have to make
-    // ParamType public
-    TypeMismatch { expected: FnType, got: FnType },
-}
-
 impl From<StringError> for PathError {
     // we can not call, PathError { kind: PathErrorKind::MalformedString(err), err.pos }
     // because err is already move to MalformedString, and we are trying to access pos via err which
@@ -93,7 +83,10 @@ impl From<KeywordError> for PathError {
 
 impl From<OutOfRangeError> for PathError {
     fn from(err: OutOfRangeError) -> Self { 
-        PathError { kind: PathErrorKind::InvalidIndex { message: "number out of range"}, pos: err.pos }
+        PathError {
+            kind: PathErrorKind::InvalidIndex { message: "number out of range" },
+            pos: err.pos
+        }
     }
 }
 
@@ -105,16 +98,55 @@ impl fmt::Display for PointerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             // macros like write!, println! and so on do autoderef
-            PointerErrorKind::InvalidPointerSyntax => write!(f, "pointer paths must be prefixed with '/'syntax at index {}", self.pos),
+            PointerErrorKind::InvalidPointerSyntax => {
+                write!(f, "pointer paths must be prefixed with '/' at index {}", self.pos)
+            },
             PointerErrorKind::MalformedString(err) => write!(f, "{}", err),
-            PointerErrorKind::UnexpectedEof => write!(f, "unexpected end of input at index {}", self.pos),
-            PointerErrorKind::InvalidIndex { message } => write!(f, "{} at index {}", message, self.pos),
+            PointerErrorKind::UnexpectedEof => {
+                write!(f, "unexpected end of input at index {}", self.pos)
+            },
+            PointerErrorKind::InvalidIndex { message } => {
+                write!(f, "{} at index {}", message, self.pos)
+            },
         }
     }
 }
 
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match &self.kind {
+            PathErrorKind::UnexpectedEndOf => {
+                write!(f, "unexpected end of input at index {}", self.pos)
+            },
+            PathErrorKind::MalformedString(err) => {
+                write!(f, "{} ", err)
+            }
+            PathErrorKind::UnexpectedCharacter { byte } => {
+                match byte {
+                    // can be a byte from a utf8 sequence or a character with no text representation
+                    b if b.is_ascii_graphic() => {
+                        write!(
+                            f,
+                            "unexpected character {} at index {}",
+                            *b as char, self.pos
+                        )
+                    },
+                    _  => write!(
+                        f,
+                        "unexpected character (0x{:02X}) at index {}",
+                        byte, self.pos
+                    ),
+                }
+            }
+            PathErrorKind::InvalidIndex { message } => {
+                write!(f, "{} at index {}", message, self.pos)
+            }
+            PathErrorKind::Numeric(err) => {
+                write!(f, "{} ", err)
+            }
+            PathErrorKind::FnExpr(err) => {
+                write!(f, "{} ", err)
+            }
+        }
     }
 }

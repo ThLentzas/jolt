@@ -1,10 +1,6 @@
 use std::string::String;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
-#[cfg(feature = "big_decimal")]
-use bigdecimal::BigDecimal;
-#[cfg(feature = "big_decimal")]
-use bigdecimal::num_bigint::BigInt;
 use indexmap::IndexMap;
 use super::lexer::{Lexer, LexerToken, LexerTokenType};
 use super::value::Value;
@@ -487,6 +483,10 @@ fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
 mod tests {
     #[cfg(feature = "big_decimal")]
     use std::str::FromStr;
+    #[cfg(feature = "big_decimal")]
+    use bigdecimal::BigDecimal;
+    #[cfg(feature = "big_decimal")]
+    use bigdecimal::num_bigint::BigInt;
     use super::*;
 
     fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
@@ -553,12 +553,12 @@ mod tests {
     #[test]
     #[cfg(feature = "big_decimal")]
     fn valid_array() {
-        let buffer = "[116, -943, 9223372036854775808, -3.14159265358979e+100, 0.1, 340282366920938463463374607431768211456]".as_bytes();
+        let buffer = "[116, -943, 9007199254740991, -3.14159265358979e+100, 0.1, 340282366920938463463374607431768211456]".as_bytes();
 
         let mut numbers = Vec::new();
         numbers.push(Value::Number(Number::from(116i64)));
         numbers.push(Value::Number(Number::from(-943i64)));
-        numbers.push(Value::Number(Number::from(9223372036854775808u64)));
+        numbers.push(Value::Number(Number::from(9007199254740991)));
         numbers.push(Value::Number(Number::from(BigDecimal::from_str("-3.14159265358979e+100").unwrap())));
         numbers.push(Value::Number(Number::from(BigDecimal::from_str("0.1").unwrap())));
         numbers.push(Value::Number(Number::from(BigInt::from_str("340282366920938463463374607431768211456").unwrap())));
@@ -578,7 +578,7 @@ mod tests {
             "surrogate_pair": "\uD83D\uDE00",
             "escape_characters": "\\\"\/\b\f\n\r\t",
             "boolean" : false,
-            "numbers": [116, -943, 9223372036854775808, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50],
+            "numbers": [116, -943, 9007199254740991, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50],
             "": true,
             "null": null
         }"#.as_bytes();
@@ -587,7 +587,7 @@ mod tests {
         let mut numbers = Vec::new();
         numbers.push(Value::Number(Number::from(116i64)));
         numbers.push(Value::Number(Number::from(-943i64)));
-        numbers.push(Value::Number(Number::from(9223372036854775808u64)));
+        numbers.push(Value::Number(Number::from(9007199254740991)));
         numbers.push(Value::Number(Number::from(-3.14159265358979e+100)));
         numbers.push(Value::Number(Number::from(6.02214076e+23)));
         numbers.push(Value::Number(Number::from(2.718281828e-50)));

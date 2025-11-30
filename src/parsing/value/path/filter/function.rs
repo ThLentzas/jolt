@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use crate::parsing::value::Value;
-use crate::parsing::value::error::FnExprError;
 use crate::parsing::value::path::filter::{EmbeddedQuery, LogicalExpr};
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::sync::OnceLock;
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
@@ -40,18 +41,36 @@ pub(crate) enum FnExprArg {
     LogicalExpr(LogicalExpr),
 }
 
-impl FnExprArg {
-    fn as_fn_type(&self) -> FnType {
-        match self {
-            FnExprArg::Literal(_) => FnType::ValueType,
-            FnExprArg::EmbeddedQuery(_) => FnType::NodesType,
-            FnExprArg::FnExpr(expr) => {
-                let func = registry().get(&expr.name).unwrap();
-                func.return_type()
-            }
-            FnExprArg::LogicalExpr(_) => FnType::Logical
-        }
-    }
+// types used in the signature of the function
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum FnType {
+    ValueType,
+    NodesType,
+    Logical,
+    Nothing,
+}
+
+// the resolved values that will be passed as parameters in a function
+#[derive(Debug, PartialEq)]
+enum FnArg<'a> {
+    Value(Cow<'a, Value>),
+    Nodelist(Vec<&'a Value>),
+    Logical(bool),
+    Nothing,
+}
+
+// length, count and value return ValueType
+// search, match return Logical
+#[derive(Debug, PartialEq)]
+pub(super) enum FnResult<'a> {
+    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
+    // length(), match(), search() and count() all create new data, but value() returns an existing
+    // value that lives in root, so we would have to clone in this case. length() and count() return
+    // ints which we will wrap to Number, match() and search() will return Logical and with Cow
+    // we can return the reference to the value
+    Value(Cow<'a, Value>),
+    Logical(bool),
+    Nothing
 }
 
 impl FnExpr {
@@ -64,6 +83,9 @@ impl FnExpr {
         f.execute(&args)
     }
 
+    // we never evaluate anything to determine type mismatch;  for embedded queries we check if
+    // singular and for fn expressions we check the return type, so we make 1 linear scan of the args
+    // of the function
     pub(crate) fn type_check(&self) -> Result<(), FnExprError> {
         let func = registry().get(&self.name).unwrap();
 
@@ -83,8 +105,6 @@ impl FnExpr {
                 (FnExprArg::EmbeddedQuery(q), FnType::ValueType) => q.is_definite(),
                 (FnExprArg::EmbeddedQuery(_), FnType::NodesType) => true,
                 (FnExprArg::EmbeddedQuery(_), FnType::Logical) => true,
-                // as of the time of this implementation no method accepts nothing as an argument type
-                (FnExprArg::EmbeddedQuery(_), FnType::Nothing) => false,
                 (FnExprArg::FnExpr(_), _) => {
                     let return_type = arg.as_fn_type();
                     match(return_type, expected_type) {
@@ -95,14 +115,20 @@ impl FnExpr {
                         _ => false,
                     }
                 }
+                // rfc: LogicalTrue and LogicalFalse are unrelated to the JSON values expressed by
+                // the literals true and false
+                // this means that if the expected_type is Value we can not convert the LogicalTrue/False
+                // to Value::Boolean
                 (FnExprArg::LogicalExpr(_), FnType::Logical) => true,
                 (FnExprArg::LogicalExpr(_), _) => false,
+                // as of the time of this implementation no method accepts nothing as an argument type
+                _ => false
             };
 
             if !valid {
                 return Err(FnExprError::TypeMismatch {
                     expected: expected_type,
-                    got: arg.as_fn_type()
+                    found: arg.as_fn_type()
                 })
             }
         }
@@ -150,6 +176,20 @@ impl FnExpr {
     }
 }
 
+impl FnExprArg {
+    fn as_fn_type(&self) -> FnType {
+        match self {
+            FnExprArg::Literal(_) => FnType::ValueType,
+            FnExprArg::EmbeddedQuery(_) => FnType::NodesType,
+            FnExprArg::FnExpr(expr) => {
+                let func = registry().get(&expr.name).unwrap();
+                func.return_type()
+            }
+            FnExprArg::LogicalExpr(_) => FnType::Logical
+        }
+    }
+}
+
 struct Registry {
     // toDo: why Box<dyn Function> and not something like impl Function?
     functions: HashMap<String, Box<dyn Function>>,
@@ -172,38 +212,6 @@ impl Registry {
     fn get(&self, name: &str) ->Option<& dyn Function>{
         self.functions.get(name).map(|f| f.as_ref())
     }
-}
-
-// types used in the signature of the function
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum FnType {
-    ValueType,
-    NodesType,
-    Logical,
-    Nothing,
-}
-
-// the resolved values that will be passed as parameters in a function
-#[derive(Debug, PartialEq)]
-enum FnArg<'a> {
-    Value(Cow<'a, Value>),
-    Nodelist(Vec<&'a Value>),
-    Logical(bool),
-    Nothing,
-}
-
-// length, count and value return ValueType
-// search, match return Logical
-#[derive(Debug, PartialEq)]
-pub(super) enum FnResult<'a> {
-    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
-    // length(), match(), search() and count() all create new data, but value() returns an existing
-    // value that lives in root, so we would have to clone in this case. length() and count() return
-    // ints which we will wrap to Number, match() and search() will return Logical and with Cow
-    // we can return the reference to the value
-    Value(Cow<'a, Value>),
-    Logical(bool),
-    Nothing
 }
 
 // toDo: why we need Send + Sync for OnceLock
@@ -329,6 +337,35 @@ impl Function for ValueFn {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum FnExprError {
+    // the number of arguments that the function has
+    ArityMismatch { expected: usize, got: usize },
+    TypeMismatch { expected: FnType, found: FnType },
+}
+
+impl Display for FnExprError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FnExprError::ArityMismatch { expected, got } => {
+                write!(f, "expected {} parameters, but {} parameters supplied", expected, got)
+            }
+            FnExprError::TypeMismatch { expected, found } => {
+                // check the dif between {:?} and {}
+                write!(f, "expected {:?}, found {:?}", expected, found)
+            }
+        }
+    }
+}
+
+impl Error for FnExprError {}
+
+#[cfg(test)]
+mod tests {
+
+}
+
+// todo: test the functions here, write a test in path.rs where we get empty and Nothing
 mod regex {
 
 }

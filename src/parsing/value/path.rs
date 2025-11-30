@@ -1,6 +1,7 @@
 use crate::parsing::error::{StringError, StringErrorKind};
 use crate::parsing::value::Value;
 use crate::parsing::value::error::{PathError, PathErrorKind};
+use crate::parsing::value::path::filter::function::{FnExpr, FnExprArg};
 use crate::parsing::value::path::filter::{
     Comparable,
     ComparisonExpr,
@@ -8,11 +9,10 @@ use crate::parsing::value::path::filter::{
     EmbeddedQuery,
     EmbeddedQueryType,
     LogicalExpr,
-    TestExpr
+    TestExpr,
 };
 use crate::parsing::{self, escapes, number, utf8};
 use std::cmp;
-use crate::parsing::value::path::filter::function::{FnExprArg, FnExpr};
 // toDo: as_pointer() -> converts an npath to pointer
 
 pub(crate) mod filter;
@@ -82,9 +82,7 @@ impl Segment {
     fn is_singular(&self) -> bool {
         match self.kind {
             SegmentKind::Descendant => false,
-            SegmentKind::Child => {
-                self.selectors.len() == 1 && self.selectors[0].is_singular()
-            }
+            SegmentKind::Child => self.selectors.len() == 1 && self.selectors[0].is_singular(),
         }
     }
 }
@@ -211,7 +209,7 @@ impl<'a, 'v> Query<'a, 'v> {
         Self {
             buffer,
             pos: 0,
-            root
+            root,
         }
     }
 
@@ -244,7 +242,9 @@ impl<'a, 'v> Query<'a, 'v> {
             match segment.kind {
                 // it is self.root and not &self.root because root is already a reference
                 SegmentKind::Child => apply_child_seg(self.root, &reader, &mut writer, &segment),
-                SegmentKind::Descendant => apply_descendant_seg(self.root, &reader, &mut writer, &segment),
+                SegmentKind::Descendant => {
+                    apply_descendant_seg(self.root, &reader, &mut writer, &segment)
+                }
             }
             std::mem::swap(&mut reader, &mut writer);
         }
@@ -508,7 +508,10 @@ impl<'a, 'v> Query<'a, 'v> {
         // parse_embedded_seg()
         // ',' is for fn_expr args
         while self.pos < len
-            && !matches!(current, b'.' | b'[' | b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b')' | b']' | b',')
+            && !matches!(
+                current,
+                b'.' | b'[' | b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b')' | b']' | b','
+            )
             && !parsing::is_rfc_whitespace(current)
         {
             match current {
@@ -715,7 +718,8 @@ impl<'a, 'v> Query<'a, 'v> {
             self.skip_ws()?;
             if self.pos + 1 < self.buffer.len()
                 && self.buffer[self.pos] == b'|'
-                && self.buffer[self.pos + 1] == b'|' {
+                && self.buffer[self.pos + 1] == b'|'
+            {
                 self.pos += 2; // consume ||
                 self.skip_ws()?;
                 let rhs = self.parse_logical_and()?;
@@ -737,7 +741,8 @@ impl<'a, 'v> Query<'a, 'v> {
             self.skip_ws()?;
             if self.pos + 1 < self.buffer.len()
                 && self.buffer[self.pos] == b'&'
-                && self.buffer[self.pos + 1] == b'&' {
+                && self.buffer[self.pos + 1] == b'&'
+            {
                 self.pos += 2; // consume &&
                 self.skip_ws()?;
                 let rhs = self.parse_basic_expr()?;
@@ -752,34 +757,69 @@ impl<'a, 'v> Query<'a, 'v> {
     fn parse_basic_expr(&mut self) -> Result<LogicalExpr, PathError> {
         self.skip_ws()?;
 
+        // paren-expr = [logical-not-op S] "(" S logical-expr S ")"
+        // test-expr  = [logical-not-op S] (filter-query / function-expr)
+        //
+        // for logical not operator we need to look ahead and consider only the 3 valid cases
+        // 1. parenthesized expr
+        // 2. filter-query
+        // 3. function expr
+        //
+        // we can not have a case like !! or ! followed by a comparison expression
+        // "$[?!$[0].foo > 2 || @[1] <= 4]"
+        // this results to an UnexpectedCharacter error for '>'
+        // we look after '!' and we treat '$[0].foo' as a Test expression and not the lhs of a comparison
         if self.buffer[self.pos] == b'!' {
             self.pos += 1; // skip '!'
             self.skip_ws()?;
 
-            return Ok(LogicalExpr::Not(Box::new(self.parse_basic_expr()?)));
+            let current = self.buffer[self.pos];
+            let expr = match current {
+                b'(' => self.parse_parenthesized()?,
+                b'@' | b'$' => {
+                    LogicalExpr::Test(TestExpr::EmbeddedQuery(self.parse_embedded_query()?))
+                }
+                b'l' | b'c' | b'm' | b's' | b'v' => {
+                    LogicalExpr::Test(TestExpr::FnExpr(self.parse_fn_expr()?))
+                }
+                _ => {
+                    return Err(PathError {
+                        kind: PathErrorKind::UnexpectedCharacter { byte: current },
+                        pos: self.pos,
+                    });
+                }
+            };
+            return Ok(LogicalExpr::Not(Box::new(expr)));
         }
 
         if self.buffer[self.pos] == b'(' {
-            self.pos += 1; // skip '('
-            self.skip_ws()?;
-
-            let expr = self.parse_logical_or()?;
-
-            self.skip_ws()?;
-            if self.buffer[self.pos] != b')' {
-                return Err(PathError {
-                    kind: PathErrorKind::UnexpectedCharacter { byte: self.buffer[self.pos] },
-                    pos: self.pos,
-                });
-            }
-            self.pos += 1; // skip ')'
-            // in the case of ! we returned Ok(LogicalExpression::Not(Box::new(expr)));
-            // but now we just return the expression because it was just parenthesized
-            return Ok(expr);
+            return Ok(self.parse_parenthesized()?);
         }
+
         let lhs = self.parse_comparable()?;
         // it must be a comparison or test expression
         self.parse_comparison_tail(lhs)
+    }
+
+    fn parse_parenthesized(&mut self) -> Result<LogicalExpr, PathError> {
+        self.pos += 1; // skip '('
+        self.skip_ws()?;
+
+        let expr = self.parse_logical_or()?;
+
+        self.skip_ws()?;
+        if self.buffer[self.pos] != b')' {
+            return Err(PathError {
+                kind: PathErrorKind::UnexpectedCharacter {
+                    byte: self.buffer[self.pos],
+                },
+                pos: self.pos,
+            });
+        }
+        self.pos += 1; // skip ')'
+        // in the case of ! we returned Ok(LogicalExpression::Not(Box::new(expr)));
+        // but now we just return the expression because it was just parenthesized
+        Ok(expr)
     }
 
     // toDo: every time we expect something like a comparison_op comment on what happens in the mismatch
@@ -804,7 +844,7 @@ impl<'a, 'v> Query<'a, 'v> {
                 self.pos += op.len();
                 self.skip_ws()?;
                 let rhs = self.parse_comparable()?;
-                Ok(LogicalExpr::Comparison(ComparisonExpr { lhs, op, rhs, }))
+                Ok(LogicalExpr::Comparison(ComparisonExpr { lhs, op, rhs }))
             }
             None => {
                 match lhs {
@@ -812,8 +852,10 @@ impl<'a, 'v> Query<'a, 'v> {
                     Comparable::EmbeddedQuery(query) => {
                         Ok(LogicalExpr::Test(TestExpr::EmbeddedQuery(query)))
                     }
-                    Comparable::Literal(_) => todo!("since no comp_operator found, it must be a test expr, and a test expr can only be fn_expr or filter query. Create an error variant"),
-                    Comparable::FnExpr(expr) => Ok(LogicalExpr::Test(TestExpr::FnExpr(expr)))
+                    Comparable::Literal(_) => todo!(
+                        "since no comp_operator found, it must be a test expr, and a test expr can only be fn_expr or filter query. Create an error variant"
+                    ),
+                    Comparable::FnExpr(expr) => Ok(LogicalExpr::Test(TestExpr::FnExpr(expr))),
                 }
             }
         }
@@ -828,34 +870,86 @@ impl<'a, 'v> Query<'a, 'v> {
                 Ok(Comparable::Literal(self.parse_literal()?))
             }
             // For embedded queries we just parse for now, evaluation will happen when applying the filter selector
-            b'@' => {
-                self.pos += 1;
-                let mut segments = Vec::new();
-                while let Some(seg) = self.parse_embedded_seg()? {
-                    segments.push(seg);
-                }
-                Ok(Comparable::EmbeddedQuery(EmbeddedQuery {
-                    query_type: EmbeddedQueryType::Relative,
-                    segments,
-                }))
-            }
-            b'$' => {
-                self.pos += 1;
-                let mut segments = Vec::new();
-                while let Some(seg) = self.parse_embedded_seg()? {
-                    segments.push(seg);
-                }
-                Ok(Comparable::EmbeddedQuery(EmbeddedQuery {
-                    query_type: EmbeddedQueryType::Absolute,
-                    segments,
-                }))
-            }
+            b'@' | b'$' => Ok(Comparable::EmbeddedQuery(self.parse_embedded_query()?)),
             b'l' | b'c' | b'm' | b's' | b'v' => Ok(Comparable::FnExpr(self.parse_fn_expr()?)),
             _ => Err(PathError {
                 kind: PathErrorKind::UnexpectedCharacter { byte: current },
                 pos: self.pos,
             }),
         }
+    }
+
+    // We can't call parse_seg() directly for embedded queries because we have different boundaries
+    // Calling parse_seg() the 1st time would read segments until the end of input; embedded queries
+    // consist of segments included in the bracketed selection range of the filter selector.
+    //
+    // path = $[?@.price>10]
+    //
+    // we try to parse the embedded relative query and the 1st segment is a name shorthand; following
+    // the syntax for name-shorthand we know that encountering '>' would result in an error; for example:
+    // $.price> is an invalid name shorthand because it is not part of a filter selector, but in the
+    // filter selector case we need to return a child segment with a single selector and let the
+    // call of parse_embedded_seg() handle the next character; we update the ending conditions in
+    // parse_name_shorthand() and let the caller handle it.
+    //
+    // parse_name_shorthand() -> returns price to parse_shorthand()
+    // parse_shorthand() -> returns a segment with a single selector(shorthand notation can't have multiple selectors) to parse_notation()
+    // parse_notation() -> returns to parse_seg()
+    // parse_seg() -> returns to parse_embedded_seg()
+    // parse_embedded_seg() -> returns a segment for the embedded query from parse_comparable() and
+    // is called again.
+    // This is the key point it needs to look for any expression related character. If we didn't have
+    // that check, calling parse_seg() directly would result in an error because no segment starts
+    // with '<'. Note that we don't check for the full operators(<=, >=, !=, &&, ||). We encounter '<'
+    // and we know we processed all the segments for the subquery. The control returns to the parse_comparison_or_test()
+    // which checks if the current, next is a valid comparison operator. If not control returns to
+    // parse_basic_expr() which will handle parenthesized expression and then back to parse_logical_and/or()
+    // Those 2 methods will handle logical operators. But what if we have $[?@.price&* 10]?
+    // &* will not matching to anything in the parse_filter() call chain and the control returns to
+    // parse_selector() and then to parse_bracket() which expects after processing the current selector
+    // a comma to indicate multiple selectors or ']' to stop processing the current one, but it encounters
+    // an unpaired '&' and we get a PathError
+    //
+    // an alternative would be to pass the boundaries as a predicate everytime we call parse_seg();
+    // something similar to how we initially did it for name-shorthand at
+    // ab674d202994ac40e061f7f31662919615e85956 commit
+    fn parse_embedded_query(&mut self) -> Result<EmbeddedQuery, PathError> {
+        let query_type = if self.buffer[self.pos] == b'@' {
+            EmbeddedQueryType::Relative
+        } else {
+            EmbeddedQueryType::Absolute
+        };
+        self.pos += 1;
+        let mut segments = Vec::new();
+
+        loop {
+            if self.pos >= self.buffer.len() {
+                break;
+            }
+            self.skip_ws()?;
+            if matches!(
+                self.buffer[self.pos],
+                // as mentioned above:
+                //  '<', '>', '=', '!' part of comparison expr
+                //  '!', '&', '|' part of logical expr
+                //  ')' end of parenthesized expression or function call
+                // ']' end of filter selector
+                // ',' as argument on a function, count(@.*, @.*)
+                b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b')' | b']' | b','
+            ) {
+                break;
+            }
+            if let Some(seg) = self.parse_seg()? {
+                segments.push(seg);
+            } else {
+                break;
+            }
+        }
+
+        Ok(EmbeddedQuery {
+            query_type,
+            segments,
+        })
     }
 
     // function-expr = function-name "(" S [function-argument *(S "," S function-argument)] S ")"
@@ -890,12 +984,14 @@ impl<'a, 'v> Query<'a, 'v> {
 
         self.skip_ws()?;
 
-        let expr = FnExpr { name, args: self.parse_fn_args()? };
-        expr.type_check()
-            .map_err(|err| PathError {
-                kind: PathErrorKind::FnExpr(err),
-                pos: start
-            })?;
+        let expr = FnExpr {
+            name,
+            args: self.parse_fn_args()?,
+        };
+        expr.type_check().map_err(|err| PathError {
+            kind: PathErrorKind::FnExpr(err),
+            pos: start,
+        })?;
 
         Ok(expr)
     }
@@ -906,7 +1002,9 @@ impl<'a, 'v> Query<'a, 'v> {
         // 1. Consume opening '('
         if self.buffer[self.pos] != b'(' {
             return Err(PathError {
-                kind: PathErrorKind::UnexpectedCharacter { byte: self.buffer[self.pos] },
+                kind: PathErrorKind::UnexpectedCharacter {
+                    byte: self.buffer[self.pos],
+                },
                 pos: self.pos,
             });
         }
@@ -926,7 +1024,10 @@ impl<'a, 'v> Query<'a, 'v> {
                 // C. Peek for Operators
                 // We check if the NEXT token is an operator.
                 // This determines if we branch into Logic or stay Simple.
-                let is_op = matches!(self.buffer[self.pos], b'=' | b'<' | b'>' | b'!' | b'&' | b'|');
+                let is_op = matches!(
+                    self.buffer[self.pos],
+                    b'=' | b'<' | b'>' | b'!' | b'&' | b'|'
+                );
 
                 if is_op {
                     // CASE: Logical Expression (e.g., "length(@) > 5" or "true && false")
@@ -1015,54 +1116,6 @@ impl<'a, 'v> Query<'a, 'v> {
         }
     }
 
-    // We can't call parse_seg() directly for embedded queries because we have different boundaries
-    // Calling parse_seg() the 1st time would read segments until the end of input; embedded queries
-    // consist of segments included in the bracketed selection range of the filter selector.
-    //
-    // path = $[?@.price>10]
-    //
-    // we try to parse the embedded relative query and the 1st segment is a name shorthand; following
-    // the syntax for name-shorthand we know that encountering '>' would result in an error; for example:
-    // $.price> is an invalid name shorthand because it is not part of a filter selector, but in the
-    // filter selector case we need to return a child segment with a single selector and let the
-    // call of parse_embedded_seg() handle the next character; we update the ending conditions in
-    // parse_name_shorthand() and let the caller handle it.
-    //
-    // parse_name_shorthand() -> returns price to parse_shorthand()
-    // parse_shorthand() -> returns a segment with a single selector(shorthand notation can't have multiple selectors) to parse_notation()
-    // parse_notation() -> returns to parse_seg()
-    // parse_seg() -> returns to parse_embedded_seg()
-    // parse_embedded_seg() -> returns a segment for the embedded query from parse_comparable() and
-    // is called again.
-    // This is the key point it needs to look for any expression related character. If we didn't have
-    // that check, calling parse_seg() directly would result in an error because no segment starts
-    // with '<'. Note that we don't check for the full operators(<=, >=, !=, &&, ||). We encounter '<'
-    // and we know we processed all the segments for the subquery. The control returns to the parse_comparison_or_test()
-    // which checks if the current, next is a valid comparison operator. If not control returns to
-    // parse_basic_expr() which will handle parenthesized expression and then back to parse_logical_and/or()
-    // Those 2 methods will handle logical operators. But what if we have $[?@.price&* 10]?
-    // &* will not matching to anything in the parse_filter() call chain and the control returns to
-    // parse_selector() and then to parse_bracket() which expects after processing the current selector
-    // a comma to indicate multiple selectors or ']' to stop processing the current one, but it encounters
-    // an unpaired '&' and we get a PathError
-    //
-    // an alternative would be to pass the boundaries as a predicate everytime we call parse_seg();
-    // something similar to how we initially did it for name-shorthand at
-    // ab674d202994ac40e061f7f31662919615e85956 commit
-    fn parse_embedded_seg(&mut self) -> Result<Option<Segment>, PathError> {
-        if self.pos >= self.buffer.len() {
-            return Ok(None);
-        }
-
-        self.skip_ws()?;
-
-        // toDo: check what happens when we have just @
-        if matches!(self.buffer[self.pos],b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b')' | b']') {
-            return Ok(None);
-        }
-        self.parse_seg()
-    }
-
     fn skip_ws(&mut self) -> Result<(), PathError> {
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
@@ -1116,7 +1169,7 @@ fn apply_child_seg<'v>(
     root: &'v Value,
     reader: &Vec<&'v Value>,
     writer: &mut Vec<&'v Value>,
-    segment: &Segment
+    segment: &Segment,
 ) {
     if reader.is_empty() {
         return;
@@ -1178,7 +1231,7 @@ fn apply_descendant_seg<'v>(
     root: &'v Value,
     reader: &Vec<&'v Value>,
     writer: &mut Vec<&'v Value>,
-    segment: &Segment
+    segment: &Segment,
 ) {
     if reader.is_empty() {
         return;
@@ -1212,7 +1265,6 @@ fn dfs<'v>(root: &'v Value, current: &'v Value, writer: &mut Vec<&'v Value>, sel
     }
 }
 
-
 // If we don't specify the lifetime, Rust due to lifetime elision will assign lifetimes to the references,
 // but we will get an error when we try to do nodelist.extend(map.values()); with an error 'lifetime may not live long enough'
 // Without explicitly specifying the lifetime, our function signature does not require the passed in
@@ -1239,7 +1291,7 @@ fn apply_selector<'v>(
     root: &'v Value,
     writer: &mut Vec<&'v Value>,
     selector: &Selector,
-    current: &'v Value
+    current: &'v Value,
 ) {
     match (current, selector) {
         (Value::Object(map), Selector::Name(name)) => {
@@ -1261,9 +1313,7 @@ fn apply_selector<'v>(
             // len = 2, index = -4 => n_idx = -2
             // toDo: add explanation why we can cast len to i64 without any loss
             let n_idx = normalize_index(*index, arr.len() as i64);
-            if let Some(val) = usize::try_from(n_idx)
-                .ok()
-                .and_then(|idx| arr.get(idx)) {
+            if let Some(val) = usize::try_from(n_idx).ok().and_then(|idx| arr.get(idx)) {
                 writer.push(val);
             }
         }
@@ -1277,17 +1327,17 @@ fn apply_selector<'v>(
                 }
             }
         }
-        (Value::Array(arr), Selector::Filter(expr)) => {
-            for elem in arr.iter() {
-                if expr.evaluate(root, elem) {
-                    writer.push(elem);
-                }
-            }
-        }
         (Value::Object(map), Selector::Filter(expr)) => {
             for val in map.values() {
                 if expr.evaluate(root, val) {
                     writer.push(val);
+                }
+            }
+        }
+        (Value::Array(arr), Selector::Filter(expr)) => {
+            for elem in arr.iter() {
+                if expr.evaluate(root, elem) {
+                    writer.push(elem);
                 }
             }
         }
@@ -1317,6 +1367,8 @@ mod tests {
     use super::*;
     use crate::macros::json;
     use crate::parsing::value::IndexMap;
+    use crate::parsing::value::path::filter::function::FnExprError;
+    use crate::parsing::value::path::filter::function::FnType;
 
     fn invalid_root() -> Vec<(&'static str, PathError)> {
         vec![
@@ -1468,6 +1520,112 @@ mod tests {
         ]
     }
 
+    fn fn_arity_mismatch() -> Vec<(&'static str, Value, PathError)> {
+        vec![
+            (
+                "$[?length() > 0]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 0 }),
+                    pos: 3
+                }
+            ),
+            (
+                "$[?count(@.*, @.*) > 0]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 2 }),
+                    pos: 3
+                }
+            ),
+            (
+                "$[?match(@.name)]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 2, got: 1 }),
+                    pos: 3
+                }
+            ),
+            (
+                "$[?search()]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 2, got: 0 }),
+                    pos: 3
+                }
+            ),
+            (
+                "$[?value() == 1]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 0 }),
+                    pos: 3
+                }
+            )
+        ]
+    }
+
+    fn fn_type_mismatch() -> Vec<(&'static str, Value, PathError)> {
+        vec![
+            (
+                // non-singular query
+                "$[?length(@.*) > 0]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
+                        expected: FnType::ValueType, found: FnType::NodesType
+                    }),
+                    pos: 3
+                }
+            ),
+            // expects NodesType
+            (
+                "$[?count(5) > 0]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
+                        // 5 is FnExprArg::Literal, and we do the conversion to ValueType
+                        expected: FnType::NodesType, found: FnType::ValueType
+                    }),
+                    pos: 3
+                }
+            ),
+            // first arg non-singular,
+            (
+                "$[?match(@.*, 'pattern')]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
+                        expected: FnType::ValueType, found: FnType::NodesType
+                    }),
+                    pos: 3
+                }
+            ),
+            // logical_expr as argument evaluates to FnType::Logical
+            (
+                "$[?search(@.x && @.y, 'z')]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
+                        expected: FnType::ValueType, found: FnType::Logical
+                    }),
+                    pos: 3
+                }
+            ),
+            // value expects NodesType,  match return LogicalType
+            (
+                "$[?value(match(@.x, 'a')) == 5]",
+                json!([]),
+                PathError {
+                    kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
+                        expected: FnType::NodesType, found: FnType::Logical
+                    }),
+                    pos: 3
+                }
+            )
+        ]
+    }
+
     #[test]
     fn test_invalid_notations() {
         for (path_expr, err) in invalid_notations() {
@@ -1527,6 +1685,26 @@ mod tests {
             let mut query = Query::new(path_expr.as_bytes(), &root);
             query.pos += 1; // this happens by calling check_root() but we simplify it for this case
             let result = query.parse_seg();
+
+            assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
+        }
+    }
+
+    #[test]
+    fn test_fn_arity_mismatch() {
+        for (path_expr, root, err) in fn_arity_mismatch() {
+            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let result = query.parse();
+
+            assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
+        }
+    }
+
+    #[test]
+    fn test_fn_type_mismatch() {
+        for (path_expr, root, err) in fn_type_mismatch() {
+            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let result = query.parse();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
         }
