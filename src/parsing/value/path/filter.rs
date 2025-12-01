@@ -255,3 +255,5 @@ impl ComparisonOp {
 // toDo: explain the lifetimes in each case
 // toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
 // toDo: write some complex queries including nested selectors and descendant segments(include functions that indirectly will test resolve_args() because it is really hard to set up)
+// toDo: PathBuilder
+// toDo: jsonPathPlus

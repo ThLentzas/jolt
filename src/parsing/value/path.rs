@@ -16,6 +16,7 @@ use std::cmp;
 // toDo: as_pointer() -> converts an npath to pointer
 
 pub(crate) mod filter;
+mod tracker;
 
 // fn read_name_shorthand(buffer: &[u8], pos: &mut usize) -> Result<String, PathError>
 // fn read_double(buffer: &[u8], pos: &mut usize) -> Result<String, StringError>
