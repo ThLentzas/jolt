@@ -230,9 +230,11 @@ trait Function: Send + Sync {
     // was getting this warning: hiding a lifetime that's elided elsewhere is confusing
     //
     // it is not an error; it is just that is unclear to the user that reads the code that FnResult
-    // holds a reference; by returning FnResult<'_> we express that and when we implement the
-    // method we will be explicit with lifetimes where we will tie the lifetime of the reference
-    // of FnResult to the lifetime of the references of the input.
+    // holds a reference; we fix that by returning FnResult<'_>. 
+    // The lifetime can be elided based on the 3rd elision rule: 
+    //  "if there are multiple input lifetime parameters, but one of them is &self or
+    //  &mut self because this is a method, the lifetime of self is assigned to all output 
+    //  lifetime parameters."
     fn execute(&self, args: &[FnArg]) -> FnResult<'_>;
 }
 

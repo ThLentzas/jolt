@@ -5,7 +5,14 @@ use indexmap::IndexMap;
 use super::lexer::{Lexer, LexerToken, LexerTokenType};
 use super::value::Value;
 use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
-use super::{escapes, number, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT};
+use super::{
+    escapes,
+    number,
+    utf8,
+    INPUT_BUFFER_LIMIT,
+    NESTING_DEPTH_LIMIT,
+    STRING_VALUE_LENGTH_LIMIT
+};
 use super::number::Number;
 
 #[derive(Debug, PartialEq)]
@@ -99,7 +106,11 @@ impl<'a> Parser<'a> {
                 }
             }
             None => {
-                let pos = if self.buffer.is_empty() { self.buffer.len() } else { self.buffer.len() - 1 };
+                let pos = if self.buffer.is_empty() {
+                    self.buffer.len()
+                } else {
+                    self.buffer.len() - 1
+                };
                 return Err(ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(pos) });
             }
         }
@@ -141,8 +152,8 @@ impl<'a> Parser<'a> {
                 // {"foo": "bar",}
                 Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
                     if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
-                        return Err(ParserError { 
-                            kind: ParserErrorKind::UnexpectedToken { expected: Some("object name") }, 
+                        return Err(ParserError {
+                            kind: ParserErrorKind::UnexpectedToken { expected: Some("object name") },
                             pos: Some(next.start_index())
                         });
                     }

@@ -12,23 +12,12 @@ use crate::parsing::value::path::filter::{
     TestExpr,
 };
 use crate::parsing::{self, escapes, number, utf8};
+use crate::parsing::value::path::tracker::{Cursor, Step, Tracker};
 use std::cmp;
-// toDo: as_pointer() -> converts an npath to pointer
 
 pub(crate) mod filter;
-mod tracker;
+pub(crate) mod tracker;
 
-// fn read_name_shorthand(buffer: &[u8], pos: &mut usize) -> Result<String, PathError>
-// fn read_double(buffer: &[u8], pos: &mut usize) -> Result<String, StringError>
-// fn read_single(buffer: &[u8], pos: &mut usize) -> Result<String, StringError>
-// fn read_name(buffer: &[u8], pos: &mut usize) -> Result<String, StringError>
-// fn read_bracketed_selection(buffer: &[u8], pos: &mut usize, kind: SegmentKind) -> Result<Segment, PathError>
-// fn read_descendant_seg(buffer: &[u8], pos: &mut usize) -> Result<Segment, PathError>
-// fn read_child_seg(buffer: &[u8], pos: &mut usize) -> Result<Segment, PathError>
-// pub(super) fn read_seg(buffer: &[u8], pos: &mut usize) -> Result<Segment, PathError>
-//
-// Initially I had the above structure which made it obvious that I needed a struct; both passing
-// the struct as argument or implement the methods for the struct is fine.
 pub(super) struct Query<'a, 'v> {
     buffer: &'a [u8],
     pos: usize,
@@ -230,11 +219,29 @@ impl<'a, 'v> Query<'a, 'v> {
     // we could return without processing the rest of the segments, but we return something from an
     // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
     // case.
-    pub(super) fn parse(&mut self) -> Result<Vec<&'v Value>, PathError> {
+    // v as lifetime for the Tracker because the "keys" will live as long as the root, because they
+    // exist in the root
+    //
+    // we need to be explicit with the lifetime for Cursor otherwise it would tie to ti Query due to
+    // the 3rd rule
+    // had this initially and caused issues in value.select(),
+    // fn parse<T>(&mut self) -> Result<Vec<Cursor<T::Trace>>, PathError>
+    //
+    // rust ties the lifetime of Cursor to the lifetime of the query and query was a local variable
+    // that was getting dropped at the end of scope causing issues
+    // from the Query's definition we know that the query will never outlive the root, but it does not
+    // mean that the root can not outlive the query, which is what happens in this case, query goes
+    // out of scope, root still valid, return values have the lifetime of root
+    pub(super) fn parse<T: Tracker<'v>>(&mut self) -> Result<Vec<Cursor<'v, T::Trace>>, PathError> {
         self.check_root()?;
-        // the values need to live as long as the root
-        let mut reader: Vec<&'v Value> = vec![self.root];
-        let mut writer: Vec<&'v Value> = Vec::new();
+
+        let root_trace = Cursor { val: self.root, trace: T::root() };
+        // note: reader and writer own the Nodes, we don't pass references to nodes. The nodes are
+        // created locally, they do reference values from the root, but we can't pass references
+        // to something that was created locally it would be a dangling reference once it goes out
+        // of scope
+        let mut reader: Vec<Cursor<'v, T::Trace>> = vec![root_trace];
+        let mut writer: Vec<Cursor<'v, T::Trace>> = Vec::new();
 
         // note that this is the only place that we get an error, when we process the expression,
         // any other case, calling a selector to a value that can't be applied we return an empty list
@@ -242,9 +249,9 @@ impl<'a, 'v> Query<'a, 'v> {
             writer.clear();
             match segment.kind {
                 // it is self.root and not &self.root because root is already a reference
-                SegmentKind::Child => apply_child_seg(self.root, &reader, &mut writer, &segment),
+                SegmentKind::Child => apply_child_seg::<T>(self.root, &reader, &mut writer, &segment),
                 SegmentKind::Descendant => {
-                    apply_descendant_seg(self.root, &reader, &mut writer, &segment)
+                    apply_descendant_seg::<T>(self.root, &reader, &mut writer, &segment)
                 }
             }
             std::mem::swap(&mut reader, &mut writer);
@@ -557,7 +564,7 @@ impl<'a, 'v> Query<'a, 'v> {
     }
 
     // when we encounter ':' it is a slice selector, but for '-' or any digit we can't know yet, we
-    // have to process the number and then check if we encounter ':'; if we do, we call parse_slice()
+    // have to process the number and then check if we encounter ':', if we do, we call parse_slice()
     // otherwise it is an index
     fn parse_numeric(&mut self) -> Result<Selector, PathError> {
         let num;
@@ -1166,11 +1173,11 @@ impl<'a, 'v> Query<'a, 'v> {
 //
 // note that the selectors are only applied to the input nodelist, the initial_count keeps track
 // of that, no selector is applied to a node added by a previous selector
-fn apply_child_seg<'v>(
+fn apply_child_seg<'v, T: Tracker<'v>>(
     root: &'v Value,
-    reader: &Vec<&'v Value>,
-    writer: &mut Vec<&'v Value>,
-    segment: &Segment,
+    reader: &Vec<Cursor<'v, T::Trace>>,
+    writer: &mut Vec<Cursor<'v, T::Trace>>,
+    segment: &Segment
 ) {
     if reader.is_empty() {
         return;
@@ -1178,7 +1185,7 @@ fn apply_child_seg<'v>(
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            apply_selector(root, writer, selector, v);
+            apply_selector::<T>(root, writer, selector, v);
         }
     }
 }
@@ -1228,10 +1235,10 @@ fn apply_child_seg<'v>(
 // not when recursion backtracks(postorder) we append them in the list
 //
 // in the end we apply the same logic as child segment remove from the front queue
-fn apply_descendant_seg<'v>(
+fn apply_descendant_seg<'v, T: Tracker<'v>>(
     root: &'v Value,
-    reader: &Vec<&'v Value>,
-    writer: &mut Vec<&'v Value>,
+    reader: &Vec<Cursor<'v, T::Trace>>,
+    writer: &mut Vec<Cursor<'v, T::Trace>>,
     segment: &Segment,
 ) {
     if reader.is_empty() {
@@ -1240,26 +1247,35 @@ fn apply_descendant_seg<'v>(
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            dfs(root, v, writer, selector);
+            dfs::<T>(root, v, writer, selector);
         }
     }
 }
 
-fn dfs<'v>(root: &'v Value, current: &'v Value, writer: &mut Vec<&'v Value>, selector: &Selector) {
-    if !current.is_object() && !current.is_array() {
+fn dfs<'v, T: Tracker<'v>>(
+    root: &'v Value,
+    current: &Cursor<'v, T::Trace>,
+    writer: &mut Vec<Cursor<'v, T::Trace>>,
+    selector: &Selector
+) {
+    if !current.val.is_object() && !current.val.is_array() {
         return;
     }
 
-    apply_selector(root, writer, selector, current);
-    match current {
+    apply_selector::<T>(root, writer, selector, current);
+    match current.val {
         Value::Object(map) => {
-            for entry in map.values() {
-                dfs(root, entry, writer, selector);
+            for (key, val) in map.iter() {
+                let trace = T::descend(&current.trace, Step::Key(key));
+                let node = Cursor { val, trace };
+                dfs::<T>(root, &node, writer, selector);
             }
         }
         Value::Array(arr) => {
-            for elem in arr {
-                dfs(root, elem, writer, selector);
+            for (i, val) in arr.iter().enumerate() {
+                let trace = T::descend(&current.trace, Step::Index(i));
+                let node = Cursor { val, trace };
+                dfs::<T>(root, &node, writer, selector);
             }
         }
         _ => unreachable!("dfs() was called in a non container node"),
@@ -1288,25 +1304,34 @@ fn dfs<'v>(root: &'v Value, current: &'v Value, writer: &mut Vec<&'v Value>, sel
 //
 // this was the signature before: fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, value: &'a Value)
 // now we already define v
-fn apply_selector<'v>(
+fn apply_selector<'v, T: Tracker<'v>>(
     root: &'v Value,
-    writer: &mut Vec<&'v Value>,
-    selector: &Selector,
-    current: &'v Value,
+    writer: &mut Vec<Cursor<'v, T::Trace>>,
+    selector: & Selector,
+    current: &Cursor<'v, T::Trace>,
 ) {
-    match (current, selector) {
+    match (current.val, selector) {
         (Value::Object(map), Selector::Name(name)) => {
-            if let Some(val) = map.get(name) {
-                writer.push(val);
+            // very important to borrow key from map and not from the selector. If we chose to go
+            // with the selector we would have lifetime problems that bubble up to parse() because
+            // segment is a short-lived value that gets dropped immediately after the call to
+            // apply the segment
+            if let Some((key, val)) = map.get_key_value(name) {
+                let trace = T::descend(&current.trace, Step::Key(key));
+                writer.push(Cursor { val, trace });
             }
         }
-        // map.values() returns an iterator over &Value, extend() adds all items from the iterator to values
         (Value::Object(map), Selector::WildCard) => {
-            writer.extend(map.values());
+            for (key, val) in map.iter() {
+                let trace = T::descend(&current.trace, Step::Key(key));
+                writer.push(Cursor { val, trace });
+            }
         }
-        // arr.iter() returns an iterator over &Value, extend() adds all items to values
         (Value::Array(arr), Selector::WildCard) => {
-            writer.extend(arr.iter());
+            for (i, val) in arr.iter().enumerate() {
+                let trace = T::descend(&current.trace, Step::Index(i));
+                writer.push(Cursor { val, trace });
+            }
         }
         (Value::Array(arr), Selector::Index(index)) => {
             // if index is negative and its absolute value is greater than length, the n_idx can
@@ -1314,8 +1339,11 @@ fn apply_selector<'v>(
             // len = 2, index = -4 => n_idx = -2
             // toDo: add explanation why we can cast len to i64 without any loss
             let n_idx = normalize_index(*index, arr.len() as i64);
-            if let Some(val) = usize::try_from(n_idx).ok().and_then(|idx| arr.get(idx)) {
-                writer.push(val);
+            if let Ok(i) = usize::try_from(n_idx) {
+                if let Some(val) = arr.get(i) {
+                    let trace = T::descend(&current.trace, Step::Index(i));
+                    writer.push(Cursor { val, trace });
+                }
             }
         }
         (Value::Array(arr), Selector::Slice(slice)) => {
@@ -1324,21 +1352,24 @@ fn apply_selector<'v>(
             for i in range {
                 // toDo: we should break in None?
                 if let Some(val) = arr.get(i) {
-                    writer.push(val);
+                    let trace = T::descend(&current.trace, Step::Index(i));
+                    writer.push(Cursor { val, trace });
                 }
             }
         }
         (Value::Object(map), Selector::Filter(expr)) => {
-            for val in map.values() {
+            for (key, val) in map.iter() {
                 if expr.evaluate(root, val) {
-                    writer.push(val);
+                    let trace = T::descend(&current.trace, Step::Key(key));
+                    writer.push(Cursor { val, trace });
                 }
             }
         }
         (Value::Array(arr), Selector::Filter(expr)) => {
-            for elem in arr.iter() {
-                if expr.evaluate(root, elem) {
-                    writer.push(elem);
+            for (i, val) in arr.iter().enumerate() {
+                if expr.evaluate(root, val) {
+                    let trace = T::descend(&current.trace, Step::Index(i));
+                    writer.push(Cursor { val, trace });
                 }
             }
         }
@@ -1370,6 +1401,7 @@ mod tests {
     use crate::parsing::value::IndexMap;
     use crate::parsing::value::path::filter::function::FnExprError;
     use crate::parsing::value::path::filter::function::FnType;
+    use crate::parsing::value::path::tracker::NoOpTracker;
 
     fn invalid_root() -> Vec<(&'static str, PathError)> {
         vec![
@@ -1695,7 +1727,7 @@ mod tests {
     fn test_fn_arity_mismatch() {
         for (path_expr, root, err) in fn_arity_mismatch() {
             let mut query = Query::new(path_expr.as_bytes(), &root);
-            let result = query.parse();
+            let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
         }
@@ -1705,7 +1737,7 @@ mod tests {
     fn test_fn_type_mismatch() {
         for (path_expr, root, err) in fn_type_mismatch() {
             let mut query = Query::new(path_expr.as_bytes(), &root);
-            let result = query.parse();
+            let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
         }

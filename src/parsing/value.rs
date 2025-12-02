@@ -4,6 +4,7 @@ use crate::parsing::value::path::Query;
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
+use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
 
 mod error;
 mod path;
@@ -208,8 +209,8 @@ impl Value {
                         None => return Ok(None),
                     },
                     Value::Array(values) => match pointer::check_array_index(&token)? {
-                        Some(index) if index >= values.len() => return Ok(None),
-                        Some(index) => current = &mut values[index],
+                        Some(i) if i >= values.len() => return Ok(None),
+                        Some(i) => current = &mut values[i],
                         _ => return Ok(None),
                     },
                     _ => return Ok(None),
@@ -220,11 +221,42 @@ impl Value {
         Ok(Some(current))
     }
 
-    // make this method part of the public api read(&value: Value, path_expr: &str) and move tests
-    // to path
-    pub fn read(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
+    // it is not an error; it is just that is unclear to the user that reads the code that Node
+    // holds a reference; we fix that by returning Node<'_>.
+    // The lifetime can be elided based on the 3rd elision rule:
+    //  "if there are multiple input lifetime parameters, but one of them is &self or
+    //  &mut self because this is a method, the lifetime of self is assigned to all output
+    //  lifetime parameters."
+    //
+    // in all select() methods below we call into_iter() because we don't care about Cursor at all
+    // we just want to consume it and do the mapping
+    pub fn select(&self, path_expr: &str) -> Result<Vec<Node<'_>>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
-        Ok(query.parse()?)
+        let nodes = query.parse::<PathTracker>()?
+            .into_iter()
+            .map(Node::from)
+            .collect();
+
+        Ok(nodes)
+    }
+
+    pub fn select_as_npaths(&self, path_expr: &str) -> Result<Vec<String>, PathError> {
+        let mut query = Query::new(path_expr.as_bytes(), self);
+        let paths = query.parse::<PathTracker>()?
+            .into_iter()
+            .map(|c| c.trace.unwrap().to_npath())
+            .collect();
+
+        Ok(paths)
+    }
+
+    pub fn select_as_values(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
+        let mut query = Query::new(path_expr.as_bytes(), self);
+        let values = query.parse::<NoOpTracker>()?
+            .into_iter()
+            .map(|c| c.val)
+            .collect();
+        Ok(values)
     }
 }
 
@@ -1643,7 +1675,7 @@ mod tests {
     #[test]
     fn test_valid_names() {
         for (path_expr, source, nodelist) in valid_names() {
-            let res = source.read(path_expr).unwrap();
+            let res = source.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1655,7 +1687,7 @@ mod tests {
     #[test]
     fn test_valid_indices() {
         for (path_expr, source, nodelist) in valid_indices() {
-            let res = source.read(path_expr).unwrap();
+            let res = source.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1667,7 +1699,7 @@ mod tests {
     #[test]
     fn test_valid_slices() {
         for (path_expr, source, nodelist) in valid_slices() {
-            let res = source.read(path_expr).unwrap();
+            let res = source.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1682,7 +1714,7 @@ mod tests {
             "key": "value",
             "key_1": "value_1"
         });
-        let res = val.read("$.*").unwrap();
+        let res = val.select_as_values("$.*").unwrap();
 
         if let Value::Object(ref map) = val {
             let expected: Vec<&Value> = map.values().collect();
@@ -1694,7 +1726,7 @@ mod tests {
     #[test]
     fn wildcard_on_array() {
         let val = json!([1, 5, 3, 9]);
-        let res = val.read("$[*]").unwrap();
+        let res = val.select_as_values("$[*]").unwrap();
 
         if let Value::Array(ref vec) = val {
             let expected: Vec<&Value> = vec.iter().collect();
@@ -1705,7 +1737,7 @@ mod tests {
     #[test]
     fn test_valid_filters() {
         for (path_expr, source, nodelist) in valid_filter() {
-            let res = source.read(path_expr).unwrap();
+            let res = source.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {

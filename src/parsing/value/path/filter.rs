@@ -2,6 +2,7 @@ use crate::parsing::value::path::{Segment, SegmentKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
 use std::borrow::Cow;
+use crate::parsing::value::path::tracker::{NoOpTracker, Cursor};
 
 pub(crate) mod function;
 
@@ -105,7 +106,7 @@ impl LogicalExpr {
 }
 
 impl ComparisonExpr {
-    fn evaluate (& self, root: &Value, current: &Value) -> bool {
+    fn evaluate (&self, root: &Value, current: &Value) -> bool {
         let lhs = self.lhs.to_operand(root, current);
         let rhs = self.rhs.to_operand(root, current);
 
@@ -145,8 +146,6 @@ impl TestExpr {
     }
 }
 
-// toDo: ask about the structure of having value.read() how to handle n_paths and passing
-// the root to query
 impl EmbeddedQuery {
     // we want the refs to live as long as the root(they 'live in root')
     //
@@ -154,25 +153,29 @@ impl EmbeddedQuery {
     // be the root of the query. For absolute paths we have a reference to the root, we will evaluate
     // once and cache it after.
     fn evaluate<'v>(&self, root: &'v Value, current: &'v Value) -> Vec<&'v Value> {
-        // the values need to live as long as the root value
-        let mut reader: Vec<&'v Value> = Vec::new();
-        let mut writer: Vec<&'v Value> = Vec::new();
-
-        match self.query_type {
-            EmbeddedQueryType::Relative => reader.push(current),
-            EmbeddedQueryType::Absolute => reader.push(root),
-        }
+        let start= match self.query_type {
+            EmbeddedQueryType::Relative => current,
+            EmbeddedQueryType::Absolute => root,
+        };
+        let mut reader: Vec<Cursor<'v, ()>> = vec![Cursor { val: start, trace: (), }];
+        let mut writer: Vec<Cursor<'v, ()>> = Vec::new();
 
         for seg in self.segments.iter() {
             writer.clear();
             match seg.kind {
-                SegmentKind::Child => super::apply_child_seg(root, &reader, &mut writer, seg),
-                SegmentKind::Descendant => super::apply_descendant_seg(root, &reader, &mut writer, seg),
+                SegmentKind::Child => {
+                    super::apply_child_seg::<NoOpTracker>(root, &reader, &mut writer, seg);
+                },
+                SegmentKind::Descendant => {
+                    super::apply_descendant_seg::<NoOpTracker>(root, &reader, &mut writer, seg);
+                },
             }
             std::mem::swap(&mut reader, &mut writer);
         }
         // the final nodelist is in reader after the last swap
-        reader
+        reader.into_iter()
+            .map(|c| c.val)
+            .collect()
     }
 
     fn is_definite(&self) -> bool {
@@ -257,3 +260,5 @@ impl ComparisonOp {
 // toDo: write some complex queries including nested selectors and descendant segments(include functions that indirectly will test resolve_args() because it is really hard to set up)
 // toDo: PathBuilder
 // toDo: jsonPathPlus
+// toDo:  adjust the paths for the constants in parsing
+// toDo: remove all lifetimes and see what happens/ add a comment

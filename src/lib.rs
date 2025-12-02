@@ -24,3 +24,7 @@ pub fn from_file(path: &str) -> Result<Value, FileParseError> {
     parsing::parse(&buffer)
         .map_err(|e| FileParseError::ParserError(e))
 }
+
+// pub fn to_pointer_path(npath: &str) -> String {
+//
+// }
