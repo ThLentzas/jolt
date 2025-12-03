@@ -1,10 +1,10 @@
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
 use crate::parsing::value::path::Query;
+use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
-use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
 
 mod error;
 mod path;
@@ -232,7 +232,8 @@ impl Value {
     // we just want to consume it and do the mapping
     pub fn select(&self, path_expr: &str) -> Result<Vec<Node<'_>>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
-        let nodes = query.parse::<PathTracker>()?
+        let nodes = query
+            .parse::<PathTracker>()?
             .into_iter()
             .map(Node::from)
             .collect();
@@ -242,8 +243,10 @@ impl Value {
 
     pub fn select_as_npaths(&self, path_expr: &str) -> Result<Vec<String>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
-        let paths = query.parse::<PathTracker>()?
+        let paths = query
+            .parse::<PathTracker>()?
             .into_iter()
+            // toDo: add a comment on why this unwrap is safe
             .map(|c| c.trace.unwrap().to_npath())
             .collect();
 
@@ -252,10 +255,12 @@ impl Value {
 
     pub fn select_as_values(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Query::new(path_expr.as_bytes(), self);
-        let values = query.parse::<NoOpTracker>()?
+        let values = query
+            .parse::<NoOpTracker>()?
             .into_iter()
             .map(|c| c.val)
             .collect();
+
         Ok(values)
     }
 }
@@ -1028,7 +1033,7 @@ mod tests {
                             "bar": "foo"
                         }
                     ),
-                    json!(3)
+                    json!(3),
                 ],
             ),
             // for every element in the array we try check if the test expression returns true
@@ -1081,13 +1086,11 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![
-                    json!(
-                    {
-                        "foo": "bar",
-                        "buzz": 0
-                    }),
-                ],
+                vec![json!(
+                {
+                    "foo": "bar",
+                    "buzz": 0
+                })],
             ),
             (
                 "$[?@.foo >= 20]",
@@ -1101,13 +1104,11 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![
-                    json!(
-                    {
-                        "foo": 22,
-                        "buzz": 0
-                    }),
-                ],
+                vec![json!(
+                {
+                    "foo": 22,
+                    "buzz": 0
+                })],
             ),
             (
                 "$[?@.foo >= 20]",
@@ -1287,11 +1288,9 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![
-                    json!({
-                        "bar": "foo"
-                    }),
-                ],
+                vec![json!({
+                    "bar": "foo"
+                })],
             ),
             // @.foo returns 3 for the 1st element so this expression evaluates to true fast, because
             // of short-circuiting, rhs never gets evaluated
@@ -1313,7 +1312,7 @@ mod tests {
                         "foo": 3,
                         "buzz": 0
                     }),
-                    json!([3])
+                    json!([3]),
                 ],
             ),
             // $[0].foo > 2 returns 3, as an existence test returns true for both elements of the
@@ -1329,7 +1328,7 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![json!([3])]
+                vec![json!([3])],
             ),
             // logical not operator:
             // @.foo evaluates to true for the 1st element; in our logic when we evaluate the test
@@ -1345,9 +1344,7 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![
-                    json!([3])
-                ],
+                vec![json!([3])],
             ),
             // same as above parenthesized
             (
@@ -1358,7 +1355,7 @@ mod tests {
                     },
                     [3]
                 ]),
-                vec![json!([3])]
+                vec![json!([3])],
             ),
             // @.* is an existence test and we are allowed to use multi-selectors like '*'. The result
             // of @.* returns a lists of all the values of the map and because it returns a non-empty
@@ -1375,12 +1372,10 @@ mod tests {
                     },
                     null
                 ]),
-                vec![
-                    json!({
-                        "foo": null,
-                        "bar": true
-                    })
-                ]
+                vec![json!({
+                    "foo": null,
+                    "bar": true
+                })],
             ),
             // a test expression with a child segment that has 3 selectors
             // the output vector of evaluating @[*, 0, :] for the 1st element is
@@ -1394,13 +1389,8 @@ mod tests {
             // for the 2nd element we can't apply the subquery
             (
                 "$[?@[*, 0, :]]",
-                json!([
-                    [1, 2, 3, 4, 5],
-                    null
-                ]),
-                vec![
-                    json!([1, 2, 3, 4, 5])
-                ],
+                json!([[1, 2, 3, 4, 5], null]),
+                vec![json!([1, 2, 3, 4, 5])],
             ),
             // nested filter selector
             //
@@ -1494,8 +1484,8 @@ mod tests {
                             "y": 2,
                             "z": 3
                         }
-                    )
-                ]
+                    ),
+                ],
             ),
             // () has the highest precedence
             // @.y and @.z evaluates to true for the 2nd element
@@ -1514,14 +1504,12 @@ mod tests {
                         "z": 3
                     }
                 ]),
-                vec![
-                    json!(
-                        {
-                            "y": 2,
-                            "z": 3
-                        }
-                    )
-                ]
+                vec![json!(
+                    {
+                        "y": 2,
+                        "z": 3
+                    }
+                )],
             ),
             // the same expression with groups: (!@.x) || ((@.y < 10) && (@.z == 3))
             // the NOT operator binds tighter than OR which means we don't evaluate lhs OR rhs and
@@ -1547,14 +1535,12 @@ mod tests {
                         "z": 3
                     }
                 ]),
-                vec![
-                    json!(
-                        {
-                            "y": 2,
-                            "z": 3
-                        }
-                    )
-                ]
+                vec![json!(
+                    {
+                        "y": 2,
+                        "z": 3
+                    }
+                )],
             ),
             // same precedence, we look at associativity.
             //
@@ -1629,10 +1615,56 @@ mod tests {
                         {
                             "z": 3
                         }
-                    )
-                ]
-            )
-            // toDo: tests for Empty - Nothing, Nothing - Nothing and Nothing - Value
+                    ),
+                ],
+            ),
+            // Nothing == Nothing evaluates to true, and we return 3
+            // @.x and @.y return an empty list
+            (
+                "$[?length(@.x) == length(@.y)]",
+                json!(
+                    {
+                        "z": 3
+                    }
+                ),
+                vec![json!(3)],
+            ),
+            // Nothing == Empty
+            // length(@.z) returns Nothing because despite @.z returning a value(3) it is not
+            // object/array/string and @.y returns Empty.
+            (
+                "$[?length(@.z) == @.y]",
+                json!(
+                    {
+                        "z": 3
+                    }
+                ),
+                vec![json!(3)],
+            ),
+            // this was the trickiest one, initially i had "$[?value(@.x) == 2]" and value(@.x)
+            // returned an empty list. This is because the filter selector for root iterates through
+            // all the members and try to evaluate the expression on the VALUE so i was calling
+            // .x for 2
+            (
+                "$[?value(@) == 2]",
+                json!(
+                    {
+                        "x": 2
+                    }
+                ),
+                vec![json!(2)]
+            ),
+
+            // non singular query -> nothing
+            (
+                "$[?value(@.*) == 2]",
+                json!(
+                    {
+                        "x": 2
+                    }
+                ),
+                vec![]
+            ),
         ]
     }
 
@@ -1674,8 +1706,8 @@ mod tests {
     // jpath
     #[test]
     fn test_valid_names() {
-        for (path_expr, source, nodelist) in valid_names() {
-            let res = source.select_as_values(path_expr).unwrap();
+        for (path_expr, root, nodelist) in valid_names() {
+            let res = root.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1686,8 +1718,8 @@ mod tests {
 
     #[test]
     fn test_valid_indices() {
-        for (path_expr, source, nodelist) in valid_indices() {
-            let res = source.select_as_values(path_expr).unwrap();
+        for (path_expr, root, nodelist) in valid_indices() {
+            let res = root.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1698,8 +1730,8 @@ mod tests {
 
     #[test]
     fn test_valid_slices() {
-        for (path_expr, source, nodelist) in valid_slices() {
-            let res = source.select_as_values(path_expr).unwrap();
+        for (path_expr, root, nodelist) in valid_slices() {
+            let res = root.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
@@ -1736,13 +1768,116 @@ mod tests {
 
     #[test]
     fn test_valid_filters() {
-        for (path_expr, source, nodelist) in valid_filter() {
-            let res = source.select_as_values(path_expr).unwrap();
+        for (path_expr, root, nodelist) in valid_filter() {
+            let res = root.select_as_values(path_expr).unwrap();
 
             assert_eq!(res.len(), nodelist.len());
             for (i, val) in res.into_iter().enumerate() {
                 assert_eq!(*val, nodelist[i], "invalid path: {path_expr}");
             }
+        }
+    }
+
+    // ..[?length(@.name) > 2 && count(@.tags[*]) >= 1]
+    // try to apply [?length(@.name) > 2 && count(@.tags[*]) >= 1] to the current node and all its
+    // descendants before applying to its siblings
+    //
+    // input list holds the root
+    // try to apply every selector of the segment
+    // filter selector, current is object -> iterate through all the keys and evaluate the logical
+    // expression: length(@.name) > 2 && count(@.tags[*]) >= 1
+    // root has 2 keys: "users" and "other" so @.name returns an empty list because no match was
+    // found: length(@.name) > 2 -> 0 > 2 returns false, we stop due to short-circuiting.
+    // selector returns false for "users", but before we move to "other" we visit all the descendants
+    // of "users" before.
+    //
+    // "users" is an array, and we can apply the filter selector -> iterate through every element
+    // evaluate the expression
+    //
+    // users[0] -> length(@.name) > 2 && count(@.tags[*]) >= 1, length(@.name) > 2 returns false(2 > 2)
+    // Again apply the same logic, before moving to users[1] descend can't apply to "id" and "name"
+    // but we can for "tags". Applying the selector returns false, and we return back to users[1]
+    //
+    // users[1] -> length(@.name) > 2 && count(@.tags[*]) >= 1, length(@.name) > 2 returns true(5 > 2)
+    // count(@.tags[*]) >= 1 for ["user", "active"] returns true(2 >= 1), overall true && true ->
+    // add the current value to the writer buffer; writer now holds 1 Value, the object at users[1]
+    // trying to descend results in the same behavior as users[0]
+    //
+    // users[2] -> length(@.name) > 2 && count(@.tags[*]) >= 1, length(@.name) > 2 returns true(3 > 2)
+    // count(@.tags[*]) >= 1 for [] returns false(0 >= 1). Descending into users[2] has the same
+    // behavior as the 2 previous cases
+    //
+    // users[3] -> evaluating length(@.name) > 2 && count(@.tags[*]) >= 1 results to true, and  we
+    // add the object to our writer; writer so far holds users[1], users[3]
+    //
+    // at this point we are done with the descendants of "users" we move to its siblings. Applying
+    // the same logic to "other" we get 1 more entry, mods[1]. No more keys for root, we are done
+    // applying the 1st segment
+    //
+    // writer: { users[1], users[2], mods[1] }, we use that as the input to apply the next segment
+    // child segment with multiple selector -> apply every selector to every node of the input list
+    //
+    // users[1] for 'id' and 'name' returns 2, Alice
+    // users[2] for 'id' and 'name' returns 4, Charlie
+    // mods[1] for 'id' and 'name' returns 11, Dave
+    //
+    // All those are json values, done processing segments
+    #[test]
+    fn test_desc_seg_and_multi_selector() {
+        let path_expr = "$..[?length(@.name) > 2 && count(@.tags[*]) >= 1]['id', 'name']";
+        let root = json!(
+            {
+                "users": [
+                    {
+                        "id": 1,
+                        "name": "Jo",
+                        "tags": ["admin"]
+                    },
+                    {
+                        "id": 2,
+                        "name": "Alice",
+                        "tags": ["user", "active"]
+                    },
+                    {
+                        "id": 3,
+                        "name": "Bob",
+                        "tags": []
+                    },
+                    {
+                        "id": 4,
+                        "name": "Charlie",
+                        "tags": ["admin"]
+                    }
+                ],
+                "other": {
+                    "mods": [
+                        {
+                            "id": 10,
+                            "name": "XY",
+                            "tags": ["mod"]
+                        },
+                        {
+                            "id": 11,
+                            "name": "Dave",
+                            "tags": ["mod", "senior"]
+                        }
+                    ]
+                }
+            }
+        );
+        let nodelist = root.select_as_values(path_expr).unwrap();
+        let expected = vec![
+            json!(2),
+            json!("Alice"),
+            json!(4),
+            json!("Charlie"),
+            json!(11),
+            json!("Dave"),
+        ];
+
+        assert_eq!(expected.len(), nodelist.len());
+        for (i, val) in expected.into_iter().enumerate() {
+            assert_eq!(val, *nodelist[i], "invalid path: {path_expr}");
         }
     }
 }

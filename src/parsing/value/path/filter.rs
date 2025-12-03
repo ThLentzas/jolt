@@ -1,4 +1,4 @@
-use crate::parsing::value::path::{Segment, SegmentKind};
+use crate::parsing::value::path::{Query, Segment, SegmentKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
 use std::borrow::Cow;
@@ -147,6 +147,10 @@ impl TestExpr {
 }
 
 impl EmbeddedQuery {
+
+    fn new(root: &Query) -> EmbeddedQuery {
+
+    }
     // we want the refs to live as long as the root(they 'live in root')
     //
     // as we iterate the values of map/array if the query type is relative the current value will
@@ -157,7 +161,7 @@ impl EmbeddedQuery {
             EmbeddedQueryType::Relative => current,
             EmbeddedQueryType::Absolute => root,
         };
-        let mut reader: Vec<Cursor<'v, ()>> = vec![Cursor { val: start, trace: (), }];
+        let mut reader: Vec<Cursor<'v, ()>> = vec![Cursor { val: start, trace: () }];
         let mut writer: Vec<Cursor<'v, ()>> = Vec::new();
 
         for seg in self.segments.iter() {
@@ -178,6 +182,7 @@ impl EmbeddedQuery {
             .collect()
     }
 
+    // returns at most 1 node
     fn is_definite(&self) -> bool {
         self.segments.iter().all(|seg| seg.is_singular())
     }
@@ -258,7 +263,7 @@ impl ComparisonOp {
 // toDo: explain the lifetimes in each case
 // toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
 // toDo: write some complex queries including nested selectors and descendant segments(include functions that indirectly will test resolve_args() because it is really hard to set up)
-// toDo: PathBuilder
-// toDo: jsonPathPlus
 // toDo:  adjust the paths for the constants in parsing
 // toDo: remove all lifetimes and see what happens/ add a comment
+// toDo: add a test where we have nothing from a function and empty from a list evaluating to true
+// toDo: fix the indentation in the tests for filter_selectors()

@@ -162,7 +162,7 @@ impl fmt::Display for FileParseError {
 impl From<Utf8Error> for StringError {
     fn from(err: Utf8Error) -> Self {
         match err {
-            Utf8Error::InvalidByteSequence { len, pos } => StringError {
+            Utf8Error { len, pos } => StringError {
                 kind: StringErrorKind::InvalidByteSequence { len },
                 pos
             }

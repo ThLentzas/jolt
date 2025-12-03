@@ -1190,51 +1190,10 @@ fn apply_child_seg<'v, T: Tracker<'v>>(
     }
 }
 
-// {
-//   "store": {
-//     "book": [
-//       {
-//         "title": "Book 1",
-//         "price": 10,
-//         "author": {
-//           "name": "Alice",
-//           "price": 5
-//         }
-//       },
-//       {
-//         "title": "Book 2",
-//         "price": 15
-//       }
-//     ],
-//     "bicycle": {
-//       "price": 100
-//     }
-//   }
-// }
-//
-// $..price
-//
-// price is a member name shorthand selector, we look if our object has any keys that match
-// If so we push the value of the price key in nodelist, then we dfs for EVERY value in current object
-//
-// no key matches price and at the root object, iterate through the values and call dfs
-//
-// values of store(only key in the root object) gives us store and book, try to apply the selector
-// again on the keys of store, no match, dfs again for all values of store
-// book is an array, can't apply name selector, dfs into its values, we have our first match 10,
-// we add to the list the moment we visit it(have to according to the rfc) and recurse again for
-// book[0], author is an object that name selector can be applied, has a key price, visit it and recurse
-// for the values of author, no container nodes return
-//
-// now we check book[1], match, add 15, so far we have 10, 5, 15
-// recurse into each values, no container nodes and recursion returns to the level where no we have
-// to visit the 2nd key of store, 'bicycle' again check its values we have a match price, 10,5,15,100
-// recurse again no more nodes we return at the start
+// read the comment above the test_desc_seg_and_multi_selector() method in value.rs
 //
 // it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
 // not when recursion backtracks(postorder) we append them in the list
-//
-// in the end we apply the same logic as child segment remove from the front queue
 fn apply_descendant_seg<'v, T: Tracker<'v>>(
     root: &'v Value,
     reader: &Vec<Cursor<'v, T::Trace>>,
@@ -1357,6 +1316,8 @@ fn apply_selector<'v, T: Tracker<'v>>(
                 }
             }
         }
+        // the expression is evaluated for every value
+        // check the second to last entry in test_valid_selectors() in value.rs
         (Value::Object(map), Selector::Filter(expr)) => {
             for (key, val) in map.iter() {
                 if expr.evaluate(root, val) {
@@ -1365,11 +1326,12 @@ fn apply_selector<'v, T: Tracker<'v>>(
                 }
             }
         }
+        // the expression is evaluated for every element
         (Value::Array(arr), Selector::Filter(expr)) => {
-            for (i, val) in arr.iter().enumerate() {
-                if expr.evaluate(root, val) {
+            for (i, elem) in arr.iter().enumerate() {
+                if expr.evaluate(root, elem) {
                     let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(Cursor { val, trace });
+                    writer.push(Cursor { val: elem, trace });
                 }
             }
         }

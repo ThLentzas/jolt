@@ -90,9 +90,6 @@ impl<'a> Parser<'a> {
         match token {
             Some(t) => {
                 match t.token_type() {
-                    // an alternative to passing the token, would be to have a method that returns
-                    // the tokens produced by the lexer and retrieve the last; we could
-                    // call this method from each parse function
                     LexerTokenType::LCurlyBracket => self.parse_object(t)?,
                     LexerTokenType::LSquareBracket => self.parse_array(t)?,
                     LexerTokenType::Number => self.parse_number(t),

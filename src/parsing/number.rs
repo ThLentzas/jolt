@@ -473,7 +473,7 @@ fn check_scientific_notation(
 
 // Leetcode atoi baby let's go!!!!!!!!!!!
 //
-// this is different from reading a json number when calling lex(); in that case, we didn't
+// this is different from reading a json number when calling next(); in that case, we didn't
 // care about the value of the number, we just needed the range of the number in the initial
 // buffer, also we didn't know what type of number we had(i64, f64 etc)
 // we could also try to create a string by keeping track of the starting position and then

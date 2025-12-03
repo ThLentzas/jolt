@@ -1,7 +1,7 @@
-use std::borrow::Cow;
-use std::cmp::PartialEq;
 use crate::parsing::value::Value;
 use crate::parsing::value::path::filter::{EmbeddedQuery, LogicalExpr};
+use std::borrow::Cow;
+use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -59,6 +59,61 @@ enum FnArg<'a> {
     Nothing,
 }
 
+impl<'a> FnArg<'a> {
+    fn as_value(&self) -> Option<&Value> {
+        match self {
+            // Cow<Value> -> &Value
+            // v.as_ref() is the same as &**v
+            // v: &Cow<'a, Value> from &args[0]
+            // *v: Cow<'a, Value> deref the reference
+            // **v: Value, Cow derefs to Value
+            // &**v: &Value, take reference
+            FnArg::Value(v) => Some(v.as_ref()),
+            FnArg::Nodelist(nodes) => match nodes.len() {
+                // singular query returned an empty list, it's valid(returns at most 1)
+                0 => None,
+                1 => Some(nodes[0]),
+                // there is a bug in our type_check() method we only expect singular queries
+                // can't have 2+
+                _ => unreachable!(
+                    "received nodelist with {} nodes, expected singular query",
+                    nodes.len()
+                ),
+            },
+            // there is a bug in our type_check() method we can only convert to ValueType either a
+            // Value or a singular query, anything else is a type mismatch
+            _ => unreachable!(
+                "received {:?}, expected {:?}",
+                self.to_fn_type(),
+                FnType::ValueType
+            ),
+        }
+    }
+
+    // from the 3rd elision rule, the outer reference's lifetime is the same as self but if we don't
+    // specify the inner we will get 'lifetime might not live long enough' when we try to use it
+    fn as_nodelist(&self) -> &Vec<&'a Value> {
+        match self {
+            FnArg::Nodelist(nodes) => nodes,
+            // there is a bug in our type_check() method
+            _ => unreachable!(
+                "received {:?}, expected {:?}",
+                self.to_fn_type(),
+                FnType::NodesType
+            ),
+        }
+    }
+
+    fn to_fn_type(&self) -> FnType {
+        match self {
+            FnArg::Value(_) => FnType::ValueType,
+            FnArg::Nodelist(_) => FnType::NodesType,
+            FnArg::Logical(_) => FnType::Logical,
+            FnArg::Nothing => FnType::Nothing,
+        }
+    }
+}
+
 // length, count and value return ValueType
 // search, match return Logical
 #[derive(Debug, PartialEq)]
@@ -70,16 +125,18 @@ pub(super) enum FnResult<'a> {
     // we can return the reference to the value
     Value(Cow<'a, Value>),
     Logical(bool),
-    Nothing
+    Nothing,
 }
 
 impl FnExpr {
-    // read the comment above execute() on the trait definition on why we need FnResult<'_>
-    pub(super) fn evaluate(&self, root: &Value, current: &Value) -> FnResult<'_> {
+    // resolve_args can return references from both self (literals) and root (query results) all
+    // get the same lifetime. All hold references that live in the root so they must have the same
+    // lifetime
+    pub(super) fn evaluate<'a>(&'a self, root: &'a Value, current: &'a Value) -> FnResult<'a> {
         // always safe to call unwrap; if we get None it means either we parsed the name incorrectly
         // or we didn't register our function correctly
         let f = registry().get(&self.name).unwrap();
-        let args = self.resolve_args(f, root, current);
+        let args = self.to_fn_args(f, root, current);
         f.execute(&args)
     }
 
@@ -93,7 +150,7 @@ impl FnExpr {
             return Err(FnExprError::ArityMismatch {
                 expected: func.args().len(),
                 got: self.args.len(),
-            })
+            });
         }
 
         for (i, arg) in self.args.iter().enumerate() {
@@ -106,8 +163,8 @@ impl FnExpr {
                 (FnExprArg::EmbeddedQuery(_), FnType::NodesType) => true,
                 (FnExprArg::EmbeddedQuery(_), FnType::Logical) => true,
                 (FnExprArg::FnExpr(_), _) => {
-                    let return_type = arg.as_fn_type();
-                    match(return_type, expected_type) {
+                    let return_type = arg.to_fn_type();
+                    match (return_type, expected_type) {
                         (FnType::ValueType, FnType::ValueType) => true,
                         (FnType::NodesType, FnType::NodesType) => true,
                         (FnType::NodesType, FnType::Logical) => true,
@@ -122,14 +179,14 @@ impl FnExpr {
                 (FnExprArg::LogicalExpr(_), FnType::Logical) => true,
                 (FnExprArg::LogicalExpr(_), _) => false,
                 // as of the time of this implementation no method accepts nothing as an argument type
-                _ => false
+                _ => false,
             };
 
             if !valid {
                 return Err(FnExprError::TypeMismatch {
                     expected: expected_type,
-                    found: arg.as_fn_type()
-                })
+                    found: arg.to_fn_type(),
+                });
             }
         }
         Ok(())
@@ -144,7 +201,10 @@ impl FnExpr {
     // a special value when Value is an object) we still have to do that conversion because we now have
     // to go from &Value to Type, &Value is what a singular query returns. This will simplify the comparison
     // expressions as well when we had to compare Type and Value
-    fn resolve_args<'a>(
+    //
+    // maps FnExprArg to FnArg, evaluates queries and logical expressions, so that their return values
+    // to be used as FnArg
+    fn to_fn_args<'a>(
         &'a self,
         // toDo: why f: &impl Function failed
         f: &dyn Function,
@@ -160,13 +220,11 @@ impl FnExpr {
                 FnExprArg::EmbeddedQuery(q) => {
                     args.push(FnArg::Nodelist(q.evaluate(root, current)));
                 }
-                FnExprArg::FnExpr(expr) => {
-                    match expr.evaluate(root, current) {
-                        FnResult::Value(v) => args.push(FnArg::Value(v)),
-                        FnResult::Logical(b) => args.push(FnArg::Logical(b)),
-                        FnResult::Nothing => args.push(FnArg::Nothing),
-                    }
-                }
+                FnExprArg::FnExpr(expr) => match expr.evaluate(root, current) {
+                    FnResult::Value(v) => args.push(FnArg::Value(v)),
+                    FnResult::Logical(b) => args.push(FnArg::Logical(b)),
+                    FnResult::Nothing => args.push(FnArg::Nothing),
+                },
                 FnExprArg::LogicalExpr(expr) => {
                     args.push(FnArg::Logical(expr.evaluate(root, current)));
                 }
@@ -177,7 +235,7 @@ impl FnExpr {
 }
 
 impl FnExprArg {
-    fn as_fn_type(&self) -> FnType {
+    fn to_fn_type(&self) -> FnType {
         match self {
             FnExprArg::Literal(_) => FnType::ValueType,
             FnExprArg::EmbeddedQuery(_) => FnType::NodesType,
@@ -185,7 +243,7 @@ impl FnExprArg {
                 let func = registry().get(&expr.name).unwrap();
                 func.return_type()
             }
-            FnExprArg::LogicalExpr(_) => FnType::Logical
+            FnExprArg::LogicalExpr(_) => FnType::Logical,
         }
     }
 }
@@ -209,7 +267,7 @@ impl Registry {
         self.functions.insert(f.name().to_string(), Box::new(f));
     }
 
-    fn get(&self, name: &str) ->Option<& dyn Function>{
+    fn get(&self, name: &str) -> Option<&dyn Function> {
         self.functions.get(name).map(|f| f.as_ref())
     }
 }
@@ -230,12 +288,16 @@ trait Function: Send + Sync {
     // was getting this warning: hiding a lifetime that's elided elsewhere is confusing
     //
     // it is not an error; it is just that is unclear to the user that reads the code that FnResult
-    // holds a reference; we fix that by returning FnResult<'_>. 
-    // The lifetime can be elided based on the 3rd elision rule: 
+    // holds a reference; we fix that by returning FnResult<'_>.
+    // The lifetime can be elided based on the 3rd elision rule:
     //  "if there are multiple input lifetime parameters, but one of them is &self or
-    //  &mut self because this is a method, the lifetime of self is assigned to all output 
+    //  &mut self because this is a method, the lifetime of self is assigned to all output
     //  lifetime parameters."
-    fn execute(&self, args: &[FnArg]) -> FnResult<'_>;
+    //
+    // This is not what we want, FnResult holds reference to values that exists in the root, we can't
+    // tie the lifetime of the values in FnResult with self, we need to tie together references
+    // inside FnArg and inside FnResult. Both live inside root
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a>;
 }
 
 struct LengthFn {}
@@ -254,8 +316,19 @@ impl Function for LengthFn {
         FnType::ValueType
     }
 
-    fn execute(&self, args: &[FnArg]) -> FnResult {
-        todo!()
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+        if let Some(val) = args[0].as_value() {
+            let len = match val {
+                Value::Object(map) => map.len(),
+                Value::Array(arr) => arr.len(),
+                Value::String(s) => s.chars().count(),
+                _ => return FnResult::Nothing,
+            };
+            FnResult::Value(Cow::Owned(Value::from(len as i64)))
+        } else {
+            // we return nothing when the singular query returned empty list(returns at most 1)
+            FnResult::Nothing
+        }
     }
 }
 
@@ -274,8 +347,8 @@ impl Function for CountFn {
         FnType::ValueType
     }
 
-    fn execute(&self, args: &[FnArg]) -> FnResult {
-        todo!()
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+        FnResult::Value(Cow::Owned(Value::from(args[0].as_nodelist().len() as i64)))
     }
 }
 
@@ -294,7 +367,7 @@ impl Function for MatchFn {
         FnType::Logical
     }
 
-    fn execute(&self, args: &[FnArg]) -> FnResult {
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
         todo!()
     }
 }
@@ -314,7 +387,7 @@ impl Function for SearchFn {
         FnType::Logical
     }
 
-    fn execute(&self, args: &[FnArg]) -> FnResult {
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
         todo!()
     }
 }
@@ -334,11 +407,19 @@ impl Function for ValueFn {
         FnType::ValueType
     }
 
-    fn execute(&self, args: &[FnArg]) -> FnResult {
-        todo!()
+    // If the argument contains a single node, the result is the value of the node.
+    // If the argument is the empty nodelist or contains multiple nodes, the result is Nothing
+    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+        let nodes = args[0].as_nodelist();
+        if nodes.len() == 1 {
+            FnResult::Value(Cow::Borrowed(nodes[0]))
+        } else {
+            FnResult::Nothing
+        }
     }
 }
 
+// toDo: add a regex error variant
 #[derive(Debug, PartialEq)]
 pub enum FnExprError {
     // the number of arguments that the function has
@@ -350,7 +431,11 @@ impl Display for FnExprError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             FnExprError::ArityMismatch { expected, got } => {
-                write!(f, "expected {} parameters, but {} parameters supplied", expected, got)
+                write!(
+                    f,
+                    "expected {} parameters, but {} parameters supplied",
+                    expected, got
+                )
             }
             FnExprError::TypeMismatch { expected, found } => {
                 // check the dif between {:?} and {}
@@ -362,12 +447,4 @@ impl Display for FnExprError {
 
 impl Error for FnExprError {}
 
-#[cfg(test)]
-mod tests {
-
-}
-
-// todo: test the functions here, write a test in path.rs where we get empty and Nothing
-mod regex {
-
-}
+mod regex {}
