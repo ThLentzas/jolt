@@ -521,6 +521,7 @@ pub(super) struct HexError {
     pub(super) pos: usize,
 }
 
+// toDo: add the range as field
 #[derive(Debug, PartialEq)]
 pub(super) struct OutOfRangeError {
     pub(super) pos: usize,

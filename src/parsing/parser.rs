@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // toDo: advantages of peek/advance and recursive descendant parser
+    // toDo: advantages of peek/advance and recursive descendant parser, peek is just look ahead without consuming
     pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
         if self.buffer.len() > INPUT_BUFFER_LIMIT {
             return Err(ParserError {

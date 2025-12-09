@@ -1,8 +1,8 @@
-use crate::parsing::value::path::{Query, Segment, SegmentKind};
+use crate::parsing::value::path::{Segment, SegmentKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
 use std::borrow::Cow;
-use crate::parsing::value::path::tracker::{NoOpTracker, Cursor};
+use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
 
 pub(crate) mod function;
 
@@ -15,6 +15,7 @@ pub(crate) mod function;
 //
 // Rust needs to know the size of LogicalExpression and because it is a recursive the size grows
 // infinite
+// AST
 #[derive(Debug, PartialEq)]
 pub(crate) enum LogicalExpr {
     // toDo: explain how with the order of read methods in logical expression we handle precedence
@@ -48,7 +49,6 @@ pub(super) enum ComparisonOp {
     GreaterThanOrEqual,
 }
 
-// maybe write a closure to do the mapping?
 #[derive(Debug, PartialEq)]
 pub(super) enum Comparable {
     Literal(Value),
@@ -87,12 +87,6 @@ impl LogicalExpr {
             LogicalExpr::Comparison(expr) => expr.evaluate(root, current),
             LogicalExpr::Test(expr) => expr.evaluate(root, current),
             LogicalExpr::And(lhs, rhs) => {
-                // short circuit.
-                // the second operand is only evaluated if the result of the expression cannot be
-                // determined from the first operand alone
-                //
-                // if lhs returns false rust will return immediately false without evaluating rhs
-                //
                 // auto deref by rust to access the expr(deref coercion)
                 // lhs.evaluate() is (*lhs).evaluate(root, current) internally
                 lhs.evaluate(root, current) && rhs.evaluate(root, current)
@@ -131,8 +125,7 @@ impl TestExpr {
         match self {
             TestExpr::EmbeddedQuery(q) => {
                 let nodelist = q.evaluate(root, current);
-                // yields true if the query selects at least one node and yields false if the query
-                // does not select any nodes
+                // yields true if the query selects at least one node
                 nodelist.len() != 0
             }
             TestExpr::FnExpr(expr) => {
@@ -147,10 +140,6 @@ impl TestExpr {
 }
 
 impl EmbeddedQuery {
-
-    fn new(root: &Query) -> EmbeddedQuery {
-
-    }
     // we want the refs to live as long as the root(they 'live in root')
     //
     // as we iterate the values of map/array if the query type is relative the current value will
@@ -161,8 +150,8 @@ impl EmbeddedQuery {
             EmbeddedQueryType::Relative => current,
             EmbeddedQueryType::Absolute => root,
         };
-        let mut reader: Vec<Cursor<'v, ()>> = vec![Cursor { val: start, trace: () }];
-        let mut writer: Vec<Cursor<'v, ()>> = Vec::new();
+        let mut reader: Vec<PathNode<'v, ()>> = vec![PathNode { val: start, trace: () }];
+        let mut writer: Vec<PathNode<'v, ()>> = Vec::new();
 
         for seg in self.segments.iter() {
             writer.clear();
@@ -189,11 +178,9 @@ impl EmbeddedQuery {
 }
 
 impl Comparable {
-    // tried to make it a closure, couldn't get the lifetimes right
     fn to_operand<'a>(&'a self, root: &'a Value, current: &'a Value) -> Operand<'a> {
         match self {
             Comparable::EmbeddedQuery(q) => {
-                // q.evaluate returns Vec<&'root Value>
                 let nodelist = q.evaluate(root, current);
                 match nodelist.len() {
                     0 => Operand::Empty,
@@ -215,23 +202,6 @@ impl Comparable {
 }
 
 impl ComparisonOp {
-    // fn apply<T>(&self, lhs: &T, rhs: &T) -> bool
-    // where
-    //     T: PartialEq + PartialOrd,
-    // {
-    //     match self {
-    //         ComparisonOp::Equal => lhs == rhs,
-    //         ComparisonOp::NotEqual => lhs != rhs,
-    //         ComparisonOp::LessThan => lhs < rhs,
-    //         ComparisonOp::LessThanOrEqual => lhs <= rhs,
-    //         ComparisonOp::GreaterThan => lhs > rhs,
-    //         ComparisonOp::GreaterThanOrEqual => lhs >= rhs,
-    //     }
-    // }
-    //
-    // this is what I had when I would do the conversion from literal to Value, and I would call
-    // it either with Literal as T, no need to convert when both lhs and rhs are Literal; otherwise
-    // convert to literal to Value and now T is Value
     fn apply(&self, lhs: &Value, rhs: &Value) -> bool {
             match self {
                 ComparisonOp::Equal => lhs == rhs,
@@ -262,8 +232,9 @@ impl ComparisonOp {
 // toDo: write about precedence in read_logical
 // toDo: explain the lifetimes in each case
 // toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
-// toDo: write some complex queries including nested selectors and descendant segments(include functions that indirectly will test resolve_args() because it is really hard to set up)
 // toDo:  adjust the paths for the constants in parsing
 // toDo: remove all lifetimes and see what happens/ add a comment
-// toDo: add a test where we have nothing from a function and empty from a list evaluating to true
 // toDo: fix the indentation in the tests for filter_selectors()
+// toDo: write test cases for npaths
+// toDo: maybe rename every lifetime that refers to a value in root as r?
+

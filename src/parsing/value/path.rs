@@ -11,21 +11,20 @@ use crate::parsing::value::path::filter::{
     LogicalExpr,
     TestExpr,
 };
+use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
 use crate::parsing::{self, escapes, number, utf8};
-use crate::parsing::value::path::tracker::{Cursor, Step, Tracker};
 use std::cmp;
 
-pub(crate) mod filter;
+pub(super) mod filter;
 pub(crate) mod tracker;
 
-pub(super) struct Query<'a, 'v> {
+pub(super) struct Parser<'a, 'v> {
+    // toDo: this could also be chars() since we never have to worry about running into an invalid ut8
     buffer: &'a [u8],
     pos: usize,
     root: &'v Value,
 }
 
-// considering caching for each value, like a map where we store path/pointer -> value, but we need a way to consider
-// if the user mutated val, maybe not possible ?
 #[derive(Debug, PartialEq)]
 struct Segment {
     kind: SegmentKind,
@@ -62,7 +61,7 @@ struct Range {
     // current can become negative when traversing from right to left(negative step)
     // current = 1, step = -2 -> current becomes -1
     current: isize,
-    // end can also be negative when we iterate in reverse order the lower bound is exclusive
+    // end can also be negative when we iterate in reverse order, the lower bound is exclusive
     // len = 5, current = 4, end = -1, step = -1 gives us all elements in reverse order (-1, 4]
     end: isize,
     step: i64,
@@ -143,13 +142,14 @@ impl Range {
         }
 
         Self {
-            // if step is negative, the first element we visit is at upper, otherwise is lower
+            // if step is negative, the first element we visit is at upper, otherwise is at lower
             current: if step >= 0 {
                 lower as isize
             } else {
                 upper as isize
             },
-            // end keeps track of where our range ends, if step is negative it is the lower bound else the upper
+            // end keeps track of where our range ends, if step is negative it is the lower bound 
+            // else the upper
             end: if step >= 0 {
                 upper as isize
             } else {
@@ -194,7 +194,7 @@ impl Segment {
     }
 }
 
-impl<'a, 'v> Query<'a, 'v> {
+impl<'a, 'v> Parser<'a, 'v> {
     pub(super) fn new(buffer: &'a [u8], root: &'v Value) -> Self {
         Self {
             buffer,
@@ -219,37 +219,45 @@ impl<'a, 'v> Query<'a, 'v> {
     // we could return without processing the rest of the segments, but we return something from an
     // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
     // case.
-    // v as lifetime for the Tracker because the "keys" will live as long as the root, because they
+    //
+    // v as lifetime for the Tracker because the "keys" will live as long as the root, since they
     // exist in the root
     //
-    // we need to be explicit with the lifetime for Cursor otherwise it would tie to ti Query due to
+    // we need to be explicit with the lifetime for PathNode otherwise it would tie to ti Query due to
     // the 3rd rule
     // had this initially and caused issues in value.select(),
-    // fn parse<T>(&mut self) -> Result<Vec<Cursor<T::Trace>>, PathError>
+    // fn parse<T>(&mut self) -> Result<Vec<PathNode<T::Trace>>, PathError>
     //
-    // rust ties the lifetime of Cursor to the lifetime of the query and query was a local variable
-    // that was getting dropped at the end of scope causing issues
-    // from the Query's definition we know that the query will never outlive the root, but it does not
+    // rust ties the lifetime of PathNode to the lifetime of the query and query was a local variable
+    // that was getting dropped at the end of scope causing issues when calling value.select().
+    // From the Query's definition we know that it will never outlive the root, but it does not
     // mean that the root can not outlive the query, which is what happens in this case, query goes
-    // out of scope, root still valid, return values have the lifetime of root
-    pub(super) fn parse<T: Tracker<'v>>(&mut self) -> Result<Vec<Cursor<'v, T::Trace>>, PathError> {
+    // out of scope, root still valid, returned values have the lifetime of root
+    pub(super) fn parse<T: Tracker<'v>>(&mut self) -> Result<Vec<PathNode<'v, T::Trace>>, PathError> {
         self.check_root()?;
 
-        let root_trace = Cursor { val: self.root, trace: T::root() };
-        // note: reader and writer own the Nodes, we don't pass references to nodes. The nodes are
+        let root_trace = PathNode {
+            val: self.root,
+            trace: T::root(),
+        };
+        // reader and writer own the Nodes, we don't pass references to nodes. The nodes are
         // created locally, they do reference values from the root, but we can't pass references
         // to something that was created locally it would be a dangling reference once it goes out
         // of scope
-        let mut reader: Vec<Cursor<'v, T::Trace>> = vec![root_trace];
-        let mut writer: Vec<Cursor<'v, T::Trace>> = Vec::new();
+        let mut reader: Vec<PathNode<'v, T::Trace>> = vec![root_trace];
+        let mut writer: Vec<PathNode<'v, T::Trace>> = Vec::new();
 
-        // note that this is the only place that we get an error, when we process the expression,
+        // this is the only place that we get an error, when we process the expression,
         // any other case, calling a selector to a value that can't be applied we return an empty list
+        // we follow the same logic as we did with lexer/parser.
+        // parse don't validate; we don't get all the segments first and then try to apply them
         while let Some(segment) = self.parse_seg()? {
             writer.clear();
             match segment.kind {
                 // it is self.root and not &self.root because root is already a reference
-                SegmentKind::Child => apply_child_seg::<T>(self.root, &reader, &mut writer, &segment),
+                SegmentKind::Child => {
+                    apply_child_seg::<T>(self.root, &reader, &mut writer, &segment)
+                }
                 SegmentKind::Descendant => {
                     apply_descendant_seg::<T>(self.root, &reader, &mut writer, &segment)
                 }
@@ -285,7 +293,6 @@ impl<'a, 'v> Query<'a, 'v> {
     }
 
     fn parse_seg(&mut self) -> Result<Option<Segment>, PathError> {
-        // before reading the next segment skip the whitespaces
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);
@@ -305,7 +312,7 @@ impl<'a, 'v> Query<'a, 'v> {
                 // if what follows '..' is not '[', we call parse_shorthand(), if the current character
                 // is '*', it's a wildcard shorthand, otherwise it is treated as the start of name-shorthand
                 // whitespaces are not allowed in between
-                // move past ..
+                // consume ..
                 self.pos += 2;
                 Ok(Some(self.parse_notation(SegmentKind::Descendant)?))
             }
@@ -338,7 +345,7 @@ impl<'a, 'v> Query<'a, 'v> {
     fn parse_bracket(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {
         let len = self.buffer.len();
         let mut segment = Segment::new(kind);
-        self.pos += 1; // move past '[';
+        self.pos += 1; // consume '['
 
         while self.pos < len && self.buffer[self.pos] != b']' {
             segment.selectors.push(self.parse_selector()?);
@@ -350,7 +357,7 @@ impl<'a, 'v> Query<'a, 'v> {
                     self.pos += 1;
                     break;
                 }
-                // after processing selector if we don't encounter ']', we expect comma to separate
+                // after parsing a selector if we don't encounter ']', we expect comma to separate
                 // multiple selectors.
                 true if self.buffer[self.pos] != b',' => {
                     return Err(PathError {
@@ -513,7 +520,7 @@ impl<'a, 'v> Query<'a, 'v> {
         // basically all cases other than . and [ handle the possible syntax of a filter selector
         // if it is not part of a filter selector we will try to parse the next segment, and we will
         // fail because '<' in '$.price < ' does not start a segment. Read the comment above
-        // parse_embedded_seg()
+        // parse_embedded_query()
         // ',' is for fn_expr args
         while self.pos < len
             && !matches!(
@@ -623,7 +630,7 @@ impl<'a, 'v> Query<'a, 'v> {
         let len = self.buffer.len();
         let mut step: Option<i64> = Some(1); // default step value
         let mut end: Option<i64> = None;
-        // skip the first ':'(we encountered that during the parse_numeric() and parse_slice() was called)
+        // consume the first ':'(we encountered that during the parse_numeric() and parse_slice() was called)
         self.pos += 1;
 
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
@@ -708,7 +715,7 @@ impl<'a, 'v> Query<'a, 'v> {
     //
     // toDo: cache the subquery during evaluation? if the rhs or the lhs is a subquery the nodelist will not change in any iteration
     fn parse_filter(&mut self) -> Result<Selector, PathError> {
-        self.pos += 1; // skip '?'
+        self.pos += 1; // consume '?'
         // when this method gets called self.pos is at '?', we need to handle a case like "? S" where
         // '?' is not followed by a logical-expr
         self.skip_ws()?;
@@ -716,11 +723,52 @@ impl<'a, 'v> Query<'a, 'v> {
         Ok(Selector::Filter(self.parse_logical_or()?))
     }
 
+    // Precedence
+    //
+    // from the rfc table 10: we know that conjunction (&&) has higher precedence than
+    // and disjunction (||) (level 2 vs level 1); it binds tighter
+    //
+    // "Highest Precedence" -> "Binds Tightest"
+    // x || y && z should be evaluated as x || (y && z) and not as (x || y) && z
+    // it is the same as math 1 + 2 * 3 is evaluated as 1 + (2 * 3) and not as (1 + 2) * 3
+    //
+    //        [ OR ]
+    //       /      \
+    //     [x]     [ AND ]
+    //             /     \
+    //           [y]     [z]
+    //
+    // Precedence is all about grouping not evaluation it builds the tree, and then we walk
+    // it starting from root. Evaluation happens left-to-right with short-circuiting
+    //
+    // To handle precedence we create a Function Call Hierarchy. Each method invokes the function
+    // for the Next Highest Precedence level. Functions called first (top of the chain) handle
+    // the lowest precedence operators. Functions called last (deepest in the chain) handle the
+    // highest precedence operators
+    //
+    // 1. logical_or() calls logical_and(). It waits for AND to finish grouping things tightly before
+    // it even considers grouping things with OR due to lower precedence.
+    // 2. logical_and() calls basic_expr(). This is the point where we handle NOT and grouping that
+    // have higher precedence than AND. This is also the point where recursive calls can happen due
+    // to nested logical expressions(parenthesized expressions). When we encounter '(' we make the
+    // call to logical_or() to start the chain again.
+    // 3. if no NOT or () expression we call parse_comparable() that parses an atom. Now that we
+    // return back to logical_and() we call tail to handle left associativity as described in the
+    // method itself and then back to logical_or(). We fully processed all methods with higher
+    // precedence before returning to or.
+    //
+    // why  we need the tail methods and don't write the logic directly on the body of logical_or
+    // and logical_and read the comment in fn_args()
     fn parse_logical_or(&mut self) -> Result<LogicalExpr, PathError> {
         let lhs = self.parse_logical_and()?;
         self.parse_logical_or_tail(lhs)
     }
 
+    // why we loop?
+    // we handle cases where we have multiple AND cases with left to right associativity
+    // x || y || z
+    // the logical expression is (x || y) || z
+    // pass x, rhs is y, then (x || y) is the lhs for || z
     fn parse_logical_or_tail(&mut self, mut lhs: LogicalExpr) -> Result<LogicalExpr, PathError> {
         loop {
             self.skip_ws()?;
@@ -744,6 +792,11 @@ impl<'a, 'v> Query<'a, 'v> {
         self.parse_logical_and_tail(lhs)
     }
 
+    // why we loop?
+    // we handle cases where we have multiple AND cases with left to right associativity
+    // x && y && z
+    // the logical expression is (x && y) && z
+    // pass x, rhs is y, then (x && y) is the lhs for && z
     fn parse_logical_and_tail(&mut self, mut lhs: LogicalExpr) -> Result<LogicalExpr, PathError> {
         loop {
             self.skip_ws()?;
@@ -778,7 +831,7 @@ impl<'a, 'v> Query<'a, 'v> {
         // this results to an UnexpectedCharacter error for '>'
         // we look after '!' and we treat '$[0].foo' as a Test expression and not the lhs of a comparison
         if self.buffer[self.pos] == b'!' {
-            self.pos += 1; // skip '!'
+            self.pos += 1; // consume '!'
             self.skip_ws()?;
 
             let current = self.buffer[self.pos];
@@ -810,7 +863,7 @@ impl<'a, 'v> Query<'a, 'v> {
     }
 
     fn parse_parenthesized(&mut self) -> Result<LogicalExpr, PathError> {
-        self.pos += 1; // skip '('
+        self.pos += 1; // consume '('
         self.skip_ws()?;
 
         let expr = self.parse_logical_or()?;
@@ -824,13 +877,10 @@ impl<'a, 'v> Query<'a, 'v> {
                 pos: self.pos,
             });
         }
-        self.pos += 1; // skip ')'
-        // in the case of ! we returned Ok(LogicalExpression::Not(Box::new(expr)));
-        // but now we just return the expression because it was just parenthesized
+        self.pos += 1; // consume ')'
         Ok(expr)
     }
 
-    // toDo: every time we expect something like a comparison_op comment on what happens in the mismatch
     fn parse_comparison_tail(&mut self, lhs: Comparable) -> Result<LogicalExpr, PathError> {
         self.skip_ws()?;
 
@@ -987,7 +1037,7 @@ impl<'a, 'v> Query<'a, 'v> {
                 parsing::read_keyword(self.buffer, &mut self.pos, "value".as_bytes())?;
                 name.push_str("value");
             }
-            _ => unreachable!("parse_fn_expr() called with invalid byte: {}", current),
+            _ => unreachable!("parse_fn_expr() called with invalid byte {} at index {}", current, self.pos),
         }
 
         self.skip_ws()?;
@@ -1007,7 +1057,6 @@ impl<'a, 'v> Query<'a, 'v> {
     fn parse_fn_args(&mut self) -> Result<Vec<FnExprArg>, PathError> {
         let mut args = Vec::new();
 
-        // 1. Consume opening '('
         if self.buffer[self.pos] != b'(' {
             return Err(PathError {
                 kind: PathErrorKind::UnexpectedCharacter {
@@ -1016,50 +1065,65 @@ impl<'a, 'v> Query<'a, 'v> {
                 pos: self.pos,
             });
         }
+        // consume '('
         self.pos += 1;
         self.skip_ws()?;
 
-        // 2. Argument Loop
         while self.pos < self.buffer.len() && self.buffer[self.pos] != b')' {
-            // starts with '!' or '(', it is 100% a LogicalExpr.
+            // starts with '!' or '(', it is a LogicalExpr.
             if self.buffer[self.pos] == b'!' || self.buffer[self.pos] == b'(' {
                 args.push(FnExprArg::LogicalExpr(self.parse_logical_or()?));
             } else {
-                // B. Read the Ambiguous Head (Literal, Query, or Fn)
+                // This is the ambiguous part. It is known as the "First set problem"
+                //
+                // The "first set problem" in parsing, especially for LL(1) grammars, refers to when
+                // a non-terminal can derive multiple production rules that start with the exact
+                // same terminal symbol, creating ambiguity for top-down parsers (like LL parsers)
+                // that need to decide which rule to apply next based on the next input token.
+                //
+                // function-argument = literal / filter-query / logical-expr / function-expr
+                //
+                // reading the argument is not enough to know what type of argument we have.
+                // 5 can be a literal or the lhs of a comparison expression
+                // an embedded query can be a filter query or part of a logical expression. The point
+                // is we don't know yet. We need to look ahead for the next token and determine if
+                // we have some operator
                 let arg = self.parse_comparable()?;
                 self.skip_ws()?;
 
-                // C. Peek for Operators
-                // We check if the NEXT token is an operator.
-                // This determines if we branch into Logic or stay Simple.
                 let is_op = matches!(
                     self.buffer[self.pos],
                     b'=' | b'<' | b'>' | b'!' | b'&' | b'|'
                 );
 
                 if is_op {
-                    // CASE: Logical Expression (e.g., "length(@) > 5" or "true && false")
-
-                    // 1. Comparison Level
-                    // "Promote" the first_arg into a comparison expression
+                    // arg is now the lhs. parse_comparison_tail() will check for a comparison operator
+                    // If the operator we encountered was one, it will try to parse the rhs if not
+                    // we have an existence test and the operator we encountered must have been
+                    // a logical one.
                     let mut expr = self.parse_comparison_tail(arg)?;
-
-                    // 2. AND Level
-                    // Pass the result into the AND tail parser
+                    // we can't just call parse_logical_and/or
+                    // we are not parsing a logical expression from the start like we do when we call
+                    // parse_filter(). We have already parsed the lhs, we are at && or || we need to
+                    // parse the remaining part of the expression. We need those tail methods to look
+                    // after lhs. Calling parse_logical_and/or would look for lhs, encounter && and
+                    // fail
+                    //
+                    // this why we pass lhs as argument, the methods knows the lhs, parses rhs and
+                    // returns the expression
                     expr = self.parse_logical_and_tail(expr)?;
-
-                    // 3. OR Level
-                    // Pass that result into the OR tail parser
                     expr = self.parse_logical_or_tail(expr)?;
-
                     args.push(FnExprArg::LogicalExpr(expr));
                 } else {
-                    // CASE: Simple Argument (e.g., "length(@)", "5")
-                    // No operator followed, so we map it to the specific simple variant.
+                    // we encountered no operator, map it as is
                     match arg {
                         Comparable::Literal(l) => args.push(FnExprArg::Literal(l)),
-                        Comparable::EmbeddedQuery(q) => args.push(FnExprArg::EmbeddedQuery(q)),
-                        Comparable::FnExpr(f) => args.push(FnExprArg::FnExpr(Box::new(f))),
+                        Comparable::EmbeddedQuery(q) => {
+                            args.push(FnExprArg::EmbeddedQuery(q))
+                        }
+                        Comparable::FnExpr(f) => {
+                            args.push(FnExprArg::FnExpr(Box::new(f)))
+                        },
                     }
                 }
             }
@@ -1108,12 +1172,12 @@ impl<'a, 'v> Query<'a, 'v> {
                 Ok(Value::String(string))
             }
             b't' | b'f' => {
-                let target = if current == b't' {
+                let keyword = if current == b't' {
                     "true".as_bytes()
                 } else {
                     "false".as_bytes()
                 };
-                parsing::read_keyword(self.buffer, &mut self.pos, target)?;
+                parsing::read_keyword(self.buffer, &mut self.pos, keyword)?;
                 Ok(Value::Boolean(current == b't'))
             }
             b'n' => {
@@ -1163,21 +1227,18 @@ impl<'a, 'v> Query<'a, 'v> {
 //
 // 1. .users returns the array
 // 2. [*] is called on the array, and it returns all the elements
-// 3. for every element in the nodelist the input list we apply each selector, in this case we have
+// 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
 // 2 name selectors.
 // output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
 // It is important to note that from the output we see that we applied all the selector for the 1st
 // element we got back "Alice", "NYC" and so on
 //
 // applying each segment essentially increases the depth by 1 level
-//
-// note that the selectors are only applied to the input nodelist, the initial_count keeps track
-// of that, no selector is applied to a node added by a previous selector
 fn apply_child_seg<'v, T: Tracker<'v>>(
     root: &'v Value,
-    reader: &Vec<Cursor<'v, T::Trace>>,
-    writer: &mut Vec<Cursor<'v, T::Trace>>,
-    segment: &Segment
+    reader: &Vec<PathNode<'v, T::Trace>>,
+    writer: &mut Vec<PathNode<'v, T::Trace>>,
+    segment: &Segment,
 ) {
     if reader.is_empty() {
         return;
@@ -1196,8 +1257,8 @@ fn apply_child_seg<'v, T: Tracker<'v>>(
 // not when recursion backtracks(postorder) we append them in the list
 fn apply_descendant_seg<'v, T: Tracker<'v>>(
     root: &'v Value,
-    reader: &Vec<Cursor<'v, T::Trace>>,
-    writer: &mut Vec<Cursor<'v, T::Trace>>,
+    reader: &Vec<PathNode<'v, T::Trace>>,
+    writer: &mut Vec<PathNode<'v, T::Trace>>,
     segment: &Segment,
 ) {
     if reader.is_empty() {
@@ -1213,9 +1274,9 @@ fn apply_descendant_seg<'v, T: Tracker<'v>>(
 
 fn dfs<'v, T: Tracker<'v>>(
     root: &'v Value,
-    current: &Cursor<'v, T::Trace>,
-    writer: &mut Vec<Cursor<'v, T::Trace>>,
-    selector: &Selector
+    current: &PathNode<'v, T::Trace>,
+    writer: &mut Vec<PathNode<'v, T::Trace>>,
+    selector: &Selector,
 ) {
     if !current.val.is_object() && !current.val.is_array() {
         return;
@@ -1226,14 +1287,14 @@ fn dfs<'v, T: Tracker<'v>>(
         Value::Object(map) => {
             for (key, val) in map.iter() {
                 let trace = T::descend(&current.trace, Step::Key(key));
-                let node = Cursor { val, trace };
+                let node = PathNode { val, trace };
                 dfs::<T>(root, &node, writer, selector);
             }
         }
         Value::Array(arr) => {
             for (i, val) in arr.iter().enumerate() {
                 let trace = T::descend(&current.trace, Step::Index(i));
-                let node = Cursor { val, trace };
+                let node = PathNode { val, trace };
                 dfs::<T>(root, &node, writer, selector);
             }
         }
@@ -1241,55 +1302,33 @@ fn dfs<'v, T: Tracker<'v>>(
     }
 }
 
-// If we don't specify the lifetime, Rust due to lifetime elision will assign lifetimes to the references,
-// but we will get an error when we try to do nodelist.extend(map.values()); with an error 'lifetime may not live long enough'
-// Without explicitly specifying the lifetime, our function signature does not require the passed in
-// value to live as long as the values referenced by nodelist
-//
-// note that not all references get that lifetime, just the contents of VecDeque and value, because
-// those are the two we want to tie together
-//
-// a simplified version
-
-// let mut vec: Vec<&str> = vec![];
-//
-//     {
-//         let s = String::from("hello");
-//         let s_ref = s.as_str();
-//         vec.push(s_ref);  // s doesn't live long enough
-//     }  // s drops here
-//
-//     // vec would contain dangling reference
-//
-// this was the signature before: fn apply_selector<'a>(nodelist: &mut VecDeque<&'a Value>, selector: &Selector, value: &'a Value)
-// now we already define v
 fn apply_selector<'v, T: Tracker<'v>>(
     root: &'v Value,
-    writer: &mut Vec<Cursor<'v, T::Trace>>,
-    selector: & Selector,
-    current: &Cursor<'v, T::Trace>,
+    writer: &mut Vec<PathNode<'v, T::Trace>>,
+    selector: &Selector,
+    current: &PathNode<'v, T::Trace>,
 ) {
     match (current.val, selector) {
         (Value::Object(map), Selector::Name(name)) => {
             // very important to borrow key from map and not from the selector. If we chose to go
             // with the selector we would have lifetime problems that bubble up to parse() because
             // segment is a short-lived value that gets dropped immediately after the call to
-            // apply the segment
+            // apply it
             if let Some((key, val)) = map.get_key_value(name) {
                 let trace = T::descend(&current.trace, Step::Key(key));
-                writer.push(Cursor { val, trace });
+                writer.push(PathNode { val, trace });
             }
         }
         (Value::Object(map), Selector::WildCard) => {
             for (key, val) in map.iter() {
                 let trace = T::descend(&current.trace, Step::Key(key));
-                writer.push(Cursor { val, trace });
+                writer.push(PathNode { val, trace });
             }
         }
         (Value::Array(arr), Selector::WildCard) => {
             for (i, val) in arr.iter().enumerate() {
                 let trace = T::descend(&current.trace, Step::Index(i));
-                writer.push(Cursor { val, trace });
+                writer.push(PathNode { val, trace });
             }
         }
         (Value::Array(arr), Selector::Index(index)) => {
@@ -1301,7 +1340,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
             if let Ok(i) = usize::try_from(n_idx) {
                 if let Some(val) = arr.get(i) {
                     let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(Cursor { val, trace });
+                    writer.push(PathNode { val, trace });
                 }
             }
         }
@@ -1312,7 +1351,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
                 // toDo: we should break in None?
                 if let Some(val) = arr.get(i) {
                     let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(Cursor { val, trace });
+                    writer.push(PathNode { val, trace });
                 }
             }
         }
@@ -1322,7 +1361,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
             for (key, val) in map.iter() {
                 if expr.evaluate(root, val) {
                     let trace = T::descend(&current.trace, Step::Key(key));
-                    writer.push(Cursor { val, trace });
+                    writer.push(PathNode { val, trace });
                 }
             }
         }
@@ -1331,11 +1370,10 @@ fn apply_selector<'v, T: Tracker<'v>>(
             for (i, elem) in arr.iter().enumerate() {
                 if expr.evaluate(root, elem) {
                     let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(Cursor { val: elem, trace });
+                    writer.push(PathNode { val: elem, trace });
                 }
             }
         }
-        // selectors can only be applied to containers(object, array)
         _ => (),
     }
 }
@@ -1431,15 +1469,16 @@ mod tests {
                     pos: 2,
                 },
             ),
-            // name-char from name-shorthand notation can not contain punctuation symbols
-            // toDo: this is supposed to fail because we encounter ! and it might indicate the start of a comparison expr
-            (
-                "$.f!o",
-                PathError {
-                    kind: PathErrorKind::UnexpectedCharacter { byte: b'!' },
-                    pos: 3,
-                },
-            ),
+            // note this test is not invalid, when we encounter '!' we stop because it can be the
+            // start of a comparison expression(!=). If that does not happen we get unexpected character
+            // when we encounter o after !
+            // (
+            //     "$.f!o",
+            //     PathError {
+            //         kind: PathErrorKind::UnexpectedCharacter { byte: b'!' },
+            //         pos: 3,
+            //     },
+            // ),
             // unterminated single quoted string
             (
                 "$['foo]",
@@ -1521,42 +1560,57 @@ mod tests {
                 "$[?length() > 0]",
                 json!([]),
                 PathError {
-                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 0 }),
-                    pos: 3
-                }
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch {
+                        expected: 1,
+                        got: 0,
+                    }),
+                    pos: 3,
+                },
             ),
             (
                 "$[?count(@.*, @.*) > 0]",
                 json!([]),
                 PathError {
-                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 2 }),
-                    pos: 3
-                }
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch {
+                        expected: 1,
+                        got: 2,
+                    }),
+                    pos: 3,
+                },
             ),
             (
                 "$[?match(@.name)]",
                 json!([]),
                 PathError {
-                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 2, got: 1 }),
-                    pos: 3
-                }
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch {
+                        expected: 2,
+                        got: 1,
+                    }),
+                    pos: 3,
+                },
             ),
             (
                 "$[?search()]",
                 json!([]),
                 PathError {
-                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 2, got: 0 }),
-                    pos: 3
-                }
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch {
+                        expected: 2,
+                        got: 0,
+                    }),
+                    pos: 3,
+                },
             ),
             (
                 "$[?value() == 1]",
                 json!([]),
                 PathError {
-                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch { expected: 1, got: 0 }),
-                    pos: 3
-                }
-            )
+                    kind: PathErrorKind::FnExpr(FnExprError::ArityMismatch {
+                        expected: 1,
+                        got: 0,
+                    }),
+                    pos: 3,
+                },
+            ),
         ]
     }
 
@@ -1568,10 +1622,11 @@ mod tests {
                 json!([]),
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
-                        expected: FnType::ValueType, found: FnType::NodesType
+                        expected: FnType::ValueType,
+                        found: FnType::NodesType,
                     }),
-                    pos: 3
-                }
+                    pos: 3,
+                },
             ),
             // expects NodesType
             (
@@ -1580,10 +1635,11 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         // 5 is FnExprArg::Literal, and we do the conversion to ValueType
-                        expected: FnType::NodesType, found: FnType::ValueType
+                        expected: FnType::NodesType,
+                        found: FnType::ValueType,
                     }),
-                    pos: 3
-                }
+                    pos: 3,
+                },
             ),
             // first arg non-singular,
             (
@@ -1591,10 +1647,11 @@ mod tests {
                 json!([]),
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
-                        expected: FnType::ValueType, found: FnType::NodesType
+                        expected: FnType::ValueType,
+                        found: FnType::NodesType,
                     }),
-                    pos: 3
-                }
+                    pos: 3,
+                },
             ),
             // logical_expr as argument evaluates to FnType::Logical
             (
@@ -1602,10 +1659,11 @@ mod tests {
                 json!([]),
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
-                        expected: FnType::ValueType, found: FnType::Logical
+                        expected: FnType::ValueType,
+                        found: FnType::Logical,
                     }),
-                    pos: 3
-                }
+                    pos: 3,
+                },
             ),
             // value expects NodesType,  match return LogicalType
             (
@@ -1613,11 +1671,12 @@ mod tests {
                 json!([]),
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
-                        expected: FnType::NodesType, found: FnType::Logical
+                        expected: FnType::NodesType,
+                        found: FnType::Logical,
                     }),
-                    pos: 3
-                }
-            )
+                    pos: 3,
+                },
+            ),
         ]
     }
 
@@ -1625,7 +1684,7 @@ mod tests {
     fn test_invalid_notations() {
         for (path_expr, err) in invalid_notations() {
             let root = json!({});
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             query.pos += 1; // this happens by calling check_root() but we simplify it for this case
             let result = query.parse_seg();
 
@@ -1637,7 +1696,7 @@ mod tests {
     fn test_invalid_root() {
         for (path_expr, err) in invalid_root() {
             let root = json!({});
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             let result = query.check_root();
 
             assert_eq!(result, Err(err));
@@ -1648,7 +1707,7 @@ mod tests {
     fn test_invalid_name_selectors() {
         for (path_expr, err) in invalid_name_selectors() {
             let root = json!({});
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             query.pos += 1; // this happens by calling check_root() but we simplify it for this case
             let result = query.parse_seg();
 
@@ -1660,7 +1719,7 @@ mod tests {
     fn invalid_bracketed_selection_syntax() {
         let root = json!({});
         let path_expr = "$['foo''bar']";
-        let mut query = Query::new(path_expr.as_bytes(), &root);
+        let mut query = Parser::new(path_expr.as_bytes(), &root);
         query.pos += 1; // this happens by calling check_root() but we simplify it for this case
         let result = query.parse_seg();
 
@@ -1677,7 +1736,7 @@ mod tests {
     fn test_invalid_index_selectors() {
         for (path_expr, err) in invalid_indices() {
             let root = json!({});
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             query.pos += 1; // this happens by calling check_root() but we simplify it for this case
             let result = query.parse_seg();
 
@@ -1688,7 +1747,7 @@ mod tests {
     #[test]
     fn test_fn_arity_mismatch() {
         for (path_expr, root, err) in fn_arity_mismatch() {
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
@@ -1698,7 +1757,7 @@ mod tests {
     #[test]
     fn test_fn_type_mismatch() {
         for (path_expr, root, err) in fn_type_mismatch() {
-            let mut query = Query::new(path_expr.as_bytes(), &root);
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
             let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")

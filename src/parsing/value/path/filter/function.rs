@@ -140,7 +140,7 @@ impl FnExpr {
         f.execute(&args)
     }
 
-    // we never evaluate anything to determine type mismatch;  for embedded queries we check if
+    // we never evaluate anything to determine type mismatch; for embedded queries we check if
     // singular and for fn expressions we check the return type, so we make 1 linear scan of the args
     // of the function
     pub(crate) fn type_check(&self) -> Result<(), FnExprError> {
@@ -419,7 +419,15 @@ impl Function for ValueFn {
     }
 }
 
-// toDo: add a regex error variant
+// toDo: regex should have their own error, dont create a constructor, have a method matches(), we don't want to scan the input twice, 1 for validation in the constructor
+// and again to check if we have a match
+// the states machines dont have any memory, they don't care how they got in the current state, they don't remember,
+// they only know where they are now
+// ε transition is a free move without reading the input
+// ab is a and b but also a, empty string(ε) and b
+// regular expr and finite state machines are equivalent systems and what we do is we simulate the
+// regex as a state machine. If a state machine  reaches to a possible Accept state we have a match
+// in order to get a match the machine has to be in an accept state at the end of the input
 #[derive(Debug, PartialEq)]
 pub enum FnExprError {
     // the number of arguments that the function has
@@ -447,4 +455,28 @@ impl Display for FnExprError {
 
 impl Error for FnExprError {}
 
-mod regex {}
+// toDo: $[?match(@.timezone, 'Europe/.*') == true]	not well-typed as LogicalType may not be used in comparisons
+// check that this returns false
+mod regex {
+    enum Regexp {
+        Empty,
+        Literal(char),
+        Concat(Vec<Regexp>),
+        Union(Vec<Regexp>),
+        Star(Box<Regexp>),
+        Dot,
+        Class(CharClass),
+        Property{ name: String, negated: bool },
+    }
+
+    struct CharClass {
+        negated: bool,
+        items: Vec<ClassItem>
+    }
+
+    enum ClassItem {
+        Literal(char),
+        Range(char),
+        Property { name: String, negated: bool }
+    }
+}

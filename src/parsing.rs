@@ -22,17 +22,17 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Value, ParserError> {
 }
 
 // used to read true, false, null during parsing and functions name of filter selectors
-fn read_keyword(buffer: &[u8], pos: &mut usize, target: &[u8]) -> Result<(), KeywordError> {
+fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), KeywordError> {
     let remaining = &buffer[*pos..];
 
-    if target.len() > remaining.len() {
+    if keyword.len() > remaining.len() {
         return Err(KeywordError {
             kind: KeywordErrorKind::UnexpectedEndOf,
             pos: buffer.len() - 1
         });
     }
 
-    for byte in target.iter() {
+    for byte in keyword.iter() {
         if buffer[*pos] != *byte {
             return Err(KeywordError {
                 kind: KeywordErrorKind::UnexpectedCharacter { byte: buffer[*pos] },

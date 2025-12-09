@@ -1,6 +1,6 @@
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
-use crate::parsing::value::path::Query;
+use crate::parsing::value::path::Parser;
 use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
@@ -13,7 +13,8 @@ mod pointer;
 // Clone is needed for Cow
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value {
-    // why this recursive type does not need a box? containers handle it for us?
+    // Value is recursive type like LogicalExpression, but we don't need Box because both map and
+    // vec store their data in the heap
     Object(IndexMap<String, Value>),
     Array(Vec<Value>),
     Number(Number),
@@ -21,6 +22,8 @@ pub enum Value {
     Boolean(bool),
     Null,
 } // toDo: pretty print https://crates.io/crates/pprint
+// https://docs.rs/ryu/latest/ryu/
+// https://docs.rs/itoa/latest/itoa/
 
 impl Value {
     pub fn is_object(&self) -> bool {
@@ -200,8 +203,9 @@ impl Value {
 
         let mut current = self;
         loop {
-            // We never check if number of tokens exceed the NestingDepthLimit because even if they did
-            // we would get no match at NestingDepthLimit + 1 and we would return None
+            // We never check if the number of tokens exceeds the NestingDepthLimit, each token 
+            // increases the depth by 1 level,  because even if it did we would get no match at 
+            // NestingDepthLimit + 1 and we would return None
             match ptr.gen_ref_token()? {
                 Some(token) => match current {
                     Value::Object(map) => match map.get_mut(&token.val) {
@@ -221,17 +225,17 @@ impl Value {
         Ok(Some(current))
     }
 
-    // it is not an error; it is just that is unclear to the user that reads the code that Node
-    // holds a reference; we fix that by returning Node<'_>.
+    // we need to specify a lifetime for Node, otherwise it would be unclear to the user that reads 
+    // the code that Node holds a reference; we fix that by returning Node<'_>.
     // The lifetime can be elided based on the 3rd elision rule:
     //  "if there are multiple input lifetime parameters, but one of them is &self or
     //  &mut self because this is a method, the lifetime of self is assigned to all output
     //  lifetime parameters."
     //
-    // in all select() methods below we call into_iter() because we don't care about Cursor at all
+    // in all select() methods below we call into_iter() because we don't care about PathNode at all
     // we just want to consume it and do the mapping
     pub fn select(&self, path_expr: &str) -> Result<Vec<Node<'_>>, PathError> {
-        let mut query = Query::new(path_expr.as_bytes(), self);
+        let mut query = Parser::new(path_expr.as_bytes(), self);
         let nodes = query
             .parse::<PathTracker>()?
             .into_iter()
@@ -242,23 +246,23 @@ impl Value {
     }
 
     pub fn select_as_npaths(&self, path_expr: &str) -> Result<Vec<String>, PathError> {
-        let mut query = Query::new(path_expr.as_bytes(), self);
+        let mut query = Parser::new(path_expr.as_bytes(), self);
         let paths = query
             .parse::<PathTracker>()?
             .into_iter()
             // toDo: add a comment on why this unwrap is safe
-            .map(|c| c.trace.unwrap().to_npath())
+            .map(|pn| pn.trace.unwrap().to_npath())
             .collect();
 
         Ok(paths)
     }
 
     pub fn select_as_values(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
-        let mut query = Query::new(path_expr.as_bytes(), self);
+        let mut query = Parser::new(path_expr.as_bytes(), self);
         let values = query
             .parse::<NoOpTracker>()?
             .into_iter()
-            .map(|c| c.val)
+            .map(|pn| pn.val)
             .collect();
 
         Ok(values)
@@ -1428,24 +1432,6 @@ mod tests {
                 ]),
                 vec![json!([[{"x": 6}], [{"x": 1}], [{"x": 3}]])],
             ),
-            // Precedence
-            //
-            // from the rfc table 10: we know that conjunction (&&) has higher precedence than
-            // and disjunction (||) (level 2 vs level 1); it binds tighter
-            //
-            // "Highest Precedence" -> "Binds Tightest"
-            // x || y && z should be evaluated as x || (y && z) and not as (x || y) && z
-            // it is the same as math 1 + 2 * 3 is evaluated as 1 + (2 * 3) and not as (1 + 2) * 3
-            //
-            //        [ OR ]
-            //       /      \
-            //     [x]     [ AND ]
-            //             /     \
-            //           [y]     [z]
-            //
-            // Precedence is all about grouping not evaluation it builds the tree and then we walk
-            // it starting from root. Evaluation happens left-to-right with short-circuiting
-            //
             // @.x returns true for the 1st element, include it in the output list, no need to evaluate
             // rhs due to short-circuiting for OR
             //

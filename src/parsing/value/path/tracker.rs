@@ -108,7 +108,7 @@ fn format_name(name: &str) -> String {
     // we reverse the logic we applied during parsing
     // we mapped '\' and '\n' to '\n'
     // now we split '\n' to \' and '\n'
-    // what we want to achieve is represent the character with some text presentation
+    // what we want to achieve is represent the character with some text
     // it is not possible for all characters, this is why for the 00 - 1F range we use the Unicode
     // sequence
     for c in name.chars() {
@@ -131,14 +131,14 @@ fn format_name(name: &str) -> String {
 
 // value and the root to value path
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Cursor<'a, T> {
+pub(crate) struct PathNode<'a, T> {
     pub(crate) val: &'a Value,
     pub(crate) trace: T,
 }
 
-// Consumes Cursor returns Node
-impl<'a> From<Cursor<'a, Option<Rc<PathTrace<'a>>>>> for Node<'a> {
-    fn from(cursor: Cursor<'a, Option<Rc<PathTrace<'a>>>>) -> Self {
+// Consumes PathNode returns Node
+impl<'a> From<PathNode<'a, Option<Rc<PathTrace<'a>>>>> for Node<'a> {
+    fn from(cursor: PathNode<'a, Option<Rc<PathTrace<'a>>>>) -> Self {
         let path = cursor.trace.unwrap().to_npath();
         Node {
             value: cursor.val,
