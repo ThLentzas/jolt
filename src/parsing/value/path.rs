@@ -622,6 +622,7 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
             _ => (),
         }
+        // can infer the type, we don't need to do i64::atoi
         Ok(Atoi::atoi(self.buffer, &mut self.pos)?)
     }
 

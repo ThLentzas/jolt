@@ -458,8 +458,8 @@ impl Error for FnExprError {}
 // toDo: $[?match(@.timezone, 'Europe/.*') == true]	not well-typed as LogicalType may not be used in comparisons
 // check that this returns false
 mod regex {
-    use crate::parsing::{number, utf8};
-    use crate::parsing::number::Atoi;
+    use crate::parsing::utf8;
+    use crate::parsing::number::{Atoi, OutOfRangeError};
 
     enum Regexp {
         Empty,
@@ -503,32 +503,52 @@ mod regex {
             }
         }
 
-        fn parse(&mut self) -> Result<Regexp, RegexpError> {
+        fn parse(&mut self) -> Result<usize, RegexpError> {
             if self.buffer.is_empty() {
-                return Ok(Regexp::Empty);
+                return Ok(self.emit(Regexp::Empty));
             }
             Ok(self.parse_union()?)
         }
 
-        fn emit(&mut self, node: Regexp) -> usize {
-            self.nodes.push(node);
-            self.nodes.len() - 1
-        }
-
-        fn peek(&self) -> Option<&u8> {
-            self.buffer.get(self.pos)
-        }
-
-        fn peek_next(&self) -> Option<&u8> {
-            self.buffer.get(self.pos + 1)
-        }
-
         fn parse_union(&mut self) -> Result<usize, RegexpError> {
-            let lhs = self.parse_concat()?;
+            let mut lhs = self.parse_concat()?;
+
+            while self.peek().copied() == Some(b'|') {
+                self.consume(1);
+                let rhs = self.parse_concat()?;
+                lhs = self.emit(Regexp::Union(lhs, rhs));
+            }
+            Ok(lhs)
         }
 
         fn parse_concat(&mut self) -> Result<usize, RegexpError> {
-            let lhs = self.parse_quantifier()?;
+            let mut lhs = self.parse_quantifier()?;
+            // In theory this should be similar to parse_logical_and() where we follow left to right
+            // associativity. It is not as straightforward though, because there is no concat operator
+            // abc: ((ab)c) Regex::Concat(Regex::Concat(a,b), c). We use the loop for the left-right
+            // associativity as explained in parse_logical_and/or()
+            //
+            // Case: |
+            //  abc|d
+            // Case: )
+            //  this case is caused by a nested expression; it is triggered when parse_atom() encounters
+            //  '(' and calls parse_union()
+            //  a(bcd)e: parse_atom() will return for d the node Regex::Concat(Regex::Concat(b,c), d)
+            //  and then quantifier will peek, won't find anything and the control returns to
+            //  parse_concat() which encounters ) and breaks, returns to parse_union() and now the
+            //  recursive call returns back to parse_atom()
+            // Case: None
+            //  we exhausted the buffer, we parsed the entire expression
+            loop {
+                match self.peek() {
+                    Some(b'|') | Some(b')') | None => break,
+                    _ => {
+                        let rhs = self.parse_quantifier()?;
+                        lhs = self.emit(Regexp::Concat(lhs, rhs));
+                    }
+                }
+            }
+            Ok(lhs)
         }
 
         fn parse_quantifier(&mut self) -> Result<usize, RegexpError> {
@@ -554,14 +574,91 @@ mod regex {
                     let empty_idx = self.emit(empty);
                     Ok(self.emit(Regexp::Union(atom_idx, empty_idx)))
                 }
-                Some(b'{') => {}
+                Some(b'{') => {
+                    self.consume(1);
+                    let (min, max) = self.parse_quant_range()?;
+                    match max {
+                        Some(m) => Ok(self.expand_bounded(atom_idx, min, m)?),
+                        None => Ok(self.expand_unbounded(atom_idx, min)?),
+                    }
+                }
                 _ => Ok(atom_idx),
             }
         }
 
+        // this was hard to understand; we need to expand the range the same way we did for the
+        // other quantifiers.
+        // {2,4} it means at least 2, at most 4
+        // we need to accept: aa, aaa, aaaa
+        //
+        // the regex we want to quantify is the node at atom_idx; for the aa case is nothing but
+        // concatenation of the node at atom_idx twice. Regex::Concat(atom_idx, atom_idx). That is
+        // the case if we had {3,4}, aaa is the concatenation of the 1st two with the 3rd
+        // concatenate Regex::Concat(atom_idx, atom_idx) -> get the new index
+        // Regex::Concat(new_idx, atom_idx) or Regex::Concat(Regex::Concat(atom_idx, atom_idx), atom_idx)
+        //
+        // to cover all cases we can write it as aaa?a?
+        // aa is aa and then 2 other terms are empty, aaεε
+        // aaa is aa and then 1 term is a, the other empty, aaaε
+        // aaaa is aa and then both terms are a, aaaa
+        //
+        // what we observe is that we need to create the a | ε expression which is what a? expands to
+        // how many times we are going to work with that new node? max - min times
+        fn expand_bounded(&mut self, atom_idx: usize, min: u8, max: u8) -> Result<usize, RegexpError> {
+            // toDo: set bounds around 100 for min/max to prevent resource exhaustion
+            let mut tmp = Vec::new();
+            for _ in 0..min {
+                tmp.push(atom_idx);
+            }
+
+            let delta = max - min;
+            if delta > 0 {
+                let empty_idx = self.emit(Regexp::Empty);
+                // creates a | ε
+                let optional_idx = self.emit(Regexp::Union(atom_idx, empty_idx));
+
+                for _ in 0..delta {
+                    tmp.push(optional_idx);
+                }
+            }
+            // toDo: Specifically, range quantifiers (as in a{2,4}) provide particular challenges
+            // for both existing and I-Regexp focused implementations. Implementations may therefore
+            // limit range quantifiers in composability (disallowing nested range quantifiers such
+            // as (a{2,4}){2,4}) or range (disallowing very large ranges such as a{20,200000}),
+            // or detect and reject any excessive resource consumption caused by range quantifiers.
+            //
+
+            // at this point we need to link them
+            // create aa then take its index and concat with the optional_idx to create aaa? and
+            // then take that index and create aaa?a?
+            let mut i = tmp[0];
+            for j in 1..tmp.len() {
+                i = self.emit(Regexp::Concat(i,j));
+            }
+            Ok(i)
+        }
+
+        // a{2,} is nothing but a{2} and a*
+        // it means at least 2
+        fn expand_unbounded(&mut self, atom_idx: usize, min: u8) -> Result<usize, RegexpError> {
+            // toDo: set bounds around 100 for min/max to prevent resource exhaustion
+            let star_idx = self.emit(Regexp::Star(atom_idx));
+            // Case: a{0,} is just a*
+            if min == 0 {
+                return Ok(star_idx);
+            }
+
+            let mut i = atom_idx;
+            for _ in 1..min {
+                i = self.emit(Regexp::Concat(i, atom_idx));
+            }
+
+            Ok(self.emit(Regexp::Concat(i, star_idx)))
+        }
+
+        // parses a range quantifier
         // we return min, Optional<max>
-        fn parse_range_syntax(&mut self) -> Result<(u8, Option<u8>), RegexpError> {
-            self.consume(1);
+        fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexpError> {
             match self.peek() {
                 Some(b) if !b.is_ascii_digit() => Err(RegexpError {
                     kind: RegexpErrorKind::UnexpectedCharacter(*b),
@@ -573,14 +670,33 @@ mod regex {
                     match self.peek() {
                         Some(b',') => {
                             self.consume(1);
-                            let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
-                            let max = if max == 0 { None } else { Some(max) };
                             match self.peek() {
-                                Some(b'}') => Ok((min, max)),
-                                Some(b) => Err(RegexpError {
+                                // {2,}
+                                Some(b'}') => {
+                                    self.consume(1);
+                                    Ok((min, None))
+                                },
+                                Some(b) if !b.is_ascii_digit() => Err(RegexpError {
                                     kind: RegexpErrorKind::UnexpectedCharacter(*b),
                                     pos: self.pos,
                                 }),
+                                Some(_) => {
+                                    let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                                    match self.peek() {
+                                        Some(b'}') => {
+                                            self.consume(1);
+                                            Ok((min, Some(max)))
+                                        },
+                                        Some(b) => Err(RegexpError {
+                                            kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                                            pos: self.pos,
+                                        }),
+                                        None => Err(RegexpError {
+                                            kind: RegexpErrorKind::UnexpectedEof,
+                                            pos: self.pos - 1,
+                                        }),
+                                    }
+                                }
                                 None => Err(RegexpError {
                                     kind: RegexpErrorKind::UnexpectedEof,
                                     pos: self.pos - 1,
@@ -588,10 +704,20 @@ mod regex {
                             }
                         }
                         // {2}
-                        Some(b'}') => Ok((min, None)),
+                        // we can rewrite exact range as {2,2} which will allow us to expand it
+                        // as {min, max} range. In both cases our range is bounded while in {2,} is
+                        // not
+                        Some(b'}') => {
+                            self.consume(1);
+                            Ok((min, Some(min)))
+                        },
                         Some(b) => Err(RegexpError {
                             kind: RegexpErrorKind::UnexpectedCharacter(*b),
                             pos: self.pos,
+                        }),
+                        None => Err(RegexpError {
+                            kind: RegexpErrorKind::UnexpectedEof,
+                            pos: self.pos - 1,
                         }),
                     }
                 }
@@ -601,12 +727,6 @@ mod regex {
                 }),
             }
         }
-
-        // to expand a quantifier to an expression we need to consider 3 cases
-        // {2,4} at least 2, at most 4
-        // {2} exactly 2
-        // {2,} at least 2
-        fn parse_range_quantifier(&mut self) {}
 
         // atom = NormalChar / charClass / ( "(" i-regexp ")" )
         // charClass = "." / SingleCharEsc / charClassEsc / charClassExpr
@@ -690,12 +810,19 @@ mod regex {
                 }
             }
 
-            // we have 3 cases to consider when we parse a hyphen
+            if let Some(b'-') = self.peek() {
+                self.consume(1);
+                items.push(ExprItem::Literal('-'));
+            }
+
+            // we have 4 cases to consider when we parse a hyphen unescaped
+            // [^-...]
             // [-a] is treated as a literal
             // [a-] is also tread as a literal
-            // [a-z] now we have a range because we encounter CCchar '-' CCchar
+            // [a-z] now we have a range because we encountered CCchar '-' CCchar
+            // for the first three cases hyphen is treated as literal and for the last one as range
             while self.pos < len && self.buffer[self.pos] != b']' {
-                let start = self.parse_class_expr_item()?;
+                let item = self.parse_class_expr_item()?;
                 if let Some(b) = self.peek() {
                     if *b == b'-' {
                         self.consume(1);
@@ -703,17 +830,21 @@ mod regex {
                             //[a-]
                             Some(b) if *b == b']' => {
                                 // we don't have to consume ']' now; it is consumed when we exit the loop
-                                items.push(start);
+                                items.push(item);
                                 items.push(ExprItem::Literal('-'));
                                 break;
                             }
-                            Some(_) => items.push(self.parse_range(start)?),
-                            // we peeked, and we didn't get anything, we have an Eof case which will
-                            // be handled in the next iteration
-                            None => (),
+                            Some(_) => items.push(self.parse_cs_range(item)?),
+                            // we peeked, and we didn't get anything, we have an Eof case
+                            // we have 2 choices, either we return an err here or do nothing exit
+                            // the loop and catch it after
+                            None =>  return Err(RegexpError {
+                                kind: RegexpErrorKind::UnexpectedEof,
+                                pos: self.pos - 1,
+                            }),
                         }
                     } else {
-                        items.push(start);
+                        items.push(item);
                     }
                 }
             }
@@ -730,7 +861,8 @@ mod regex {
             Ok(ClassExpr { negated, items })
         }
 
-        fn parse_range(&mut self, start: ExprItem) -> Result<ExprItem, RegexpError> {
+        // parses range in the character set case, a-z etc
+        fn parse_cs_range(&mut self, start: ExprItem) -> Result<ExprItem, RegexpError> {
             let end = self.parse_class_expr_item()?;
             match (start, end) {
                 (ExprItem::Literal(s), ExprItem::Literal(e)) => {
@@ -742,6 +874,7 @@ mod regex {
                     }
                     Ok(ExprItem::Range(s, e))
                 }
+                // this the case where we got a-9, two operands that don't match
                 // toDo: maybe we need to set pos to the start of range?
                 _ => Err(RegexpError {
                     kind: RegexpErrorKind::InvalidRange,
@@ -770,6 +903,7 @@ mod regex {
         fn parse_class_expr_item(&mut self) -> Result<ExprItem, RegexpError> {
             match self.buffer[self.pos] {
                 b'\\' => Ok(ExprItem::from(self.parse_escape()?)),
+                // can't appear unescaped
                 b => {
                     if is_escape_char(b) {
                         return Err(RegexpError {
@@ -842,10 +976,6 @@ mod regex {
                 }
             }
             Ok(Property { category, negated })
-        }
-
-        fn consume(&mut self, n: usize) {
-            self.pos += n;
         }
 
         fn map_escape_character(&mut self) -> char {
@@ -1011,6 +1141,23 @@ mod regex {
             self.consume(n);
             Ok(category)
         }
+
+        fn emit(&mut self, node: Regexp) -> usize {
+            self.nodes.push(node);
+            self.nodes.len() - 1
+        }
+
+        fn peek(&self) -> Option<&u8> {
+            self.buffer.get(self.pos)
+        }
+
+        fn peek_next(&self) -> Option<&u8> {
+            self.buffer.get(self.pos + 1)
+        }
+
+        fn consume(&mut self, n: usize) {
+            self.pos += n;
+        }
     }
 
     fn is_escape_char(b: u8) -> bool {
@@ -1085,6 +1232,11 @@ mod regex {
         kind: RegexpErrorKind,
         pos: usize,
     }
+
+    // impl From<OutOfRangeError> for RegexpError {
+    //     fn from(err: OutOfRangeError) -> Self {
+    //     }
+    // }
 
     enum Escape {
         Literal(char),

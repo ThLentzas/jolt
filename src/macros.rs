@@ -69,6 +69,8 @@
 // Both return "null" as a string, but internally:
 // - expr version has PARSED null into an expression node
 // - tt version has the RAW TOKEN null
+//
+// also when we refer to our structs we need to provide the full path to it
 macro_rules! json {
     ([]) => { $crate::parsing::Value::Array(Vec::new()) };
     ({}) => { $crate::parsing::Value::Object(IndexMap::new()) };
@@ -85,7 +87,8 @@ macro_rules! json {
     ($other:expr) => { $crate::parsing::Value::from($other) };
 }
 
-// https://www.youtube.com/watch?v=q6paRBbLgNw
+// https://www.youtube.com/watch?v=q6paRBbLgNw around 47:00
+//
 // we could also implement atoi for every numeric type but this way it is more efficient
 //
 // why we need signed/unsigned?
