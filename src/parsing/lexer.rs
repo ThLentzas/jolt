@@ -47,7 +47,7 @@ impl<'a> Lexer<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub(super) fn advance(&mut self, n: usize) {
+    pub(super) fn consume(&mut self, n: usize) {
         self.pos += n;
     }
 

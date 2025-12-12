@@ -5,7 +5,7 @@ pub(super) mod error;
 pub(super) mod value;
 mod escapes;
 mod lexer;
-mod number;
+pub(super) mod number;
 mod parser;
 mod utf8;
 

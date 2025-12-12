@@ -116,9 +116,12 @@ pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
     buffer.len() >= 3 && (buffer[0], buffer[1], buffer[2]) == (0xEF, 0xBB, 0xBF)
 }
 
-pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> &str {
+pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> char {
     let width = utf8_char_width(buffer[pos]);
     str::from_utf8(&buffer[pos..pos + width]).unwrap()
+        .chars()
+        .next()
+        .unwrap()
 }
 
 fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {

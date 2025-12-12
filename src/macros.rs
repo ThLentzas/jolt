@@ -70,20 +70,90 @@
 // - expr version has PARSED null into an expression node
 // - tt version has the RAW TOKEN null
 macro_rules! json {
-    ([]) => { $crate::Value::Array(Vec::new()) };
-    ({}) => { $crate::Value::Object(IndexMap::new()) };
-    (null) => { $crate::Value::Null };
-    (true) => { $crate::Value::Boolean(true) };
-    (false) => { $crate::Value::Boolean(false) };
-    ([ $($elem:tt),+ $(,)? ]) => { $crate::Value::Array(vec![$(json!($elem)),+]) };
+    ([]) => { $crate::parsing::Value::Array(Vec::new()) };
+    ({}) => { $crate::parsing::Value::Object(IndexMap::new()) };
+    (null) => { $crate::parsing::Value::Null };
+    (true) => { $crate::parsing::Value::Boolean(true) };
+    (false) => { $crate::parsing::Value::Boolean(false) };
+    ([ $($elem:tt),+ $(,)? ]) => { $crate::parsing::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
         let mut map = IndexMap::new();
         $(map.insert($key.to_string(), json!($val));)+
-        $crate::Value::Object(map)
+        $crate::parsing::Value::Object(map)
     }};
      // can only be &str or some numeric type
-    ($other:expr) => { $crate::Value::from($other) };
+    ($other:expr) => { $crate::parsing::Value::from($other) };
 }
 
+// https://www.youtube.com/watch?v=q6paRBbLgNw
+// we could also implement atoi for every numeric type but this way it is more efficient
+//
+// why we need signed/unsigned?
+// at some point in our code we do Ok(sign * num) which is invalid for unsigned numbers
+macro_rules! impl_atoi {
+    ($t: ty, signed) => {
+        impl crate::parsing::number::Atoi for $t {
+            fn atoi(
+                buffer: &[u8],
+                pos: &mut usize,
+            ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
+                let mut num: $t = 0;
+                let sign = if buffer[*pos] == b'-' {
+                    *pos += 1;
+                    -1
+                } else {
+                    1
+                };
+
+                let start = *pos;
+                let mut current = buffer[*pos];
+                while *pos < buffer.len() && current.is_ascii_digit() {
+                    if num > <$t>::MAX / 10
+                        || (num == <$t>::MAX / 10 && current > (<$t>::MAX % 10) as u8)
+                    {
+                        return Err(crate::parsing::number::OutOfRangeError { pos: start });
+                    }
+                    num = num * 10 + (current - 0x30) as $t;
+                    *pos += 1;
+                    if *pos < buffer.len() {
+                        current = buffer[*pos];
+                    }
+                }
+                Ok(sign * num)
+            }
+        }
+    };
+    ($t: ty, unsigned) => {
+        impl crate::parsing::number::Atoi for $t {
+            fn atoi(
+                buffer: &[u8],
+                pos: &mut usize,
+            ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
+                let mut num: $t = 0;
+
+                let start = *pos;
+                let mut current = buffer[*pos];
+                while *pos < buffer.len() && current.is_ascii_digit() {
+                    if num > <$t>::MAX / 10
+                        || (num == <$t>::MAX / 10 && current > (<$t>::MAX % 10) as u8)
+                    {
+                        return Err(crate::parsing::number::OutOfRangeError { pos: start });
+                    }
+                    num = num * 10 + (current - 0x30) as $t;
+                    *pos += 1;
+                    if *pos < buffer.len() {
+                        current = buffer[*pos];
+                    }
+                }
+                Ok(num)
+            }
+        }
+    };
+}
+
+impl_atoi!(i64, signed);
+impl_atoi!(u8, unsigned);
+
 // not part of the public api, only for internal usage, no #[macro_export]
+pub(crate) use impl_atoi;
 pub(crate) use json;

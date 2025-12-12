@@ -1,5 +1,5 @@
-use std::{error, fmt};
 use crate::parsing::number::{self, HexError};
+use std::{error, fmt};
 
 const ESCAPE_CHAR_LEN: u8 = 2;
 const UNICODE_SEQ_LEN: u8 = 6;
@@ -11,12 +11,21 @@ pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), Es
 
     i += 1;
     if i >= len {
-        return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: i - 1 });
+        return Err(EscapeError {
+            kind: EscapeErrorKind::UnexpectedEof,
+            pos: i - 1,
+        });
     }
 
     let next = buffer[i];
-    if !matches!(next, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
-        return Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: next }, pos: i });
+    if !matches!(
+        next,
+        b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
+    ) {
+        return Err(EscapeError {
+            kind: EscapeErrorKind::UnknownEscapedCharacter { byte: next },
+            pos: i,
+        });
     }
     if next == b'u' {
         check_unicode_escape(buffer, i)?;
@@ -43,19 +52,29 @@ pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
 // returns the length of an escape sequence, it is always called on valid escape sequences
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
-    if matches!(buffer[i], b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
+    if matches!(
+        buffer[i],
+        b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
+    ) {
         return ESCAPE_CHAR_LEN as usize;
     }
 
     i += 1;
     let val = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
-    if is_surrogate(val) { SURROGATE_PAIR_LEN as usize } else { UNICODE_SEQ_LEN as usize }
+    if is_surrogate(val) {
+        SURROGATE_PAIR_LEN as usize
+    } else {
+        UNICODE_SEQ_LEN as usize
+    }
 }
 
 fn check_unicode_escape(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     // pos is at 'u', need 4 hex digits
     if pos + 4 >= buffer.len() {
-        return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: buffer.len() - 1 });
+        return Err(EscapeError {
+            kind: EscapeErrorKind::UnexpectedEof,
+            pos: buffer.len() - 1,
+        });
     }
 
     let mut i = pos;
@@ -92,9 +111,13 @@ fn is_surrogate(val: u16) -> bool {
     matches!(val, 0xD800..=0xDFFF)
 }
 
-fn is_high_surrogate(val: u16) -> bool { matches!(val, 0xD800..=0xDBFF) }
+fn is_high_surrogate(val: u16) -> bool {
+    matches!(val, 0xD800..=0xDBFF)
+}
 
-fn is_low_surrogate(val: u16) -> bool { matches!(val, 0xDC00..=0xDFFF) }
+fn is_low_surrogate(val: u16) -> bool {
+    matches!(val, 0xDC00..=0xDFFF)
+}
 
 fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), EscapeError> {
     let len = buffer.len();
@@ -102,26 +125,40 @@ fn check_surrogate(buffer: &[u8], pos: usize, hex_seq: u16) -> Result<(), Escape
 
     if is_high_surrogate(hex_seq) {
         if pos + 6 >= len {
-            return Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: buffer.len() - 1 });
+            return Err(EscapeError {
+                kind: EscapeErrorKind::UnexpectedEof,
+                pos: buffer.len() - 1,
+            });
         }
 
         let mut i = pos;
-        i += 1;  // move to the next value after the last digit of the high surrogate
+        i += 1; // move to the next value after the last digit of the high surrogate
         match (buffer[i], buffer[i + 1]) {
             (b'\\', b'u') => {
                 i += 2;
             }
-            _ => return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start })
+            _ => {
+                return Err(EscapeError {
+                    kind: EscapeErrorKind::InvalidSurrogate,
+                    pos: start,
+                });
+            }
         };
 
         // safe to call, it will never be out of bounds
         let next = number::hex_to_u16(&buffer[i..i + 4])?;
         if !is_low_surrogate(next) {
-            return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start });
+            return Err(EscapeError {
+                kind: EscapeErrorKind::InvalidSurrogate,
+                pos: start,
+            });
         }
     } else {
         // surrogate pairs do not start with low surrogate, it's always high-low
-        return Err(EscapeError { kind: EscapeErrorKind::InvalidSurrogate, pos: start });
+        return Err(EscapeError {
+            kind: EscapeErrorKind::InvalidSurrogate,
+            pos: start,
+        });
     }
     Ok(())
 }
@@ -135,7 +172,7 @@ fn decode_surrogate_pair(high: u32, low: u32) -> u32 {
 #[derive(Debug, PartialEq)]
 pub(super) struct EscapeError {
     pub(super) kind: EscapeErrorKind,
-    pub(super) pos: usize
+    pub(super) pos: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -143,7 +180,7 @@ pub(super) enum EscapeErrorKind {
     UnknownEscapedCharacter { byte: u8 },
     UnexpectedEof,
     InvalidUnicodeSequence { digit: u8 },
-    InvalidSurrogate
+    InvalidSurrogate,
 }
 
 impl error::Error for EscapeError {}
@@ -158,7 +195,11 @@ impl fmt::Display for EscapeError {
                         write!(f, "unknown escape character {} at index {}", b, self.pos)
                     }
                     _ => {
-                        write!(f, "unknown escape character (0x{:02X}) at index {}", byte, self.pos)
+                        write!(
+                            f,
+                            "unknown escape character (0x{:02X}) at index {}",
+                            byte, self.pos
+                        )
                     }
                 }
             }
@@ -166,7 +207,11 @@ impl fmt::Display for EscapeError {
                 write!(f, "unexpected end of input at index {}", self.pos)
             }
             EscapeErrorKind::InvalidUnicodeSequence { digit } => {
-                write!(f, "invalid hex digit '{}' at index {}", digit as char, self.pos)
+                write!(
+                    f,
+                    "invalid hex digit '{}' at index {}",
+                    digit as char, self.pos
+                )
             }
             EscapeErrorKind::InvalidSurrogate => {
                 write!(f, "invalid surrogate pair at index {}", self.pos)
@@ -179,7 +224,7 @@ impl From<HexError> for EscapeError {
     fn from(err: HexError) -> Self {
         EscapeError {
             kind: EscapeErrorKind::InvalidUnicodeSequence { digit: err.digit },
-            pos: err.pos
+            pos: err.pos,
         }
     }
 }

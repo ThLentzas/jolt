@@ -73,7 +73,7 @@ impl<'a> Pointer<'a> {
                 b'~' => token.push(self.check_pointer_escape()?),
                 c if c.is_ascii() => token.push(c as char),
                 _ => {
-                    token.push_str(utf8::read_utf8_char(self.buffer, self.pos));
+                    token.push(utf8::read_utf8_char(self.buffer, self.pos));
                     // without - 1 we would move i to the next character after the sequence then i += 1;
                     // gets executed, and we skip a character
                     self.pos += utf8::utf8_char_width(current) - 1;

@@ -64,7 +64,7 @@ impl<'a> Parser<'a> {
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
         if utf8::is_bom_present(self.buffer) {
-            self.lexer.advance(3);
+            self.lexer.consume(3);
         }
 
         let token = self.peek()?;
@@ -111,7 +111,7 @@ impl<'a> Parser<'a> {
                 return Err(ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(pos) });
             }
         }
-        self.advance(1);
+        self.consume(1);
          Ok(())
      }
 
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
             offset: token.offset(),
             token_type: ParserTokenType::ObjectStart
         });
-        self.advance(1);
+        self.consume(1);
         self.depth += 1;
         let buffer_len = self.buffer.len();
         let mut names = HashSet::new();
@@ -179,7 +179,7 @@ impl<'a> Parser<'a> {
                     }
                     names.insert(name);
                     self.parse_string(&next);
-                    self.advance(1);
+                    self.consume(1);
                 }
                 // mismatch
                 Some(next) => {
@@ -201,7 +201,7 @@ impl<'a> Parser<'a> {
                         offset: next.offset(),
                         token_type: ParserTokenType::NameSeparator
                     });
-                    self.advance(1);
+                    self.consume(1);
                 }
                 // mismatch
                 Some(next) => {
@@ -225,7 +225,7 @@ impl<'a> Parser<'a> {
                         offset: next.offset(),
                         token_type: ParserTokenType::ValueSeparator
                     });
-                    self.advance(1);
+                    self.consume(1);
                 }
                 Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
                     self.tokens.push(ParserToken {
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
             offset: token.offset(),
             token_type: ParserTokenType::ArrayStart
         });
-        self.advance(1);
+        self.consume(1);
         self.depth += 1;
         let buffer_len = self.buffer.len();
 
@@ -305,7 +305,7 @@ impl<'a> Parser<'a> {
                         offset: next.offset(),
                         token_type: ParserTokenType::ValueSeparator
                     });
-                    self.advance(1);
+                    self.consume(1);
                 }
                 Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
                     self.tokens.push(ParserToken {
@@ -365,11 +365,11 @@ impl<'a> Parser<'a> {
        Ok(self.lexer.next()?)
     }
 
-    fn advance(&mut self, offset: usize) {
-        self.lexer.advance(offset)
+    fn consume(&mut self, n: usize) {
+        self.lexer.consume(n)
     }
 
-    // peek and advance are used during the parsing process, next is used when we build the value
+    // peek and consume are used during the parsing process, next is used when we build the value
     // to access the tokens produced by the parser
     fn next(&self) -> Option<&ParserToken>{
         self.tokens.get(self.pos)
@@ -459,7 +459,7 @@ impl<'a> Parser<'a> {
                     i += escapes::len(self.buffer, i) - 1;
                 }
                 b if !b.is_ascii() => {
-                    val.push_str(utf8::read_utf8_char(self.buffer, i));
+                    val.push(utf8::read_utf8_char(self.buffer, i));
                     i += utf8::utf8_char_width(current) - 1;
                 }
                 _ => val.push(current as char)

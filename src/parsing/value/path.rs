@@ -14,6 +14,7 @@ use crate::parsing::value::path::filter::{
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
 use crate::parsing::{self, escapes, number, utf8};
 use std::cmp;
+use crate::parsing::number::Atoi;
 
 pub(super) mod filter;
 pub(crate) mod tracker;
@@ -461,7 +462,7 @@ impl<'a, 'v> Parser<'a, 'v> {
                     });
                 }
                 c if !c.is_ascii() => {
-                    name.push_str(utf8::read_utf8_char(self.buffer, self.pos));
+                    name.push(utf8::read_utf8_char(self.buffer, self.pos));
                     self.pos += utf8::utf8_char_width(current) - 1;
                 }
                 b'\\' => {
@@ -531,7 +532,7 @@ impl<'a, 'v> Parser<'a, 'v> {
         {
             match current {
                 c if !c.is_ascii() => {
-                    name.push_str(utf8::read_utf8_char(self.buffer, self.pos));
+                    name.push(utf8::read_utf8_char(self.buffer, self.pos));
                     self.pos += utf8::utf8_char_width(current) - 1;
                 }
                 // name_first check
@@ -621,7 +622,7 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
             _ => (),
         }
-        Ok(number::atoi(self.buffer, &mut self.pos)?)
+        Ok(Atoi::atoi(self.buffer, &mut self.pos)?)
     }
 
     // when this method gets called self.buffer[self.pos] is at ':'
@@ -1154,6 +1155,9 @@ impl<'a, 'v> Parser<'a, 'v> {
 
         match current {
             b'-' | b'0'..=b'9' => {
+                // toDo: maybe this can be optimized to build the string as we read the number so we can call parse directly
+                // now we scan 3 times the same buffer. once for read and twice for parse
+                // maybe we can make read return the current byte? so look at a byte at a time
                 let start = self.pos;
                 // why not from? This the only case where we have to convert from a NumericError to
                 // a PathError, so I thought to do it via map_err(). The body of the closure would

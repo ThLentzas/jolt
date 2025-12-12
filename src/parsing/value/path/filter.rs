@@ -237,4 +237,5 @@ impl ComparisonOp {
 // toDo: fix the indentation in the tests for filter_selectors()
 // toDo: write test cases for npaths
 // toDo: maybe rename every lifetime that refers to a value in root as r?
-
+// toDo: remove pos from Eof error variants
+// toDo: is it possible to use the arena approach for the logical expressions

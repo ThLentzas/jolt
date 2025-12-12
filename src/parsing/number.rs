@@ -284,6 +284,9 @@ pub(super) enum NumericErrorKind {
     OutOfRange(OutOfRangeError),
 }
 
+// we are parsing from a buffer that represent the number's value as a utf8 string; it is a two-step
+// process: 1) convert the byte buffer to string 2) parse the string
+// always safe to call unwrap because previously we have called read()
 pub(super) fn parse(buffer: &[u8]) -> Number {
     let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
     let s = std::str::from_utf8(buffer).unwrap();
@@ -471,6 +474,11 @@ fn check_scientific_notation(
     Ok(())
 }
 
+// the code below would work, but we needed to parse different numeric types(u8, i64 etc.)
+pub(crate) trait Atoi: Sized {
+    fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
+}
+
 // Leetcode atoi baby let's go!!!!!!!!!!!
 //
 // this is different from reading a json number when calling next(); in that case, we didn't
@@ -481,29 +489,29 @@ fn check_scientific_notation(
 // string and once to parse the number
 //
 // this way we handle overflow cases and having the number value with a single pass
-pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
-    let mut num: i64 = 0;
-    let sign = if buffer[*pos] == b'-' {
-        *pos += 1;
-        -1
-    } else {
-        1
-    };
-
-    let start = *pos;
-    let mut current = buffer[*pos];
-    while *pos < buffer.len() && current.is_ascii_digit() {
-        if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
-            return Err(OutOfRangeError { pos: start });
-        }
-        num = num * 10 + (current - 0x30) as i64;
-        *pos += 1;
-        if *pos < buffer.len() {
-            current = buffer[*pos];
-        }
-    }
-    Ok(sign * num)
-}
+// pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
+//     let mut num: i64 = 0;
+//     let sign = if buffer[*pos] == b'-' {
+//         *pos += 1;
+//         -1
+//     } else {
+//         1
+//     };
+//
+//     let start = *pos;
+//     let mut current = buffer[*pos];
+//     while *pos < buffer.len() && current.is_ascii_digit() {
+//         if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
+//             return Err(OutOfRangeError { pos: start });
+//         }
+//         num = num * 10 + (current - 0x30) as i64;
+//         *pos += 1;
+//         if *pos < buffer.len() {
+//             current = buffer[*pos];
+//         }
+//     }
+//     Ok(sign * num)
+// }
 
 // this is probably poor design
 // why not have an enum NumericError with the variants below?
@@ -523,8 +531,8 @@ pub(super) struct HexError {
 
 // toDo: add the range as field
 #[derive(Debug, PartialEq)]
-pub(super) struct OutOfRangeError {
-    pub(super) pos: usize,
+pub(crate) struct OutOfRangeError {
+    pub(crate) pos: usize,
 }
 
 impl fmt::Display for OutOfRangeError {

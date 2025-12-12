@@ -458,25 +458,662 @@ impl Error for FnExprError {}
 // toDo: $[?match(@.timezone, 'Europe/.*') == true]	not well-typed as LogicalType may not be used in comparisons
 // check that this returns false
 mod regex {
+    use crate::parsing::{number, utf8};
+    use crate::parsing::number::Atoi;
+
     enum Regexp {
         Empty,
+        Concat(usize, usize),
+        Union(usize, usize),
+        Star(usize),
+        Atom(CharClass),
+    }
+
+    enum CharClass {
         Literal(char),
-        Concat(Vec<Regexp>),
-        Union(Vec<Regexp>),
-        Star(Box<Regexp>),
         Dot,
-        Class(CharClass),
-        Property{ name: String, negated: bool },
+        ClassExpr(ClassExpr),
+        Property(Property),
     }
 
-    struct CharClass {
+    struct ClassExpr {
         negated: bool,
-        items: Vec<ClassItem>
+        items: Vec<ExprItem>,
     }
 
-    enum ClassItem {
+    enum ExprItem {
         Literal(char),
-        Range(char),
-        Property { name: String, negated: bool }
+        Property(Property),
+        Range(char, char),
+    }
+
+    // toDo: try this with Peekable<char> and working with chars directly
+    struct Parser<'a> {
+        buffer: &'a [u8],
+        pos: usize,
+        nodes: Vec<Regexp>,
+    }
+
+    impl<'a> Parser<'a> {
+        fn new(buffer: &'a [u8]) -> Self {
+            Self {
+                buffer,
+                pos: 0,
+                nodes: Vec::new(),
+            }
+        }
+
+        fn parse(&mut self) -> Result<Regexp, RegexpError> {
+            if self.buffer.is_empty() {
+                return Ok(Regexp::Empty);
+            }
+            Ok(self.parse_union()?)
+        }
+
+        fn emit(&mut self, node: Regexp) -> usize {
+            self.nodes.push(node);
+            self.nodes.len() - 1
+        }
+
+        fn peek(&self) -> Option<&u8> {
+            self.buffer.get(self.pos)
+        }
+
+        fn peek_next(&self) -> Option<&u8> {
+            self.buffer.get(self.pos + 1)
+        }
+
+        fn parse_union(&mut self) -> Result<usize, RegexpError> {
+            let lhs = self.parse_concat()?;
+        }
+
+        fn parse_concat(&mut self) -> Result<usize, RegexpError> {
+            let lhs = self.parse_quantifier()?;
+        }
+
+        fn parse_quantifier(&mut self) -> Result<usize, RegexpError> {
+            let atom_idx = self.parse_atom()?;
+
+            match self.peek() {
+                Some(b'*') => {
+                    self.consume(1);
+                    let node = Regexp::Star(atom_idx);
+                    Ok(self.emit(node))
+                }
+                Some(b'+') => {
+                    // aa*
+                    self.consume(1);
+                    let star = Regexp::Star(atom_idx);
+                    let start_idx = self.emit(star);
+                    Ok(self.emit(Regexp::Concat(atom_idx, start_idx)))
+                }
+                Some(b'?') => {
+                    // a|ε
+                    self.consume(1);
+                    let empty = Regexp::Empty;
+                    let empty_idx = self.emit(empty);
+                    Ok(self.emit(Regexp::Union(atom_idx, empty_idx)))
+                }
+                Some(b'{') => {}
+                _ => Ok(atom_idx),
+            }
+        }
+
+        // we return min, Optional<max>
+        fn parse_range_syntax(&mut self) -> Result<(u8, Option<u8>), RegexpError> {
+            self.consume(1);
+            match self.peek() {
+                Some(b) if !b.is_ascii_digit() => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                    pos: self.pos,
+                }),
+                Some(_) => {
+                    // we can infer the type here, we don't need to be explicit and call u8::atoi()
+                    let min = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                    match self.peek() {
+                        Some(b',') => {
+                            self.consume(1);
+                            let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                            let max = if max == 0 { None } else { Some(max) };
+                            match self.peek() {
+                                Some(b'}') => Ok((min, max)),
+                                Some(b) => Err(RegexpError {
+                                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                                    pos: self.pos,
+                                }),
+                                None => Err(RegexpError {
+                                    kind: RegexpErrorKind::UnexpectedEof,
+                                    pos: self.pos - 1,
+                                }),
+                            }
+                        }
+                        // {2}
+                        Some(b'}') => Ok((min, None)),
+                        Some(b) => Err(RegexpError {
+                            kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                            pos: self.pos,
+                        }),
+                    }
+                }
+                None => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedEof,
+                    pos: self.pos - 1,
+                }),
+            }
+        }
+
+        // to expand a quantifier to an expression we need to consider 3 cases
+        // {2,4} at least 2, at most 4
+        // {2} exactly 2
+        // {2,} at least 2
+        fn parse_range_quantifier(&mut self) {}
+
+        // atom = NormalChar / charClass / ( "(" i-regexp ")" )
+        // charClass = "." / SingleCharEsc / charClassEsc / charClassExpr
+        //
+        // if we merge them two: NormalChar / "." / SingleCharEsc / charClassEsc / charClassExpr
+        // NormalChar and SingleCharEsc are treated as char literals
+        //
+        // '(' implies a nested regex, start the call chain from the top
+        // '[', '.', '\' all indicate the start of char class
+        // '.' is any char
+        // '[' implies the start of character set(charClassExpr)
+        // '\' describes either a single escaped character or the start of char property
+        //
+        // the last 2 arms are for NormalChar
+        // if we get a character that must be escaped unescaped it is an error
+        // in any other case, it is a char literal
+        fn parse_atom(&mut self) -> Result<usize, RegexpError> {
+            match self.peek() {
+                Some(b'(') => {
+                    self.consume(1);
+                    let expr_idx = self.parse_union()?;
+                    match self.peek() {
+                        Some(b')') => {
+                            self.consume(1);
+                            Ok(expr_idx)
+                        }
+                        Some(b) => Err(RegexpError {
+                            kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                            pos: self.pos,
+                        }),
+                        None => Err(RegexpError {
+                            kind: RegexpErrorKind::UnexpectedEof,
+                            pos: self.pos - 1,
+                        }),
+                    }
+                }
+                Some(b'[') | Some(b'.') | Some(b'\\') => {
+                    let atom = self.parse_class()?;
+                    Ok(self.emit(Regexp::Atom(atom)))
+                }
+                Some(b) if is_escape_char(*b) => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                    pos: self.pos,
+                }),
+                Some(_) => {
+                    let char = self.parse_char();
+                    Ok(self.emit(Regexp::Atom(CharClass::Literal(char))))
+                }
+                None => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedEof,
+                    pos: self.pos - 1,
+                }),
+            }
+        }
+
+        // charClass = "." / SingleCharEsc / charClassEsc / charClassExpr
+        // '.' is any char
+        // '[' implies the start of character set(charClassExpr)
+        // '\' describes either a single escaped character or the start of char property
+        fn parse_class(&mut self) -> Result<CharClass, RegexpError> {
+            match self.buffer[self.pos] {
+                b'.' => Ok(CharClass::Dot),
+                b'[' => Ok(CharClass::ClassExpr(self.parse_class_expr()?)),
+                b'\\' => Ok(CharClass::from(self.parse_escape()?)),
+                _ => unreachable!("parse_class() was called with {}", self.buffer[self.pos]),
+            }
+        }
+
+        // parses a character set
+        fn parse_class_expr(&mut self) -> Result<ClassExpr, RegexpError> {
+            // consume '['
+            self.consume(1);
+            let mut items = Vec::new();
+            let len = self.buffer.len();
+            let mut negated = false;
+
+            if let Some(b) = self.peek() {
+                if *b == b'^' {
+                    negated = true;
+                    self.consume(1);
+                }
+            }
+
+            // we have 3 cases to consider when we parse a hyphen
+            // [-a] is treated as a literal
+            // [a-] is also tread as a literal
+            // [a-z] now we have a range because we encounter CCchar '-' CCchar
+            while self.pos < len && self.buffer[self.pos] != b']' {
+                let start = self.parse_class_expr_item()?;
+                if let Some(b) = self.peek() {
+                    if *b == b'-' {
+                        self.consume(1);
+                        match self.peek() {
+                            //[a-]
+                            Some(b) if *b == b']' => {
+                                // we don't have to consume ']' now; it is consumed when we exit the loop
+                                items.push(start);
+                                items.push(ExprItem::Literal('-'));
+                                break;
+                            }
+                            Some(_) => items.push(self.parse_range(start)?),
+                            // we peeked, and we didn't get anything, we have an Eof case which will
+                            // be handled in the next iteration
+                            None => (),
+                        }
+                    } else {
+                        items.push(start);
+                    }
+                }
+            }
+
+            if self.pos >= len {
+                return Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedEof,
+                    pos: self.pos - 1,
+                });
+            }
+            // consume ']'
+            self.consume(1);
+
+            Ok(ClassExpr { negated, items })
+        }
+
+        fn parse_range(&mut self, start: ExprItem) -> Result<ExprItem, RegexpError> {
+            let end = self.parse_class_expr_item()?;
+            match (start, end) {
+                (ExprItem::Literal(s), ExprItem::Literal(e)) => {
+                    if s > e {
+                        return Err(RegexpError {
+                            kind: RegexpErrorKind::RangeOutOfOrder(s, e),
+                            pos: self.pos,
+                        });
+                    }
+                    Ok(ExprItem::Range(s, e))
+                }
+                // toDo: maybe we need to set pos to the start of range?
+                _ => Err(RegexpError {
+                    kind: RegexpErrorKind::InvalidRange,
+                    pos: self.pos,
+                }),
+            }
+        }
+
+        fn parse_escape(&mut self) -> Result<Escape, RegexpError> {
+            // consume '\'
+            self.consume(1);
+            match self.peek() {
+                Some(b'p') | Some(b'P') => Ok(Escape::Property(self.parse_char_property()?)),
+                Some(b) if !is_escape_char(*b) => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                    pos: self.pos + 1,
+                }),
+                Some(_) => Ok(Escape::Literal(self.map_escape_character())),
+                None => Err(RegexpError {
+                    kind: RegexpErrorKind::UnexpectedEof,
+                    pos: self.pos - 1,
+                }),
+            }
+        }
+
+        fn parse_class_expr_item(&mut self) -> Result<ExprItem, RegexpError> {
+            match self.buffer[self.pos] {
+                b'\\' => Ok(ExprItem::from(self.parse_escape()?)),
+                b => {
+                    if is_escape_char(b) {
+                        return Err(RegexpError {
+                            kind: RegexpErrorKind::UnexpectedCharacter(b),
+                            pos: self.pos,
+                        });
+                    }
+                    Ok(ExprItem::Literal(self.parse_char()))
+                }
+            }
+        }
+
+        fn parse_char(&mut self) -> char {
+            let c;
+            let current = self.buffer[self.pos];
+
+            if !current.is_ascii() {
+                c = utf8::read_utf8_char(self.buffer, self.pos);
+                self.consume(utf8::utf8_char_width(current));
+            } else {
+                c = current as char;
+                self.consume(1);
+            }
+            c
+        }
+
+        fn parse_char_property(&mut self) -> Result<Property, RegexpError> {
+            let negated = self.buffer[self.pos] == b'P';
+            self.consume(1);
+
+            // need 3 or 4 characters after p/P: {..}
+            // this won't work, we don't know if we have a major or a minor category
+            // if self.pos + 4 >= self.buffer.len() {
+            //     return Err(RegexpError {
+            //         kind: RegexpErrorKind::UnexpectedEof,
+            //         pos: self.pos - 1,
+            //     });
+            // }
+            match self.peek() {
+                Some(b) if *b == b'{' => self.consume(1),
+                Some(b) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos,
+                    });
+                }
+                None => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos - 1,
+                    });
+                }
+            }
+
+            let category = self.map_category()?;
+
+            match self.peek() {
+                Some(b) if *b == b'}' => self.consume(1),
+                Some(b) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos,
+                    });
+                }
+                None => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos - 1,
+                    });
+                }
+            }
+            Ok(Property { category, negated })
+        }
+
+        fn consume(&mut self, n: usize) {
+            self.pos += n;
+        }
+
+        fn map_escape_character(&mut self) -> char {
+            let c = match self.buffer[self.pos] {
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                b => b as char,
+            };
+            self.consume(1);
+            c
+        }
+
+        fn map_category(&mut self) -> Result<GeneralCategory, RegexpError> {
+            let current = self.peek();
+            let next = self.peek_next();
+
+            // major, minor order
+            // after parsing a category we need to advance pos by the len its length, 1 for major,
+            // 2 for minor
+            let (category, n) = match (current, next) {
+                (Some(b'L'), Some(b'}')) => (GeneralCategory::Letter, 1),
+                (Some(b'L'), Some(b'l')) => (GeneralCategory::LetterLowercase, 2),
+                (Some(b'L'), Some(b'm')) => (GeneralCategory::LetterModifier, 2),
+                (Some(b'L'), Some(b'o')) => (GeneralCategory::LetterOther, 2),
+                (Some(b'L'), Some(b't')) => (GeneralCategory::LetterTitlecase, 2),
+                (Some(b'L'), Some(b'u')) => (GeneralCategory::LetterUppercase, 2),
+                (Some(b'L'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'L'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'M'), Some(b'}')) => (GeneralCategory::Mark, 1),
+                (Some(b'M'), Some(b'c')) => (GeneralCategory::MarkSpacingCombining, 2),
+                (Some(b'M'), Some(b'e')) => (GeneralCategory::MarkEnclosing, 2),
+                (Some(b'M'), Some(b'n')) => (GeneralCategory::MarkNonSpacing, 2),
+                (Some(b'M'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'M'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'N'), Some(b'}')) => (GeneralCategory::Number, 1),
+                (Some(b'N'), Some(b'd')) => (GeneralCategory::NumberDecimalDigit, 2),
+                (Some(b'N'), Some(b'l')) => (GeneralCategory::NumberLetter, 2),
+                (Some(b'N'), Some(b'o')) => (GeneralCategory::NumberOther, 2),
+                (Some(b'N'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'N'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'P'), Some(b'}')) => (GeneralCategory::Punctuation, 1),
+                (Some(b'P'), Some(b'c')) => (GeneralCategory::PunctuationConnector, 2),
+                (Some(b'P'), Some(b'd')) => (GeneralCategory::PunctuationDash, 2),
+                (Some(b'P'), Some(b'e')) => (GeneralCategory::PunctuationClose, 2),
+                (Some(b'P'), Some(b'f')) => (GeneralCategory::PunctuationFinalQuote, 2),
+                (Some(b'P'), Some(b'i')) => (GeneralCategory::PunctuationInitialQuote, 2),
+                (Some(b'P'), Some(b's')) => (GeneralCategory::PunctuationOpen, 2),
+                (Some(b'P'), Some(b'o')) => (GeneralCategory::PunctuationOther, 2),
+                (Some(b'P'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'P'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'Z'), Some(b'}')) => (GeneralCategory::Separator, 1),
+                (Some(b'Z'), Some(b'l')) => (GeneralCategory::SeparatorLine, 2),
+                (Some(b'Z'), Some(b'p')) => (GeneralCategory::SeparatorParagraph, 2),
+                (Some(b'Z'), Some(b's')) => (GeneralCategory::SeparatorSpace, 2),
+                (Some(b'Z'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'Z'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'S'), Some(b'}')) => (GeneralCategory::Symbol, 1),
+                (Some(b'S'), Some(b'c')) => (GeneralCategory::SymbolCurrency, 2),
+                (Some(b'S'), Some(b'k')) => (GeneralCategory::SymbolModifier, 2),
+                (Some(b'S'), Some(b'm')) => (GeneralCategory::SymbolMath, 2),
+                (Some(b'S'), Some(b'o')) => (GeneralCategory::SymbolOther, 2),
+                (Some(b'S'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'S'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (Some(b'C'), Some(b'}')) => (GeneralCategory::Other, 1),
+                (Some(b'C'), Some(b'c')) => (GeneralCategory::OtherControl, 2),
+                (Some(b'C'), Some(b'f')) => (GeneralCategory::OtherFormat, 2),
+                (Some(b'C'), Some(b'n')) => (GeneralCategory::OtherNotAssigned, 2),
+                (Some(b'C'), Some(b'o')) => (GeneralCategory::OtherPrivateUse, 2),
+                (Some(b'C'), None) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos + 1,
+                    });
+                }
+                (Some(b'C'), Some(b)) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos + 1,
+                    });
+                }
+
+                (None, _) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedEof,
+                        pos: self.pos,
+                    });
+                }
+                (Some(b), _) => {
+                    return Err(RegexpError {
+                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                        pos: self.pos,
+                    });
+                }
+            };
+
+            self.consume(n);
+            Ok(category)
+        }
+    }
+
+    fn is_escape_char(b: u8) -> bool {
+        matches!(
+            b,
+            b'(' | b')'
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'?'
+                | b'['
+                | b'\\'
+                | b']'
+                | b'^'
+                | b'n'
+                | b'r'
+                | b't'
+                | b'{'
+                | b'|'
+                | b'}'
+        )
+    }
+
+    struct Property {
+        category: GeneralCategory,
+        negated: bool,
+    }
+
+    // major, minor
+    enum GeneralCategory {
+        Letter,
+        LetterLowercase,
+        LetterModifier,
+        LetterOther,
+        LetterTitlecase,
+        LetterUppercase,
+        Mark,
+        MarkSpacingCombining,
+        MarkEnclosing,
+        MarkNonSpacing,
+        Number,
+        NumberDecimalDigit,
+        NumberLetter,
+        NumberOther,
+        Punctuation,
+        PunctuationConnector,
+        PunctuationDash,
+        PunctuationClose,
+        PunctuationFinalQuote,
+        PunctuationInitialQuote,
+        PunctuationOpen,
+        PunctuationOther,
+        Separator,
+        SeparatorLine,
+        SeparatorParagraph,
+        SeparatorSpace,
+        Symbol,
+        SymbolCurrency,
+        SymbolModifier,
+        SymbolMath,
+        SymbolOther,
+        Other,
+        // surrogates not allowed
+        OtherControl,
+        OtherFormat,
+        OtherNotAssigned,
+        OtherPrivateUse,
+    }
+
+    struct RegexpError {
+        kind: RegexpErrorKind,
+        pos: usize,
+    }
+
+    enum Escape {
+        Literal(char),
+        Property(Property),
+    }
+
+    impl From<Escape> for ExprItem {
+        fn from(value: Escape) -> Self {
+            match value {
+                Escape::Literal(c) => ExprItem::Literal(c),
+                Escape::Property(p) => ExprItem::Property(p),
+            }
+        }
+    }
+
+    impl From<Escape> for CharClass {
+        fn from(value: Escape) -> Self {
+            match value {
+                Escape::Literal(c) => CharClass::Literal(c),
+                Escape::Property(p) => CharClass::Property(p),
+            }
+        }
+    }
+
+    enum RegexpErrorKind {
+        InvalidRange,
+        // any character not just ascii
+        RangeOutOfOrder(char, char),
+        UnexpectedCharacter(u8),
+        UnexpectedEof,
     }
 }
