@@ -92,7 +92,11 @@ macro_rules! json {
 // we could also implement atoi for every numeric type but this way it is more efficient
 //
 // why we need signed/unsigned?
-// at some point in our code we do Ok(sign * num) which is invalid for unsigned numbers
+// at some point in our code we do Ok(sign * num) which is invalid for unsigned numbers if sing is -1
+// rust has no way to know that this would never be the case when atoi() is called for unsigned
+//
+// look at Atoi trait in number.rs
+// if we didn't go the macro route we would have to implement atoi for every numeric type 
 macro_rules! impl_atoi {
     ($t: ty, signed) => {
         impl crate::parsing::number::Atoi for $t {
@@ -133,9 +137,9 @@ macro_rules! impl_atoi {
                 pos: &mut usize,
             ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
                 let mut num: $t = 0;
-
                 let start = *pos;
                 let mut current = buffer[*pos];
+                
                 while *pos < buffer.len() && current.is_ascii_digit() {
                     if num > <$t>::MAX / 10
                         || (num == <$t>::MAX / 10 && current > (<$t>::MAX % 10) as u8)

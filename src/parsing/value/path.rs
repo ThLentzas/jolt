@@ -622,6 +622,9 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
             _ => (),
         }
+        // todo: we need to find a way to adjust the bounds here because we don't want to accept anything
+        // above the INT_LIMIT defined in number.rs; with the current implementation we accept up
+        // to i64::MAX
         // can infer the type, we don't need to do i64::atoi
         Ok(Atoi::atoi(self.buffer, &mut self.pos)?)
     }
@@ -1702,7 +1705,7 @@ mod tests {
         for (path_expr, err) in invalid_root() {
             let root = json!({});
             let mut query = Parser::new(path_expr.as_bytes(), &root);
-            let result = query.check_root();
+            let result  = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err));
         }
@@ -1713,8 +1716,7 @@ mod tests {
         for (path_expr, err) in invalid_name_selectors() {
             let root = json!({});
             let mut query = Parser::new(path_expr.as_bytes(), &root);
-            query.pos += 1; // this happens by calling check_root() but we simplify it for this case
-            let result = query.parse_seg();
+            let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
         }
@@ -1725,8 +1727,7 @@ mod tests {
         let root = json!({});
         let path_expr = "$['foo''bar']";
         let mut query = Parser::new(path_expr.as_bytes(), &root);
-        query.pos += 1; // this happens by calling check_root() but we simplify it for this case
-        let result = query.parse_seg();
+        let result = query.parse::<NoOpTracker>();
 
         assert_eq!(
             result,
@@ -1742,8 +1743,7 @@ mod tests {
         for (path_expr, err) in invalid_indices() {
             let root = json!({});
             let mut query = Parser::new(path_expr.as_bytes(), &root);
-            query.pos += 1; // this happens by calling check_root() but we simplify it for this case
-            let result = query.parse_seg();
+            let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
         }

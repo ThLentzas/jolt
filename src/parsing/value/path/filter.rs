@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
 
 pub(crate) mod function;
+mod regex;
 
 // https://docs.rs/recursion/latest/recursion/
 //

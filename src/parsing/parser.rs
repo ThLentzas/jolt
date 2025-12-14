@@ -132,12 +132,12 @@ impl<'a> Parser<'a> {
                 pos: None
             });
         }
-        // '{'
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
             token_type: ParserTokenType::ObjectStart
         });
+        // '{'
         self.consume(1);
         self.depth += 1;
         let buffer_len = self.buffer.len();

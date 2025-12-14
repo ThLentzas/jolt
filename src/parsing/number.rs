@@ -12,7 +12,6 @@ use std::{error, fmt};
 const INT_LIMIT: &[u8] = b"9007199254740991";
 
 // https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
-
 // much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
 struct NumberState {
     decimal_point: bool,
@@ -235,8 +234,6 @@ pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {
     Ok(val)
 }
 
-// If we wanted to be more strict about integer ranges we could set the allowed range to [-(2^53) + 1, (2^53) - 1]
-// https://www.rfc-editor.org/rfc/rfc7493#section-2.2
 fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
     if state.decimal_point || state.scientific_notation {
         is_out_of_range_f64(buffer)
@@ -246,6 +243,11 @@ fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
     }
 }
 
+// how we handle negatives?
+//
+// because the range is symmetric, if the number is greater than the limit in absolute value it means
+// that if positive, num > LIMIT and if num is negative it is smaller than -LIMIT.
+// this approach wouldn't work if LIMIT was i64::MAX because MIN/MAX are not symmetric
 fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     match buffer.len().cmp(&INT_LIMIT.len()) {
         // fewer digits, in range
@@ -303,8 +305,11 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
     // as long as it is not out of range. In read() we don't check if the number is out of range
     // when big_decimal is enabled
     #[cfg(feature = "big_decimal")]
-    if is_out_of_range_i64(buffer) {
-        return Number::from(s.parse::<BigInt>().unwrap());
+    {
+        let digits = if buffer[0] == b'-' { &buffer[1..] } else { buffer };
+        if is_out_of_range_i64(digits) {
+            return Number::from(s.parse::<BigInt>().unwrap());
+        }
     }
     Number::from(s.parse::<i64>().unwrap())
 }
@@ -475,6 +480,10 @@ fn check_scientific_notation(
 }
 
 // the code below would work, but we needed to parse different numeric types(u8, i64 etc.)
+// when we want to parse integers for index selectors we need to use i64::MAX for our bound but
+// when we parse range quantifiers for regex we need min/max to be at most 3 digits to prevent
+// resource exhaustion we can't keep scanning for more than that and have a bound like i64::MAX
+// we need u8 or even i8.
 pub(crate) trait Atoi: Sized {
     fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
 }
