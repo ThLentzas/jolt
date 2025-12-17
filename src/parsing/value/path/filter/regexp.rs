@@ -1,20 +1,24 @@
 use crate::parsing::number::{Atoi, OutOfRangeError};
 use crate::parsing::utf8;
+use crate::parsing::value::path::filter::nfa::{Nfa, NfaBuilder};
 
 pub(super) fn full_match() {}
+// left-most first
 pub(super) fn partial_match() {}
 
 #[derive(Debug, PartialEq)]
-enum Regexp {
+pub(super) enum Regexp {
     Empty,
     Concat(usize, usize),
     Union(usize, usize),
     Star(usize),
-    Atom(CharClass),
+    Plus(usize),
+    Question(usize),
+    Atom(usize)
 }
 
 #[derive(Debug, PartialEq)]
-enum CharClass {
+pub(super) enum CharClass {
     Literal(char),
     Dot,
     ClassExpr(ClassExpr),
@@ -22,13 +26,13 @@ enum CharClass {
 }
 
 #[derive(Debug, PartialEq)]
-struct ClassExpr {
+pub(super) struct ClassExpr {
     negated: bool,
     items: Vec<ExprItem>,
 }
 
 #[derive(Debug, PartialEq)]
-enum ExprItem {
+pub(super) enum ExprItem {
     Literal(char),
     Property(Property),
     Range(char, char),
@@ -45,11 +49,69 @@ impl ExprItem {
     }
 }
 
-// toDo: try this with Peekable<char> and working with chars directly
+// toDo: try this with Peekable<char> and working with chars directly?
+//
+// Why we need nodes and classes?
+//
+// If we process aa, we need to create a as char class twice because we have no idea that when
+// we encounter it for the first time that we will encounter it again; it could have been ab, a plus
+// anything. There is a case though that we know exactly how many a's we are going to get, range
+// quantifiers. a{3}, a{3,6}, a{3,} will have at least 3 a's. If 'a' is big, a large vector(Vec<ExprItem>),
+// we don't want to clone it. What i did in this approach was to create it once, let Atom() hold the
+// value, Atom(CharClass), and push the node into this Vec<Regexp>. Creating Regexp::Atom(a) would
+// return 0 and then aa is nothing but Concat(0, 0). It worked great for creating the AST but we
+// had the following problem
+//
+// The problem:
+//
+// In the next step where we have to convert the ast to an epsilon-nfa. What we want is to consume
+// the ast, we no longer need it, and create an nfa. The compile() method in nfa.rs takes ownership
+// of the vector nodes, and then we recursively walk the tree(bottom up) to create the states of the
+// nfa. The key point here is the states and nfa in general shouldn't be aware of the regexp at all,
+// each state must own the value that will transition to the next state, which is also what we are
+// trying to do by passing ownership of nodes. We can't do that directly because walk() is a recursive
+// function and needs &mut to nodes. The 1st approach to solve this was to call mem::replace() and
+// replace those nodes that hold values(Regexp::Atom(a)) with Regexp::Empty, this could have worked
+// if we only visited each node once, but for quantifiers we know that this is not true
+//
+// when walk() is called for Concat(0,0)
+//
+//             Regexp::Concat(lhs, rhs) => {
+//                 let f1 = self.walk(lhs, nodes);
+//                 let f2 = self.walk(rhs, nodes);
+//                 self.patch(&f1.outs, f2.start);
+//                 Fragment {
+//                     start: f1.start,
+//                     outs: f2.outs,
+//                 }
+//             }
+//
+// lhs and rhs is the same index; lhs visits first replaces it with Empty and now when rhs visits
+// the same node the value is different.
+//
+// The solution:
+//
+// Instead of having Regexp::Atom(a) own a when building the ast, we store the char class into a
+// vector and then let Regexp::Atom(0) hold the index of a in that vector. This actually solves both
+// problems. During parsing nothing changes, we expand quantifiers the same that we did, for aa we
+// still get Concat(0,0) that 0 refers to nodes[0] while Atom(0) refers to classes[0]. Now when
+// walking the ast to create the automaton all we have to do is copy the index and pass ownership to
+// the class vector
+//
+//             Regexp::Atom(idx) => {
+//                 let start = self.append(State::Atom(idx, None));
+//                 Fragment {
+//                     start,
+//                     outs: vec![start],
+//                 }
+//             }
+//
+// the index that is copied to State::Atom(idx) is an index to the char class vector
 struct Parser<'a> {
     buffer: &'a [u8],
     pos: usize,
     nodes: Vec<Regexp>,
+    classes: Vec<CharClass>
 }
 
 impl<'a> Parser<'a> {
@@ -57,14 +119,18 @@ impl<'a> Parser<'a> {
         Self {
             buffer,
             pos: 0,
-            // toDo: explain the indices approach
             nodes: Vec::new(),
+            classes: Vec::new(),
         }
+    }
+
+    fn compile(self) -> Nfa {
+        NfaBuilder::new(self.nodes, self.classes).build()
     }
 
     fn parse(&mut self) -> Result<usize, RegexpError> {
         if self.buffer.is_empty() {
-            return Ok(self.emit(Regexp::Empty));
+            return Ok(self.push_node(Regexp::Empty));
         }
         Ok(self.parse_union()?)
     }
@@ -78,7 +144,7 @@ impl<'a> Parser<'a> {
         while self.peek().copied() == Some(b'|') {
             self.consume(1);
             let rhs = self.parse_concat()?;
-            lhs = self.emit(Regexp::Union(lhs, rhs));
+            lhs = self.push_node(Regexp::Union(lhs, rhs));
         }
         Ok(lhs)
     }
@@ -112,7 +178,7 @@ impl<'a> Parser<'a> {
                 Some(b'|') | Some(b')') | None => break,
                 _ => {
                     let rhs = self.parse_quantifier()?;
-                    lhs = self.emit(Regexp::Concat(lhs, rhs));
+                    lhs = self.push_node(Regexp::Concat(lhs, rhs));
                 }
             }
         }
@@ -126,21 +192,35 @@ impl<'a> Parser<'a> {
             Some(b'*') => {
                 self.consume(1);
                 let node = Regexp::Star(atom_idx);
-                Ok(self.emit(node))
+                Ok(self.push_node(node))
             }
+            // initially would map 'a+' to aa* and 'a?' to a|ε but it is not efficient when compiling
+            // tried to keep as close to formal definition but would have performance issues when
+            // compiling to nfa. It is more efficient to create the automata for a+ and a? than
+            // aa* and a | ε. Especially in the first case if a is large we will have issues
+            // due to duplication for a and a*
+            //
+            // Some(b'+') => {
+            //     // aa*
+            //     self.consume(1);
+            //     let star = Regexp::Star(atom_idx);
+            //     let start_idx = self.emit(star);
+            //     Ok(self.emit(Regexp::Concat(atom_idx, start_idx)))
+            // }
+            // Some(b'?') => {
+            //     // a|ε
+            //     self.consume(1);
+            //     let empty = Regexp::Empty;
+            //     let empty_idx = self.emit(empty);
+            //     Ok(self.emit(Regexp::Union(atom_idx, empty_idx)))
+            // }
             Some(b'+') => {
-                // aa*
                 self.consume(1);
-                let star = Regexp::Star(atom_idx);
-                let start_idx = self.emit(star);
-                Ok(self.emit(Regexp::Concat(atom_idx, start_idx)))
+                Ok(self.push_node(Regexp::Plus(atom_idx)))
             }
             Some(b'?') => {
-                // a|ε
                 self.consume(1);
-                let empty = Regexp::Empty;
-                let empty_idx = self.emit(empty);
-                Ok(self.emit(Regexp::Union(atom_idx, empty_idx)))
+                Ok(self.push_node(Regexp::Question(atom_idx)))
             }
             Some(b'{') => {
                 self.consume(1);
@@ -194,31 +274,23 @@ impl<'a> Parser<'a> {
         // Case: a{0,4}, a?a?a?a?
         //  the mandatory part, min, is 0 in this case, which means delta is max.
         if delta > 0 {
-            let empty_idx = self.emit(Regexp::Empty);
-            // creates a | ε
-            let optional_idx = self.emit(Regexp::Union(atom_idx, empty_idx));
+            let optional_idx = self.push_node(Regexp::Question(atom_idx));
 
             for _ in 0..delta {
                 tmp.push(optional_idx);
             }
         }
-        // toDo: Specifically, range quantifiers (as in a{2,4}) provide particular challenges
-        // for both existing and I-Regexp focused implementations. Implementations may therefore
-        // limit range quantifiers in composability (disallowing nested range quantifiers such
-        // as (a{2,4}){2,4}) or range (disallowing very large ranges such as a{20,200000}),
-        // or detect and reject any excessive resource consumption caused by range quantifiers.
-        //
 
         // at this point we need to link them
         // create aa then take its index and concat with the optional_idx to create aaa? and
         // then take that index and create aaa?a?
         let mut i = tmp[0];
         for node in tmp.into_iter().skip(1) {
-            // we concat i with tmp[j] not j, i had this initially which was wrong Concat(i, j)
+            // we concat i with tmp[j] not j, I had this initially which was wrong Concat(i, j)
             // because my loop condition was for j in 1..tmp.len() so i was looking at indices
             // we want the value at the given index; the most sane solution is to iterate over the
             // values instead
-            i = self.emit(Regexp::Concat(i, node));
+            i = self.push_node(Regexp::Concat(i, node));
         }
         Ok(i)
     }
@@ -227,7 +299,7 @@ impl<'a> Parser<'a> {
     // it means at least 2
     fn expand_unbounded(&mut self, atom_idx: usize, min: u8) -> Result<usize, RegexpError> {
         // toDo: set bounds for min/max to prevent resource exhaustion
-        let star_idx = self.emit(Regexp::Star(atom_idx));
+        let star_idx = self.push_node(Regexp::Star(atom_idx));
         // Case: a{0,} is just a*
         if min == 0 {
             return Ok(star_idx);
@@ -235,10 +307,10 @@ impl<'a> Parser<'a> {
 
         let mut i = atom_idx;
         for _ in 1..min {
-            i = self.emit(Regexp::Concat(i, atom_idx));
+            i = self.push_node(Regexp::Concat(i, atom_idx));
         }
 
-        Ok(self.emit(Regexp::Concat(i, star_idx)))
+        Ok(self.push_node(Regexp::Concat(i, star_idx)))
     }
 
     // parses a range quantifier
@@ -348,8 +420,9 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(b'[') | Some(b'.') | Some(b'\\') => {
-                let atom = self.parse_class()?;
-                Ok(self.emit(Regexp::Atom(atom)))
+                let class = self.parse_class()?;
+                let id = self.push_class(class);
+                Ok(self.push_node(Regexp::Atom(id)))
             }
             Some(b) if is_escape_char(*b) => Err(RegexpError {
                 kind: RegexpErrorKind::UnexpectedCharacter(*b),
@@ -357,7 +430,8 @@ impl<'a> Parser<'a> {
             }),
             Some(_) => {
                 let char = self.parse_char();
-                Ok(self.emit(Regexp::Atom(CharClass::Literal(char))))
+                let id = self.push_class(CharClass::Literal(char));
+                Ok(self.push_node(Regexp::Atom(id)))
             }
             None => Err(RegexpError {
                 kind: RegexpErrorKind::UnexpectedEof,
@@ -697,9 +771,14 @@ impl<'a> Parser<'a> {
         Ok(category)
     }
 
-    fn emit(&mut self, node: Regexp) -> usize {
+    fn push_node(&mut self, node: Regexp) -> usize {
         self.nodes.push(node);
         self.nodes.len() - 1
+    }
+
+    fn push_class(&mut self, class: CharClass) -> usize {
+        self.classes.push(class);
+        self.classes.len() - 1
     }
 
     fn peek(&self) -> Option<&u8> {
@@ -761,7 +840,7 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
 }
 
 #[derive(Debug, PartialEq)]
-struct Property {
+pub(super) struct Property {
     category: GeneralCategory,
     negated: bool,
 }
@@ -1060,43 +1139,39 @@ mod test {
         vec![
             (
                 "a*",
-                vec![Regexp::Atom(CharClass::Literal('a')), Regexp::Star(0)],
+                vec![Regexp::Atom(0), Regexp::Star(0)],
             ),
             // expands to aa*
             (
                 "a+",
                 vec![
-                    Regexp::Atom(CharClass::Literal('a')),
-                    Regexp::Star(0),
-                    Regexp::Concat(0, 1),
+                    Regexp::Atom(0),
+                    Regexp::Plus(0),
                 ],
             ),
             // expands to a|ε
             (
                 "a?",
                 vec![
-                    Regexp::Atom(CharClass::Literal('a')),
-                    Regexp::Empty,
-                    Regexp::Union(0, 1),
+                    Regexp::Atom(0),
+                    Regexp::Question(0),
                 ],
             ),
             (
                 "a{3,5}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(CharClass::Literal('a')),
-                    // returns 1
-                    Regexp::Empty,
-                    // creates a? -> returns 2
-                    Regexp::Union(0, 1),
+                    Regexp::Atom(0),
+                    // creates a? -> returns 1
+                    Regexp::Question(0),
                     // creates aa -> returns 3
                     Regexp::Concat(0, 0),
                     // creates aaa -> returns 4
-                    Regexp::Concat(3, 0),
+                    Regexp::Concat(2, 0),
                     // creates aaaa? -> returns 5
-                    Regexp::Concat(4, 2),
+                    Regexp::Concat(3, 1),
                     // creates aaaaa? -> returns 5
-                    Regexp::Concat(5, 2),
+                    Regexp::Concat(4, 1),
                 ],
             ),
             // a?a?a?a?
@@ -1104,24 +1179,22 @@ mod test {
                 "a{0,4}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(CharClass::Literal('a')),
-                    // returns 1
-                    Regexp::Empty,
-                    // creates a? -> returns 2
-                    Regexp::Union(0, 1),
+                    Regexp::Atom(0),
+                    // creates a? -> returns 1
+                    Regexp::Question(0),
                     // creates a?a? -> returns 3
-                    Regexp::Concat(2, 2),
+                    Regexp::Concat(1, 1),
                     // creates a?a?a? -> returns 4
-                    Regexp::Concat(3, 2),
+                    Regexp::Concat(2, 1),
                     // creates a?a?a?a? -> returns 5
-                    Regexp::Concat(4, 2),
+                    Regexp::Concat(3, 1),
                 ],
             ),
             (
                 "a{3}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(CharClass::Literal('a')),
+                    Regexp::Atom(0),
                     // creates aa -> returns 1
                     Regexp::Concat(0, 0),
                     // creates aaa
@@ -1133,7 +1206,7 @@ mod test {
                 "a{3,}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(CharClass::Literal('a')),
+                    Regexp::Atom(0),
                     // creates a* -> returns 1
                     Regexp::Star(0),
                     // creates aa -> returns 2
@@ -1149,7 +1222,7 @@ mod test {
                 "a{0,}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(CharClass::Literal('a')),
+                    Regexp::Atom(0),
                     // creates a* -> returns 1
                     Regexp::Star(0),
                 ],

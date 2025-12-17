@@ -1,19 +1,14 @@
-use std::string::String;
+use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
+use super::lexer::{Lexer, LexerToken, LexerTokenType};
+use super::number::Number;
+use super::value::Value;
+use super::{
+    INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT, escapes, number, utf8,
+};
+use indexmap::IndexMap;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
-use indexmap::IndexMap;
-use super::lexer::{Lexer, LexerToken, LexerTokenType};
-use super::value::Value;
-use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
-use super::{
-    escapes,
-    number,
-    utf8,
-    INPUT_BUFFER_LIMIT,
-    NESTING_DEPTH_LIMIT,
-    STRING_VALUE_LENGTH_LIMIT
-};
-use super::number::Number;
+use std::string::String;
 
 #[derive(Debug, PartialEq)]
 enum ParserTokenType {
@@ -40,7 +35,7 @@ pub(super) struct Parser<'a> {
     lexer: Lexer<'a>,
     tokens: Vec<ParserToken>,
     pos: usize,
-    depth: u16
+    depth: u16,
 }
 
 impl<'a> Parser<'a> {
@@ -58,8 +53,10 @@ impl<'a> Parser<'a> {
     pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
         if self.buffer.len() > INPUT_BUFFER_LIMIT {
             return Err(ParserError {
-                kind: ParserErrorKind::InputBufferLimitExceeded { len: INPUT_BUFFER_LIMIT },
-                pos: None
+                kind: ParserErrorKind::InputBufferLimitExceeded {
+                    len: INPUT_BUFFER_LIMIT,
+                },
+                pos: None,
             });
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
@@ -75,10 +72,10 @@ impl<'a> Parser<'a> {
             // false5, "abc"123, {}  null, note that this could return an error, {}001, -> leading zeros are not allowed
             Some(token) => Err(ParserError {
                 kind: ParserErrorKind::UnexpectedToken { expected: None },
-                pos: Some(token.start_index())
+                pos: Some(token.start_index()),
             }),
             // whoever calls parse() will be the owner of the return value
-            None => Ok(self.value()?)
+            None => Ok(self.value()?),
         }
     }
 
@@ -86,34 +83,39 @@ impl<'a> Parser<'a> {
     // For cases like object and array we perform a dfs because if an object has a value that is
     // object or array we need to full instantiate that first and then return to continue with the
     // rest of values. (similar to recursive descendant in path)
-     fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), ParserError> {
+    fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), ParserError> {
         match token {
-            Some(t) => {
-                match t.token_type() {
-                    LexerTokenType::LCurlyBracket => self.parse_object(t)?,
-                    LexerTokenType::LSquareBracket => self.parse_array(t)?,
-                    LexerTokenType::Number => self.parse_number(t),
-                    LexerTokenType::String => self.parse_string(t),
-                    LexerTokenType::Boolean => self.parse_boolean(t),
-                    LexerTokenType::Null => self.parse_null(t),
-                    _ => return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken { expected: Some("json value") },
-                        pos: Some(t.start_index())
-                    })
+            Some(t) => match t.token_type() {
+                LexerTokenType::LCurlyBracket => self.parse_object(t)?,
+                LexerTokenType::LSquareBracket => self.parse_array(t)?,
+                LexerTokenType::Number => self.parse_number(t),
+                LexerTokenType::String => self.parse_string(t),
+                LexerTokenType::Boolean => self.parse_boolean(t),
+                LexerTokenType::Null => self.parse_null(t),
+                _ => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedToken {
+                            expected: Some("json value"),
+                        },
+                        pos: Some(t.start_index()),
+                    });
                 }
-            }
+            },
             None => {
                 let pos = if self.buffer.is_empty() {
                     self.buffer.len()
                 } else {
                     self.buffer.len() - 1
                 };
-                return Err(ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(pos) });
+                return Err(ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(pos),
+                });
             }
         }
         self.consume(1);
-         Ok(())
-     }
+        Ok(())
+    }
 
     // We peek and advance 4 times, after moving past the opening '{'
     //
@@ -128,14 +130,16 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self, token: &LexerToken) -> Result<(), ParserError> {
         if self.depth + 1 > NESTING_DEPTH_LIMIT {
             return Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT },
-                pos: None
+                kind: ParserErrorKind::NestingDepthLimitExceeded {
+                    depth: NESTING_DEPTH_LIMIT,
+                },
+                pos: None,
             });
         }
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::ObjectStart
+            token_type: ParserTokenType::ObjectStart,
         });
         // '{'
         self.consume(1);
@@ -150,31 +154,34 @@ impl<'a> Parser<'a> {
                 Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
                     if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(ParserError {
-                            kind: ParserErrorKind::UnexpectedToken { expected: Some("object name") },
-                            pos: Some(next.start_index())
+                            kind: ParserErrorKind::UnexpectedToken {
+                                expected: Some("object name"),
+                            },
+                            pos: Some(next.start_index()),
                         });
                     }
                     // {}
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ObjectEnd
+                        token_type: ParserTokenType::ObjectEnd,
                     });
                     self.depth -= 1;
                     break;
                 }
                 Some(next) if expect(next.token_type(), LexerTokenType::String) => {
                     // Drop opening/closing quotes
-                    let name= &self.buffer[next.start_index() + 1..next.start_index() + (next.offset() - 1) as usize];
+                    let name = &self.buffer
+                        [next.start_index() + 1..next.start_index() + (next.offset() - 1) as usize];
                     // We don't allow duplicate names at the same depth level
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
                     if names.contains(name) {
                         return Err(ParserError {
                             kind: ParserErrorKind::DuplicateName {
-                                name: String::from_utf8(Vec::from(name)).unwrap()
-                        },
-                            pos:Some(next.start_index())
+                                name: String::from_utf8(Vec::from(name)).unwrap(),
+                            },
+                            pos: Some(next.start_index()),
                         });
                     }
                     names.insert(name);
@@ -184,14 +191,18 @@ impl<'a> Parser<'a> {
                 // mismatch
                 Some(next) => {
                     return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken { expected: Some("object name") },
-                        pos: Some(next.start_index())
+                        kind: ParserErrorKind::UnexpectedToken {
+                            expected: Some("object name"),
+                        },
+                        pos: Some(next.start_index()),
                     });
                 }
-                None => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(buffer_len - 1)
-                })
+                None => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedEof,
+                        pos: Some(buffer_len - 1),
+                    });
+                }
             }
 
             match self.peek()? {
@@ -199,21 +210,25 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::NameSeparator
+                        token_type: ParserTokenType::NameSeparator,
                     });
                     self.consume(1);
                 }
                 // mismatch
                 Some(next) => {
                     return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken { expected: Some("colon ':'") },
-                        pos: Some(next.start_index())
+                        kind: ParserErrorKind::UnexpectedToken {
+                            expected: Some("colon ':'"),
+                        },
+                        pos: Some(next.start_index()),
                     });
                 }
-                None => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(buffer_len - 1)
-                })
+                None => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedEof,
+                        pos: Some(buffer_len - 1),
+                    });
+                }
             }
             let next = self.peek()?;
             self.parse_value(next.as_ref())?;
@@ -223,7 +238,7 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ValueSeparator
+                        token_type: ParserTokenType::ValueSeparator,
                     });
                     self.consume(1);
                 }
@@ -231,20 +246,26 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ObjectEnd
+                        token_type: ParserTokenType::ObjectEnd,
                     });
                     self.depth -= 1;
                     break;
                 }
                 // mismatch
-                Some(next) => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedToken { expected: Some("'}' or ','") },
-                    pos: Some(next.start_index())
-                }),
-                None => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(buffer_len - 1)
-                }),
+                Some(next) => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedToken {
+                            expected: Some("'}' or ','"),
+                        },
+                        pos: Some(next.start_index()),
+                    });
+                }
+                None => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedEof,
+                        pos: Some(buffer_len - 1),
+                    });
+                }
             }
         }
         Ok(())
@@ -260,15 +281,17 @@ impl<'a> Parser<'a> {
     fn parse_array(&mut self, token: &LexerToken) -> Result<(), ParserError> {
         if self.depth + 1 > NESTING_DEPTH_LIMIT {
             return Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT },
-                pos: None
+                kind: ParserErrorKind::NestingDepthLimitExceeded {
+                    depth: NESTING_DEPTH_LIMIT,
+                },
+                pos: None,
             });
         }
 
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::ArrayStart
+            token_type: ParserTokenType::ArrayStart,
         });
         self.consume(1);
         self.depth += 1;
@@ -280,15 +303,17 @@ impl<'a> Parser<'a> {
                 Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
                     if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
                         return Err(ParserError {
-                            kind: ParserErrorKind::UnexpectedToken { expected: Some("json value") },
-                            pos: Some(next.start_index())
+                            kind: ParserErrorKind::UnexpectedToken {
+                                expected: Some("json value"),
+                            },
+                            pos: Some(next.start_index()),
                         });
                     }
                     // []
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ArrayEnd
+                        token_type: ParserTokenType::ArrayEnd,
                     });
                     self.depth -= 1;
                     break;
@@ -303,7 +328,7 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ValueSeparator
+                        token_type: ParserTokenType::ValueSeparator,
                     });
                     self.consume(1);
                 }
@@ -311,19 +336,25 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ArrayEnd
+                        token_type: ParserTokenType::ArrayEnd,
                     });
                     self.depth -= 1;
                     break;
                 }
-                Some(next) => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedToken { expected: Some("',' or ']'") },
-                    pos: Some(next.start_index())
-                }),
-                None => return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(buffer_len - 1)
-                }),
+                Some(next) => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedToken {
+                            expected: Some("',' or ']'"),
+                        },
+                        pos: Some(next.start_index()),
+                    });
+                }
+                None => {
+                    return Err(ParserError {
+                        kind: ParserErrorKind::UnexpectedEof,
+                        pos: Some(buffer_len - 1),
+                    });
+                }
             }
         }
         Ok(())
@@ -333,7 +364,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Number
+            token_type: ParserTokenType::Number,
         });
     }
 
@@ -341,7 +372,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::String
+            token_type: ParserTokenType::String,
         });
     }
 
@@ -349,7 +380,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Boolean
+            token_type: ParserTokenType::Boolean,
         });
     }
 
@@ -357,12 +388,12 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Null
+            token_type: ParserTokenType::Null,
         });
     }
 
     fn peek(&mut self) -> Result<Option<LexerToken>, ParserError> {
-       Ok(self.lexer.next()?)
+        Ok(self.lexer.next()?)
     }
 
     fn consume(&mut self, n: usize) {
@@ -371,7 +402,7 @@ impl<'a> Parser<'a> {
 
     // peek and consume are used during the parsing process, next is used when we build the value
     // to access the tokens produced by the parser
-    fn next(&self) -> Option<&ParserToken>{
+    fn next(&self) -> Option<&ParserToken> {
         self.tokens.get(self.pos)
     }
 
@@ -385,7 +416,10 @@ impl<'a> Parser<'a> {
             ParserTokenType::Boolean => Value::Boolean(self.boolean_value()),
             ParserTokenType::Null => Value::Null,
             // only the above cases will start a json value
-            _ => unreachable!("Unexpected token type for the start of json value at index {}", self.pos),
+            _ => unreachable!(
+                "Unexpected token type for the start of json value at index {}",
+                self.pos
+            ),
         };
         self.pos += 1;
 
@@ -403,7 +437,8 @@ impl<'a> Parser<'a> {
 
         while let Some(token) = self.next() {
             // Drop opening/closing quotes
-            let name: &[u8] = &self.buffer[token.start_index + 1 ..token.start_index + (token.offset - 1)  as usize];
+            let name: &[u8] = &self.buffer
+                [token.start_index + 1..token.start_index + (token.offset - 1) as usize];
             let key = String::from_utf8(Vec::from(name)).unwrap(); // toDo: can this be &str?
             self.pos += 2; // skip key,colon
             let value = self.value()?;
@@ -451,7 +486,8 @@ impl<'a> Parser<'a> {
         let mut val = String::new();
         let mut i = token.start_index + 1; // Skip opening quotation
 
-        while i < token.start_index + (token.offset - 1) as usize { // Skip closing quotation
+        while i < token.start_index + (token.offset - 1) as usize {
+            // Skip closing quotation
             let current = self.buffer[i];
             match current {
                 b'\\' => {
@@ -462,7 +498,7 @@ impl<'a> Parser<'a> {
                     val.push(utf8::read_utf8_char(self.buffer, i));
                     i += utf8::utf8_char_width(current) - 1;
                 }
-                _ => val.push(current as char)
+                _ => val.push(current as char),
             }
             i += 1;
         }
@@ -470,8 +506,9 @@ impl<'a> Parser<'a> {
         if val.len() > STRING_VALUE_LENGTH_LIMIT {
             return Err(ParserError::from(StringError {
                 kind: StringErrorKind::StringValueLengthLimitExceed {
-                    len: STRING_VALUE_LENGTH_LIMIT },
-                pos: token.start_index
+                    len: STRING_VALUE_LENGTH_LIMIT,
+                },
+                pos: token.start_index,
             }));
         }
         Ok(val)
@@ -489,52 +526,122 @@ fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "big_decimal")]
-    use std::str::FromStr;
+    use super::*;
     #[cfg(feature = "big_decimal")]
     use bigdecimal::BigDecimal;
     #[cfg(feature = "big_decimal")]
     use bigdecimal::num_bigint::BigInt;
-    use super::*;
+    #[cfg(feature = "big_decimal")]
+    use std::str::FromStr;
 
     fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
         vec![
-            (b"{", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(0) }),
-            (b"{ null : 1 }", ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: Some("object name") },
-                pos: Some(2)
-            }),
-            (b"{ \"foo\": 5,", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(10) }),
-            (b"{ \"foo\": 5", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(9) }),
-            (b"{ \"foo\"", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(6) }),
-            (b"{ \"foo\" 3", ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: Some("colon ':'") },
-                pos: Some(8)
-            }),
-            (b"{ \"foo\": \"value\" } 123", ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: None },
-                pos: Some(19)
-            }),
-            (b"{ \"foo\": \"bar\", \"foo\": \"baz\"}", ParserError {
-                kind: ParserErrorKind::DuplicateName { name: String::from("foo") },
-                pos: Some(16)
-            })
+            (
+                b"{",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(0),
+                },
+            ),
+            (
+                b"{ null : 1 }",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedToken {
+                        expected: Some("object name"),
+                    },
+                    pos: Some(2),
+                },
+            ),
+            (
+                b"{ \"foo\": 5,",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(10),
+                },
+            ),
+            (
+                b"{ \"foo\": 5",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(9),
+                },
+            ),
+            (
+                b"{ \"foo\"",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(6),
+                },
+            ),
+            (
+                b"{ \"foo\" 3",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedToken {
+                        expected: Some("colon ':'"),
+                    },
+                    pos: Some(8),
+                },
+            ),
+            (
+                b"{ \"foo\": \"value\" } 123",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedToken { expected: None },
+                    pos: Some(19),
+                },
+            ),
+            (
+                b"{ \"foo\": \"bar\", \"foo\": \"baz\"}",
+                ParserError {
+                    kind: ParserErrorKind::DuplicateName {
+                        name: String::from("foo"),
+                    },
+                    pos: Some(16),
+                },
+            ),
         ]
     }
 
     fn invalid_arrays() -> Vec<(&'static [u8], ParserError)> {
         vec![
-            (b"[", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(0) }),
-            (b"[116, 943", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(8) }),
-            (b"[116, 943,", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(9) }),
-            (b"[116 true]", ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: Some("',' or ']'") },
-                pos: Some(5)
-            }),
-            (b"[:]", ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: Some("json value") },
-                pos: Some(1)
-            }),
+            (
+                b"[",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(0),
+                },
+            ),
+            (
+                b"[116, 943",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(8),
+                },
+            ),
+            (
+                b"[116, 943,",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(9),
+                },
+            ),
+            (
+                b"[116 true]",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedToken {
+                        expected: Some("',' or ']'"),
+                    },
+                    pos: Some(5),
+                },
+            ),
+            (
+                b"[:]",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedToken {
+                        expected: Some("json value"),
+                    },
+                    pos: Some(1),
+                },
+            ),
         ]
     }
 
@@ -567,9 +674,15 @@ mod tests {
         numbers.push(Value::Number(Number::from(116i64)));
         numbers.push(Value::Number(Number::from(-943i64)));
         numbers.push(Value::Number(Number::from(9007199254740991)));
-        numbers.push(Value::Number(Number::from(BigDecimal::from_str("-3.14159265358979e+100").unwrap())));
-        numbers.push(Value::Number(Number::from(BigDecimal::from_str("0.1").unwrap())));
-        numbers.push(Value::Number(Number::from(BigInt::from_str("340282366920938463463374607431768211456").unwrap())));
+        numbers.push(Value::Number(Number::from(
+            BigDecimal::from_str("-3.14159265358979e+100").unwrap(),
+        )));
+        numbers.push(Value::Number(Number::from(
+            BigDecimal::from_str("0.1").unwrap(),
+        )));
+        numbers.push(Value::Number(Number::from(
+            BigInt::from_str("340282366920938463463374607431768211456").unwrap(),
+        )));
 
         let mut parser = Parser::new(buffer);
         let result = parser.parse().unwrap();
@@ -601,9 +714,18 @@ mod tests {
         numbers.push(Value::Number(Number::from(2.718281828e-50)));
 
         let mut map = IndexMap::new();
-        map.insert("4_byte_sequence".to_string(), Value::String(String::from("🙂")));
-        map.insert("surrogate_pair".to_string(), Value::String(String::from("😀")));
-        map.insert("escape_characters".to_string(), Value::String(String::from("\\\"/\x08\x0C\n\r\t")));
+        map.insert(
+            "4_byte_sequence".to_string(),
+            Value::String(String::from("🙂")),
+        );
+        map.insert(
+            "surrogate_pair".to_string(),
+            Value::String(String::from("😀")),
+        );
+        map.insert(
+            "escape_characters".to_string(),
+            Value::String(String::from("\\\"/\x08\x0C\n\r\t")),
+        );
         map.insert("boolean".to_string(), Value::Boolean(false));
         map.insert("numbers".to_string(), Value::Array(numbers));
         map.insert("".to_string(), Value::Boolean(true));
@@ -621,7 +743,10 @@ mod tests {
     fn empty_input() {
         let buffer = [];
         let mut parser = Parser::new(&buffer);
-        let error = ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(0) };
+        let error = ParserError {
+            kind: ParserErrorKind::UnexpectedEof,
+            pos: Some(0),
+        };
         let result = parser.parse();
 
         assert_eq!(result, Err(error));
@@ -633,11 +758,13 @@ mod tests {
         let buffer: [u8; 4] = [9, 10, 13, 32];
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
-        let error = ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(3) };
+        let error = ParserError {
+            kind: ParserErrorKind::UnexpectedEof,
+            pos: Some(3),
+        };
 
         assert_eq!(result, Err(error));
     }
-
 
     #[test]
     fn empty_object() {
@@ -678,10 +805,15 @@ mod tests {
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
 
-        assert_eq!(result, Err(ParserError {
-            kind: ParserErrorKind::InputBufferLimitExceeded { len: INPUT_BUFFER_LIMIT },
-            pos: None
-        }));
+        assert_eq!(
+            result,
+            Err(ParserError {
+                kind: ParserErrorKind::InputBufferLimitExceeded {
+                    len: INPUT_BUFFER_LIMIT
+                },
+                pos: None
+            })
+        );
     }
 
     #[test]
@@ -695,7 +827,15 @@ mod tests {
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
 
-        assert_eq!(result, Err(ParserError::from(StringError { kind: StringErrorKind::StringValueLengthLimitExceed { len: STRING_VALUE_LENGTH_LIMIT }, pos: 0 })));
+        assert_eq!(
+            result,
+            Err(ParserError::from(StringError {
+                kind: StringErrorKind::StringValueLengthLimitExceed {
+                    len: STRING_VALUE_LENGTH_LIMIT
+                },
+                pos: 0
+            }))
+        );
     }
 
     // We can't call: let buffer = format!("{}{}", "[".repeat(257), "]".repeat(257)).as_bytes();
@@ -711,10 +851,15 @@ mod tests {
         let mut parser = Parser::new(buffer);
         let result = parser.parse();
 
-        assert_eq!(result, Err(ParserError {
-            kind: ParserErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT },
-            pos: None
-        }));
+        assert_eq!(
+            result,
+            Err(ParserError {
+                kind: ParserErrorKind::NestingDepthLimitExceeded {
+                    depth: NESTING_DEPTH_LIMIT
+                },
+                pos: None
+            })
+        );
     }
 
     #[test]
@@ -731,9 +876,14 @@ mod tests {
         let mut parser = Parser::new(buffer);
         let result = parser.parse();
 
-        assert_eq!(result, Err(ParserError {
-            kind: ParserErrorKind::NestingDepthLimitExceeded { depth: NESTING_DEPTH_LIMIT },
-            pos: None
-        }));
+        assert_eq!(
+            result,
+            Err(ParserError {
+                kind: ParserErrorKind::NestingDepthLimitExceeded {
+                    depth: NESTING_DEPTH_LIMIT
+                },
+                pos: None
+            })
+        );
     }
 }

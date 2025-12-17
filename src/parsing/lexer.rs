@@ -168,7 +168,7 @@ impl<'a> Lexer<'a> {
 
         // 1 edge case to consider, single digit numbers, read the comment in number::read()
         if self.pos != start {
-            self.pos -= 1;
+            self.backup();
         }
 
         Ok(())
@@ -205,6 +205,8 @@ impl<'a> Lexer<'a> {
         if self.pos == len {
             return Err(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: self.pos - 1 })
         }
+        // at this point we are at the closing '"', parser will call advance() via parse_value() 
+        // skip it and move on to the next character
         Ok(())
     }
 
@@ -220,16 +222,20 @@ impl<'a> Lexer<'a> {
             "false".as_bytes()
         };
         parsing::read_keyword(self.buffer, &mut self.pos, target)?;
-        self.pos -= 1;
+        self.backup();
 
         Ok(())
     }
 
     fn read_null(&mut self) -> Result<(), ParserError> {
         parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
-        self.pos -= 1;
+        self.backup();
 
         Ok(())
+    }
+    
+    fn backup(&mut self) {
+        self.pos -= 1;
     }
 }
 
