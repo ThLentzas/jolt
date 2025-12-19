@@ -1,6 +1,8 @@
 use crate::parsing::value::path::filter::regexp::{CharClass, Regexp};
 
 enum State {
+    // from the paper we can see that single characters have 1 danging arrow in their fragment
+    // and Split has 2
     Atom(usize, Option<usize>),
     // dangling arrows don't point anywhere(represented as None)
     // if we don't use Option we would need some other value as a placeholder
@@ -8,13 +10,10 @@ enum State {
     Accept,
 }
 
-//  Representation of State: starting state, dangling arrows to point to the next state
-//
-//  Every Fragment answers two questions for the compiler:
-//
-//     start: "If I want to run this code, where do I jump to?"
-//
-//     outs: "When this code finishes, which instruction(state) needs to be updated to point to the next step?"
+// the fragments that we build are partial NFAs for each subexpression, with a different
+// construction for each operator. The partial NFAs have no matching states: instead they have
+// one or more dangling arrows, pointing to nothing. The construction process will finish by
+// connecting these arrows to a matching state.
 pub(super) struct Fragment {
     start: usize,
     // dangling arrows, the values of outs are pointers to states that are not yet connected to anything
@@ -25,7 +24,7 @@ pub(super) struct Fragment {
 pub(super) struct NfaBuilder {
     states: Vec<State>,
     nodes: Vec<Regexp>,
-    classes: Vec<CharClass>
+    classes: Vec<CharClass>,
 }
 
 impl NfaBuilder {
@@ -50,11 +49,11 @@ impl NfaBuilder {
             // the final fragment the fragment that is essentially our automaton holds the start
             // state and the ACCEPT state; for the ACCEPT state we know exactly where it is, it is
             // the last state added so we don't need to keep track of it
-            start: frag.start
+            start: frag.start,
         }
     }
 
-    pub fn new(nodes: Vec<Regexp>, classes: Vec<CharClass>) -> Self {
+    pub(super) fn new(nodes: Vec<Regexp>, classes: Vec<CharClass>) -> Self {
         Self {
             states: Vec::new(),
             nodes,
@@ -85,13 +84,7 @@ impl NfaBuilder {
         }
     }
 
-    // toDo: why we have at most 2 dangling arrows?
     // we walk the ast recursively(post order/ bottom up)
-    //
-    // the fragments that we build are partial NFAs for each subexpression, with a different
-    // construction for each operator. The partial NFAs have no matching states: instead they have
-    // one or more dangling arrows, pointing to nothing. The construction process will finish by
-    // connecting these arrows to a matching state.
     //
     // what we define as start and outs are shown in the paper at the Converting Regular Expressions to NFAs
     // chapter
@@ -108,8 +101,8 @@ impl NfaBuilder {
                 }
             }
             // closure under concatenation(check the notes)
-            // from the notes we know that we use as start the lhs start, f1.start, and outs the
-            // rhs outs but with path we make sure we connect the lhs.outs to the rhs. start
+            // we know that we use as start the lhs start, f1.start, and outs the rhs outs but with
+            // patch we make sure we connect the lhs.outs to the rhs. start
             Regexp::Concat(lhs, rhs) => {
                 // from the paper we can see that concat does not create a new state
                 let f1 = self.walk(lhs);
@@ -121,6 +114,24 @@ impl NfaBuilder {
                     outs: f2.outs,
                 }
             }
+            // a | b
+            // we add the new split state before 'a' and 'b' with 2 empty transitions that are
+            // attached to the start of each automaton. This is the state of our automaton after:
+            // let start = self.append(State::Split(Some(f1.start), Some(f2.start)));
+            //
+            //               ┌───► [Match 'a'] ───► ???  (dangling, in f1.outs)
+            // [Split] ──────┤
+            //               └───► [Match 'b'] ───► ???  (dangling, in f2.outs)
+            //
+            // we connect split's outs to f1/f2 start
+            //
+            //               ┌───► [Match 'a'] ───┐
+            // [Split] ──────┤                    ├───► [Accept]
+            //               └───► [Match 'b'] ───┘
+            //
+            // what we want after is no matter what choice we made a or b to move to the next state, this
+            // happens by doing f1.expand(f2.outs), we merge the dangling arrows; important to note there
+            // is no patch in this case
             Regexp::Union(lhs, rhs) => {
                 let mut f1 = self.walk(lhs);
                 let f2 = self.walk(rhs);
@@ -134,7 +145,7 @@ impl NfaBuilder {
             }
             // a*
             // walk() creates the fragment for 'a' which has 1 dangling arrow as the paper shows
-            // create a new split state where out1 goes to 'a', and out2 is None(empty transition)
+            // we create a new split state where out1 goes to 'a', and out2 is None(empty transition)
             // will be patched later
             // next take f.outs the dangling arrow that we have from creating fragment 'a' and make
             // it point to split to handle the multiple a's case // self.patch(&f.outs, split)
@@ -165,6 +176,22 @@ impl NfaBuilder {
                     outs: vec![split],
                 }
             }
+            // we can see that in the above 2 cases where we have a loop we always call patch() to
+            // make a's dangling pointer(f.outs) point back to split; for a? this is not the case
+            //
+            // question is just union in disguise: a? is a | ε
+            // for this reason we call f.outs.push(split) similar to how we called f1.expand(f2.outs)
+            //
+            //               ┌───► [Match 'a'] ───► ???  (dangling, from f.outs)
+            // [Split] ──────┤
+            //               └───► ???                   (dangling, the skip path)
+            //
+            //
+            //               ┌───► [Match 'a'] ───┐
+            // [Split] ──────┤                    ├───► [Accept]
+            //               └────────────────────┘
+            //
+            // in either case both need to be patched later to point to Accept
             Regexp::Question(idx) => {
                 let mut f = self.walk(idx);
                 let split = self.append(State::Split(Some(f.start), None));
@@ -194,9 +221,99 @@ pub(super) struct Nfa {
     states: Vec<State>,
     // read the comment on parser struct in regexp.rs
     classes: Vec<CharClass>,
-    start: usize
+    start: usize,
 }
 
 impl Nfa {
+    // for detailed examples look at the notes: Tracing
+    //
+    // in the full match case we return true when we are done processing the input and we 1 Accept
+    // state
+    pub(super) fn full_match(&mut self, input: &str) -> bool {
+        let mut states = self.advance_epsilon(vec![self.start]);
 
+        for c in input.chars() {
+            states = self.step(states, c);
+            states = self.advance_epsilon(states);
+        }
+        states
+            .into_iter()
+            .any(|s| matches!(self.states[s], State::Accept))
+    }
+
+    pub(super) fn partial_match(&mut self, input: &str) -> bool {
+        let mut states = self.advance_epsilon(vec![self.start]);
+
+        for c in input.chars() {
+            states = self.step(states, c);
+            states.push(self.start);
+            states = self.advance_epsilon(states);
+
+            if states
+                .iter()
+                .any(|s| matches!(self.states[*s], State::Accept)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // if the current state is match we advance otherwise the path dies
+    // we return the next set of states
+    fn step(&self, states: Vec<usize>, c: char) -> Vec<usize> {
+        let mut next = Vec::new();
+
+        for i in states {
+            if let State::Atom(class_idx, out) = self.states[i] {
+                // toDo: we need to optimize the matches in CharClass
+                if self.classes[class_idx].matches(c) {
+                    next.push(out.unwrap());
+                }
+            }
+        }
+        next
+    }
+
+    // looks at the current set of states and performs "perfect guessing"; if the current state is
+    // a Split we select both paths
+    //
+    //               ┌───► [Match 'a'] ───┐
+    // [Split] ──────┤                    ├───► next state
+    //               └───► [Match 'b'] ───┘
+    //
+    //
+    // we are at split ,and we move towards both directions at the same time; we advance to the
+    // next state without consuming any input character, we essentially eliminate those empty
+    // transitions. Any other state is either Accept or a CharClass state where we need a char to
+    // advance
+    fn advance_epsilon(&self, states: Vec<usize>) -> Vec<usize> {
+        let mut next = Vec::new();
+        let mut stack = states;
+        let mut seen: u64 = 0;
+
+        // This is part is very similar to how we walk graphs. We need to avoid cycles, the cases
+        // where we have loops
+        // In graph traversals we use a preallocated vector initialized to false and mark as we walk.
+        // State machines have no memory, they don't know the path to the current state the only know
+        // where they are now. We don't need global state to which states we have seen across every step
+        // that we made so far, just for the current step. Allocating every time we make step is
+        // inefficient. We can either use a bitset as we do bellow or if the number of states
+        // increases we can go with u128 or Sparse set.
+        //
+        // We have seen this before with 1 byte and the days of the week and also on Leetcode.
+        // Each state is 1 bit, if that bit is set we visited that state at the current step, and we
+        // can skip it, otherwise set the bit
+        while let Some(i) = stack.pop() {
+            if seen & (1 << i) != 0 {
+                continue;
+            }
+            seen |= 1 << i;
+            next.push(i);
+            if let State::Split(out1, out2) = self.states[i] {
+                stack.push(out1.unwrap());
+                stack.push(out2.unwrap());
+            }
+        }
+        next
+    }
 }

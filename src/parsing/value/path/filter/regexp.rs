@@ -2,9 +2,24 @@ use crate::parsing::number::{Atoi, OutOfRangeError};
 use crate::parsing::utf8;
 use crate::parsing::value::path::filter::nfa::{Nfa, NfaBuilder};
 
-pub(super) fn full_match() {}
+pub(super) fn full_match(input: &str, pattern: &str) -> bool {
+    let mut parser = Parser::new(pattern.as_bytes());
+    if let Err(_) = parser.parse() {
+        return false;
+    }
+    let mut nfa = parser.into_nfa();
+    nfa.full_match(input)
+}
+
 // left-most first
-pub(super) fn partial_match() {}
+pub(super) fn partial_match(needle: &str, haystack: &str) -> bool {
+    let mut parser = Parser::new(haystack.as_bytes());
+    if let Err(_) = parser.parse() {
+        return false;
+    }
+    let mut nfa = parser.into_nfa();
+    nfa.partial_match(needle)
+}
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Regexp {
@@ -31,11 +46,38 @@ pub(super) struct ClassExpr {
     items: Vec<ExprItem>,
 }
 
+impl ClassExpr {
+    fn matches(&self, t: char) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) enum ExprItem {
     Literal(char),
     Property(Property),
     Range(char, char),
+}
+
+impl ExprItem {
+    fn matches(&self, t: char) -> bool {
+        match self {
+            ExprItem::Literal(c) => *c == t,
+            ExprItem::Property(p) => p.matches(t),
+            ExprItem::Range(l, h) => *l >= t && t <= *h,
+        }
+    }
+}
+
+impl CharClass {
+    pub(super) fn matches(&self, t: char) -> bool {
+        match self {
+            CharClass::Literal(c) => *c == t,
+            CharClass::Dot => t != '\n',
+            CharClass::ClassExpr(expr) => expr.matches(t),
+            CharClass::Property(p) => p.matches(t)
+        }
+    }
 }
 
 impl ExprItem {
@@ -124,15 +166,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn compile(self) -> Nfa {
+    fn into_nfa(self) -> Nfa {
         NfaBuilder::new(self.nodes, self.classes).build()
     }
 
-    fn parse(&mut self) -> Result<usize, RegexpError> {
+    fn parse(&mut self) -> Result<(), RegexpError> {
         if self.buffer.is_empty() {
-            return Ok(self.push_node(Regexp::Empty));
+            self.push_node(Regexp::Empty);
+            return Ok(());
         }
-        Ok(self.parse_union()?)
+        self.parse_union()?;
+        Ok(())
     }
 
     // Much easier than parse_concat() because we can keep going as long as we encounter the
@@ -843,6 +887,12 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
 pub(super) struct Property {
     category: GeneralCategory,
     negated: bool,
+}
+
+impl Property {
+    fn matches(&self, t: char) -> bool {
+        true
+    }
 }
 
 // major, minor
