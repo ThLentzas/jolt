@@ -1,18 +1,18 @@
 use crate::parsing::value::Value;
-use crate::parsing::value::path::filter::{EmbeddedQuery, LogicalExpr};
+use crate::parsing::value::path::filter::{EmbeddedQuery, LogicalExpr, regex};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt;
 use std::sync::OnceLock;
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| {
-        // This closure runs ONLY ONCE, no matter how many times you call it.
-        // It acts exactly like your Java "static { ... }" block.
+        // This closure runs ONLY ONCE, no matter how many times we call it.
+        // It acts exactly like Java's "static { ... }" block.
         let mut registry = Registry::new();
 
         registry.register(LengthFn {});
@@ -134,7 +134,7 @@ impl FnExpr {
     // lifetime
     pub(super) fn evaluate<'a>(&'a self, root: &'a Value, current: &'a Value) -> FnResult<'a> {
         // always safe to call unwrap; if we get None it means either we parsed the name incorrectly
-        // or we didn't register our function correctly
+        // or we didn't register our function
         let f = registry().get(&self.name).unwrap();
         let args = self.to_fn_args(f, root, current);
         f.execute(&args)
@@ -367,8 +367,29 @@ impl Function for MatchFn {
         FnType::Logical
     }
 
+    // for match() both arguments must be strings, in any other case we return false
+    // the 2nd argument has to be valid I-Regex pattern, if not we also return false, this is handled
+    // by the parser's parse(); it returns an error, and we return false
+    //
+    // It is always safe to access the args by index because we have already done the arity match
     fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
-        todo!()
+        if let Some(val) = args[0].as_value() {
+            let input = match val {
+                Value::String(s) => s,
+                _ => return FnResult::Logical(false),
+            };
+            if let Some(val) = args[1].as_value() {
+                let pattern = match val {
+                    Value::String(s) => s,
+                    _ => return FnResult::Logical(false),
+                };
+                FnResult::Logical(regex::full_match(input, pattern))
+            } else {
+                FnResult::Logical(false)
+            }
+        } else {
+            FnResult::Logical(false)
+        }
     }
 }
 
@@ -387,8 +408,29 @@ impl Function for SearchFn {
         FnType::Logical
     }
 
+    // for search() both arguments must be strings, in any other case we return false
+    // the 2nd argument has to be valid I-Regex pattern, if not we also return false, this is handled
+    // by the parser's parse(); it returns an error, and we return false
+    //
+    // It is always safe to access the args by index because we have already done the arity match
     fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
-        todo!()
+        if let Some(val) = args[0].as_value() {
+            let input = match val {
+                Value::String(s) => s,
+                _ => return FnResult::Logical(false),
+            };
+            if let Some(val) = args[1].as_value() {
+                let pattern = match val {
+                    Value::String(s) => s,
+                    _ => return FnResult::Logical(false),
+                };
+                FnResult::Logical(regex::partial_match(input, pattern))
+            } else {
+                FnResult::Logical(false)
+            }
+        } else {
+            FnResult::Logical(false)
+        }
     }
 }
 
@@ -408,7 +450,7 @@ impl Function for ValueFn {
     }
 
     // If the argument contains a single node, the result is the value of the node.
-    // If the argument is the empty nodelist or contains multiple nodes, the result is Nothing
+    // If the argument is an empty nodelist or contains multiple nodes, the result is Nothing
     fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
         let nodes = args[0].as_nodelist();
         if nodes.len() == 1 {
@@ -419,15 +461,6 @@ impl Function for ValueFn {
     }
 }
 
-// toDo: regex should have their own error, dont create a constructor, have a method matches(), we don't want to scan the input twice, 1 for validation in the constructor
-// and again to check if we have a match
-// the states machines dont have any memory, they don't care how they got in the current state, they don't remember,
-// they only know where they are now
-// ε transition is a free move without reading the input
-// ab is a and b but also a, empty string(ε) and b
-// regular expr and finite state machines are equivalent systems and what we do is we simulate the
-// regex as a state machine. If a state machine  reaches to a possible Accept state we have a match
-// in order to get a match the machine has to be in an accept state at the end of the input
 #[derive(Debug, PartialEq)]
 pub enum FnExprError {
     // the number of arguments that the function has
@@ -435,8 +468,8 @@ pub enum FnExprError {
     TypeMismatch { expected: FnType, found: FnType },
 }
 
-impl Display for FnExprError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FnExprError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FnExprError::ArityMismatch { expected, got } => {
                 write!(

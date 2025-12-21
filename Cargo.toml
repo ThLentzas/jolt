@@ -9,4 +9,4 @@ bigdecimal = "0.4"
 
 
 [features]
-big_decimal = []
+arbitrary_precision = []

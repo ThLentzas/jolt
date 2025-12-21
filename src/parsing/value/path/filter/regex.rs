@@ -11,25 +11,25 @@ pub(super) fn full_match(input: &str, pattern: &str) -> bool {
     nfa.full_match(input)
 }
 
-// left-most first
-pub(super) fn partial_match(needle: &str, haystack: &str) -> bool {
-    let mut parser = Parser::new(haystack.as_bytes());
+// stops at the left-most match
+pub(super) fn partial_match(input: &str, pattern: &str) -> bool {
+    let mut parser = Parser::new(pattern.as_bytes());
     if let Err(_) = parser.parse() {
         return false;
     }
     let mut nfa = parser.into_nfa();
-    nfa.partial_match(needle)
+    nfa.partial_match(input)
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Regexp {
+pub(super) enum Regex {
     Empty,
     Concat(usize, usize),
     Union(usize, usize),
     Star(usize),
     Plus(usize),
     Question(usize),
-    Atom(usize)
+    Atom(usize),
 }
 
 #[derive(Debug, PartialEq)]
@@ -47,8 +47,10 @@ pub(super) struct ClassExpr {
 }
 
 impl ClassExpr {
+    // toDo: this is temporary will optimize it later
     fn matches(&self, t: char) -> bool {
-        true
+        let matches = self.items.iter().any(|e| e.matches(t));
+        if self.negated { !matches } else { matches }
     }
 }
 
@@ -64,7 +66,7 @@ impl ExprItem {
         match self {
             ExprItem::Literal(c) => *c == t,
             ExprItem::Property(p) => p.matches(t),
-            ExprItem::Range(l, h) => *l >= t && t <= *h,
+            ExprItem::Range(l, h) => *l <= t && t <= *h,
         }
     }
 }
@@ -73,9 +75,10 @@ impl CharClass {
     pub(super) fn matches(&self, t: char) -> bool {
         match self {
             CharClass::Literal(c) => *c == t,
+            // https://www.regular-expressions.info/dot.html
             CharClass::Dot => t != '\n',
             CharClass::ClassExpr(expr) => expr.matches(t),
-            CharClass::Property(p) => p.matches(t)
+            CharClass::Property(p) => p.matches(t),
         }
     }
 }
@@ -100,7 +103,7 @@ impl ExprItem {
 // anything. There is a case though that we know exactly how many a's we are going to get, range
 // quantifiers. a{3}, a{3,6}, a{3,} will have at least 3 a's. If 'a' is big, a large vector(Vec<ExprItem>),
 // we don't want to clone it. What i did in this approach was to create it once, let Atom() hold the
-// value, Atom(CharClass), and push the node into this Vec<Regexp>. Creating Regexp::Atom(a) would
+// value, Atom(CharClass), and push the node into this Vec<Regex>. Creating Regex::Atom(a) would
 // return 0 and then aa is nothing but Concat(0, 0). It worked great for creating the AST but we
 // had the following problem
 //
@@ -109,16 +112,16 @@ impl ExprItem {
 // In the next step where we have to convert the ast to an epsilon-nfa. What we want is to consume
 // the ast, we no longer need it, and create an nfa. The compile() method in nfa.rs takes ownership
 // of the vector nodes, and then we recursively walk the tree(bottom up) to create the states of the
-// nfa. The key point here is the states and nfa in general shouldn't be aware of the regexp at all,
+// nfa. The key point here is the states and nfa in general shouldn't be aware of the regex at all,
 // each state must own the value that will transition to the next state, which is also what we are
 // trying to do by passing ownership of nodes. We can't do that directly because walk() is a recursive
 // function and needs &mut to nodes. The 1st approach to solve this was to call mem::replace() and
-// replace those nodes that hold values(Regexp::Atom(a)) with Regexp::Empty, this could have worked
+// replace those nodes that hold values(Regex::Atom(a)) with Regex::Empty, this could have worked
 // if we only visited each node once, but for quantifiers we know that this is not true
 //
 // when walk() is called for Concat(0,0)
 //
-//             Regexp::Concat(lhs, rhs) => {
+//             Regex::Concat(lhs, rhs) => {
 //                 let f1 = self.walk(lhs, nodes);
 //                 let f2 = self.walk(rhs, nodes);
 //                 self.patch(&f1.outs, f2.start);
@@ -133,14 +136,14 @@ impl ExprItem {
 //
 // The solution:
 //
-// Instead of having Regexp::Atom(a) own a when building the ast, we store the char class into a
-// vector and then let Regexp::Atom(0) hold the index of a in that vector. This actually solves both
+// Instead of having Regex::Atom(a) own a when building the ast, we store the char class into a
+// vector and then let Regex::Atom(0) hold the index of a in that vector. This actually solves both
 // problems. During parsing nothing changes, we expand quantifiers the same that we did, for aa we
 // still get Concat(0,0) that 0 refers to nodes[0] while Atom(0) refers to classes[0]. Now when
 // walking the ast to create the automaton all we have to do is copy the index and pass ownership to
 // the class vector
 //
-//             Regexp::Atom(idx) => {
+//             Regex::Atom(idx) => {
 //                 let start = self.append(State::Atom(idx, None));
 //                 Fragment {
 //                     start,
@@ -152,8 +155,8 @@ impl ExprItem {
 struct Parser<'a> {
     buffer: &'a [u8],
     pos: usize,
-    nodes: Vec<Regexp>,
-    classes: Vec<CharClass>
+    nodes: Vec<Regex>,
+    classes: Vec<CharClass>,
 }
 
 impl<'a> Parser<'a> {
@@ -170,9 +173,9 @@ impl<'a> Parser<'a> {
         NfaBuilder::new(self.nodes, self.classes).build()
     }
 
-    fn parse(&mut self) -> Result<(), RegexpError> {
+    fn parse(&mut self) -> Result<(), RegexError> {
         if self.buffer.is_empty() {
-            self.push_node(Regexp::Empty);
+            self.push_node(Regex::Empty);
             return Ok(());
         }
         self.parse_union()?;
@@ -182,18 +185,18 @@ impl<'a> Parser<'a> {
     // Much easier than parse_concat() because we can keep going as long as we encounter the
     // pipe operator. We use the loop for the left-right associativity as explained in
     // parse_logical_and/or() in path.rs
-    fn parse_union(&mut self) -> Result<usize, RegexpError> {
+    fn parse_union(&mut self) -> Result<usize, RegexError> {
         let mut lhs = self.parse_concat()?;
 
         while self.peek().copied() == Some(b'|') {
             self.consume(1);
             let rhs = self.parse_concat()?;
-            lhs = self.push_node(Regexp::Union(lhs, rhs));
+            lhs = self.push_node(Regex::Union(lhs, rhs));
         }
         Ok(lhs)
     }
 
-    fn parse_concat(&mut self) -> Result<usize, RegexpError> {
+    fn parse_concat(&mut self) -> Result<usize, RegexError> {
         let mut lhs = self.parse_quantifier()?;
         // In theory this should be similar to parse_logical_and() where we follow left to right
         // associativity. It is not as straightforward though, because there is no concat operator
@@ -222,20 +225,20 @@ impl<'a> Parser<'a> {
                 Some(b'|') | Some(b')') | None => break,
                 _ => {
                     let rhs = self.parse_quantifier()?;
-                    lhs = self.push_node(Regexp::Concat(lhs, rhs));
+                    lhs = self.push_node(Regex::Concat(lhs, rhs));
                 }
             }
         }
         Ok(lhs)
     }
 
-    fn parse_quantifier(&mut self) -> Result<usize, RegexpError> {
+    fn parse_quantifier(&mut self) -> Result<usize, RegexError> {
         let atom_idx = self.parse_atom()?;
 
         match self.peek() {
             Some(b'*') => {
                 self.consume(1);
-                let node = Regexp::Star(atom_idx);
+                let node = Regex::Star(atom_idx);
                 Ok(self.push_node(node))
             }
             // initially would map 'a+' to aa* and 'a?' to a|ε but it is not efficient when compiling
@@ -247,24 +250,24 @@ impl<'a> Parser<'a> {
             // Some(b'+') => {
             //     // aa*
             //     self.consume(1);
-            //     let star = Regexp::Star(atom_idx);
+            //     let star = Regex::Star(atom_idx);
             //     let start_idx = self.emit(star);
-            //     Ok(self.emit(Regexp::Concat(atom_idx, start_idx)))
+            //     Ok(self.emit(Regex::Concat(atom_idx, start_idx)))
             // }
             // Some(b'?') => {
             //     // a|ε
             //     self.consume(1);
-            //     let empty = Regexp::Empty;
+            //     let empty = Regex::Empty;
             //     let empty_idx = self.emit(empty);
-            //     Ok(self.emit(Regexp::Union(atom_idx, empty_idx)))
+            //     Ok(self.emit(Regex::Union(atom_idx, empty_idx)))
             // }
             Some(b'+') => {
                 self.consume(1);
-                Ok(self.push_node(Regexp::Plus(atom_idx)))
+                Ok(self.push_node(Regex::Plus(atom_idx)))
             }
             Some(b'?') => {
                 self.consume(1);
-                Ok(self.push_node(Regexp::Question(atom_idx)))
+                Ok(self.push_node(Regex::Question(atom_idx)))
             }
             Some(b'{') => {
                 self.consume(1);
@@ -307,7 +310,7 @@ impl<'a> Parser<'a> {
     //  indices we never allocate for "aa". This is true for a{3,5} we build 'a', then "aa" and then
     //  "aaa" which is just connecting the indices of "aa" and 'a'
     //
-    fn expand_bounded(&mut self, atom_idx: usize, min: u8, max: u8) -> Result<usize, RegexpError> {
+    fn expand_bounded(&mut self, atom_idx: usize, min: u8, max: u8) -> Result<usize, RegexError> {
         // toDo: set bounds around 100 for min/max to prevent resource exhaustion
         let mut tmp = Vec::new();
         for _ in 0..min {
@@ -318,7 +321,7 @@ impl<'a> Parser<'a> {
         // Case: a{0,4}, a?a?a?a?
         //  the mandatory part, min, is 0 in this case, which means delta is max.
         if delta > 0 {
-            let optional_idx = self.push_node(Regexp::Question(atom_idx));
+            let optional_idx = self.push_node(Regex::Question(atom_idx));
 
             for _ in 0..delta {
                 tmp.push(optional_idx);
@@ -334,16 +337,16 @@ impl<'a> Parser<'a> {
             // because my loop condition was for j in 1..tmp.len() so i was looking at indices
             // we want the value at the given index; the most sane solution is to iterate over the
             // values instead
-            i = self.push_node(Regexp::Concat(i, node));
+            i = self.push_node(Regex::Concat(i, node));
         }
         Ok(i)
     }
 
     // a{2,} is nothing but a{2}a*
     // it means at least 2
-    fn expand_unbounded(&mut self, atom_idx: usize, min: u8) -> Result<usize, RegexpError> {
+    fn expand_unbounded(&mut self, atom_idx: usize, min: u8) -> Result<usize, RegexError> {
         // toDo: set bounds for min/max to prevent resource exhaustion
-        let star_idx = self.push_node(Regexp::Star(atom_idx));
+        let star_idx = self.push_node(Regex::Star(atom_idx));
         // Case: a{0,} is just a*
         if min == 0 {
             return Ok(star_idx);
@@ -351,18 +354,18 @@ impl<'a> Parser<'a> {
 
         let mut i = atom_idx;
         for _ in 1..min {
-            i = self.push_node(Regexp::Concat(i, atom_idx));
+            i = self.push_node(Regex::Concat(i, atom_idx));
         }
 
-        Ok(self.push_node(Regexp::Concat(i, star_idx)))
+        Ok(self.push_node(Regex::Concat(i, star_idx)))
     }
 
     // parses a range quantifier
     // we return min, Optional<max>
-    fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexpError> {
+    fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexError> {
         match self.peek() {
-            Some(b) if !b.is_ascii_digit() => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedCharacter(*b),
+            Some(b) if !b.is_ascii_digit() => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedCharacter(*b),
                 pos: self.pos,
             }),
             Some(_) => {
@@ -377,8 +380,8 @@ impl<'a> Parser<'a> {
                                 self.consume(1);
                                 Ok((min, None))
                             }
-                            Some(b) if !b.is_ascii_digit() => Err(RegexpError {
-                                kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                            Some(b) if !b.is_ascii_digit() => Err(RegexError {
+                                kind: RegexErrorKind::UnexpectedCharacter(*b),
                                 pos: self.pos,
                             }),
                             Some(_) => {
@@ -388,18 +391,18 @@ impl<'a> Parser<'a> {
                                         self.consume(1);
                                         Ok((min, Some(max)))
                                     }
-                                    Some(b) => Err(RegexpError {
-                                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                                    Some(b) => Err(RegexError {
+                                        kind: RegexErrorKind::UnexpectedCharacter(*b),
                                         pos: self.pos,
                                     }),
-                                    None => Err(RegexpError {
-                                        kind: RegexpErrorKind::UnexpectedEof,
+                                    None => Err(RegexError {
+                                        kind: RegexErrorKind::UnexpectedEof,
                                         pos: self.pos - 1,
                                     }),
                                 }
                             }
-                            None => Err(RegexpError {
-                                kind: RegexpErrorKind::UnexpectedEof,
+                            None => Err(RegexError {
+                                kind: RegexErrorKind::UnexpectedEof,
                                 pos: self.pos - 1,
                             }),
                         }
@@ -411,18 +414,18 @@ impl<'a> Parser<'a> {
                         self.consume(1);
                         Ok((min, Some(min)))
                     }
-                    Some(b) => Err(RegexpError {
-                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                    Some(b) => Err(RegexError {
+                        kind: RegexErrorKind::UnexpectedCharacter(*b),
                         pos: self.pos,
                     }),
-                    None => Err(RegexpError {
-                        kind: RegexpErrorKind::UnexpectedEof,
+                    None => Err(RegexError {
+                        kind: RegexErrorKind::UnexpectedEof,
                         pos: self.pos - 1,
                     }),
                 }
             }
-            None => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedEof,
+            None => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             }),
         }
@@ -443,7 +446,7 @@ impl<'a> Parser<'a> {
     // the last 2 arms are for NormalChar
     // if we get a character that must be escaped unescaped it is an error
     // in any other case, it is a char literal
-    fn parse_atom(&mut self) -> Result<usize, RegexpError> {
+    fn parse_atom(&mut self) -> Result<usize, RegexError> {
         match self.peek() {
             Some(b'(') => {
                 self.consume(1);
@@ -453,32 +456,44 @@ impl<'a> Parser<'a> {
                         self.consume(1);
                         Ok(expr_idx)
                     }
-                    Some(b) => Err(RegexpError {
-                        kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                    Some(b) => Err(RegexError {
+                        kind: RegexErrorKind::UnexpectedCharacter(*b),
                         pos: self.pos,
                     }),
-                    None => Err(RegexpError {
-                        kind: RegexpErrorKind::UnexpectedEof,
+                    None => Err(RegexError {
+                        kind: RegexErrorKind::UnexpectedEof,
                         pos: self.pos - 1,
                     }),
                 }
             }
+            // We need to consider the following cases according to the rfc syntax
+            //
+            // '[', '.', '\' when these characters are encountered unescaped have special meaning
+            // '[' indicates the start of a character set
+            // '.' maps to any character
+            // '\' expect an escaped character
+            //
+            // any other metacharacter if appeared unescaped it is invalid
+            //
+            // Now for the escaped characters, the ones that can appear after '\' are the following
+            // n, r, t -> those map to \n, \t, \r; this is how we did the mapping in json too
+            // any of the metacharacters maps to themselves: ( -> ( and so on
             Some(b'[') | Some(b'.') | Some(b'\\') => {
                 let class = self.parse_class()?;
                 let id = self.push_class(class);
-                Ok(self.push_node(Regexp::Atom(id)))
+                Ok(self.push_node(Regex::Atom(id)))
             }
-            Some(b) if is_escape_char(*b) => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedCharacter(*b),
+            Some(b) if is_metacharacter(*b) => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedCharacter(*b),
                 pos: self.pos,
             }),
             Some(_) => {
                 let char = self.parse_char();
                 let id = self.push_class(CharClass::Literal(char));
-                Ok(self.push_node(Regexp::Atom(id)))
+                Ok(self.push_node(Regex::Atom(id)))
             }
-            None => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedEof,
+            None => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             }),
         }
@@ -488,9 +503,12 @@ impl<'a> Parser<'a> {
     // '.' is any char
     // '[' implies the start of character set(charClassExpr)
     // '\' describes either a single escaped character or the start of char property
-    fn parse_class(&mut self) -> Result<CharClass, RegexpError> {
+    fn parse_class(&mut self) -> Result<CharClass, RegexError> {
         match self.buffer[self.pos] {
-            b'.' => Ok(CharClass::Dot),
+            b'.' => {
+                self.consume(1);
+                Ok(CharClass::Dot)
+            }
             b'[' => Ok(CharClass::ClassExpr(self.parse_class_expr()?)),
             b'\\' => Ok(CharClass::from(self.parse_escape()?)),
             _ => unreachable!("parse_class() was called with {}", self.buffer[self.pos]),
@@ -499,7 +517,7 @@ impl<'a> Parser<'a> {
 
     // parses a character set
     // no quantifiers or nested regex is allowed inside a set
-    fn parse_class_expr(&mut self) -> Result<ClassExpr, RegexpError> {
+    fn parse_class_expr(&mut self) -> Result<ClassExpr, RegexError> {
         // consume '['
         self.consume(1);
         let mut items = Vec::new();
@@ -543,8 +561,8 @@ impl<'a> Parser<'a> {
                         Some(_) => {
                             let rhs = self.parse_class_expr_item()?;
                             if !is_valid_cs_range(&item, &rhs) {
-                                return Err(RegexpError {
-                                    kind: RegexpErrorKind::InvalidCsRange,
+                                return Err(RegexError {
+                                    kind: RegexErrorKind::InvalidCsRange,
                                     pos: start,
                                 });
                             }
@@ -558,8 +576,8 @@ impl<'a> Parser<'a> {
                         // we have 2 choices, either we return an err here or do nothing exit
                         // the loop and catch it after
                         None => {
-                            return Err(RegexpError {
-                                kind: RegexpErrorKind::UnexpectedEof,
+                            return Err(RegexError {
+                                kind: RegexErrorKind::UnexpectedEof,
                                 pos: self.pos - 1,
                             });
                         }
@@ -571,8 +589,8 @@ impl<'a> Parser<'a> {
         }
 
         if self.pos >= len {
-            return Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedEof,
+            return Err(RegexError {
+                kind: RegexErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             });
         }
@@ -582,14 +600,14 @@ impl<'a> Parser<'a> {
         Ok(ClassExpr { negated, items })
     }
 
-    fn parse_class_expr_item(&mut self) -> Result<ExprItem, RegexpError> {
+    fn parse_class_expr_item(&mut self) -> Result<ExprItem, RegexError> {
         match self.buffer[self.pos] {
             b'\\' => Ok(ExprItem::from(self.parse_escape()?)),
             // can't appear unescaped
             b => {
-                if is_escape_char(b) {
-                    return Err(RegexpError {
-                        kind: RegexpErrorKind::UnexpectedCharacter(b),
+                if is_metacharacter(b) {
+                    return Err(RegexError {
+                        kind: RegexErrorKind::UnexpectedCharacter(b),
                         pos: self.pos,
                     });
                 }
@@ -598,18 +616,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_escape(&mut self) -> Result<Escape, RegexpError> {
+    fn parse_escape(&mut self) -> Result<Escape, RegexError> {
         // consume '\'
         self.consume(1);
         match self.peek() {
             Some(b'p') | Some(b'P') => Ok(Escape::Property(self.parse_property()?)),
-            Some(b) if !is_escape_char(*b) => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedCharacter(*b),
-                pos: self.pos,
-            }),
-            Some(_) => Ok(Escape::Literal(self.map_escape_character())),
-            None => Err(RegexpError {
-                kind: RegexpErrorKind::UnexpectedEof,
+            Some(_) => Ok(Escape::Literal(self.map_escape_character()?)),
+            None => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             }),
         }
@@ -629,29 +643,29 @@ impl<'a> Parser<'a> {
         c
     }
 
-    fn parse_property(&mut self) -> Result<Property, RegexpError> {
+    fn parse_property(&mut self) -> Result<Property, RegexError> {
         let negated = self.buffer[self.pos] == b'P';
         self.consume(1);
 
         // need 3 or 4 characters after p/P: {..}
         // this won't work, we don't know if we have a major or a minor category
         // if self.pos + 4 >= self.buffer.len() {
-        //     return Err(RegexpError {
-        //         kind: RegexpErrorKind::UnexpectedEof,
+        //     return Err(RegexError {
+        //         kind: RegexErrorKind::UnexpectedEof,
         //         pos: self.pos - 1,
         //     });
         // }
         match self.peek() {
             Some(b) if *b == b'{' => self.consume(1),
             Some(b) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos,
                 });
             }
             None => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: self.pos - 1,
                 });
             }
@@ -662,14 +676,14 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b) if *b == b'}' => self.consume(1),
             Some(b) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos,
                 });
             }
             None => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: self.pos - 1,
                 });
             }
@@ -677,20 +691,26 @@ impl<'a> Parser<'a> {
         Ok(Property { category, negated })
     }
 
-    fn map_escape_character(&mut self) -> char {
+    fn map_escape_character(&mut self) -> Result<char, RegexError> {
         let c = match self.buffer[self.pos] {
             b'n' => '\n',
             b'r' => '\r',
             b't' => '\t',
+            b if !is_metacharacter(b) => {
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b),
+                    pos: self.pos,
+                });
+            }
             b => b as char,
         };
         self.consume(1);
-        c
+        Ok(c)
     }
 
     // the case where we get a major category into none like /p{L is handled by the caller
     // the category itself is not invalid, /p{ is and is handled by this method(2nd to last arm)
-    fn map_category(&mut self) -> Result<GeneralCategory, RegexpError> {
+    fn map_category(&mut self) -> Result<GeneralCategory, RegexError> {
         let current = self.peek();
         let next = self.peek_next();
 
@@ -707,8 +727,8 @@ impl<'a> Parser<'a> {
             (Some(b'L'), Some(b't')) => (GeneralCategory::LetterTitlecase, 2),
             (Some(b'L'), Some(b'u')) => (GeneralCategory::LetterUppercase, 2),
             (Some(b'L'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -720,8 +740,8 @@ impl<'a> Parser<'a> {
             (Some(b'M'), Some(b'e')) => (GeneralCategory::MarkEnclosing, 2),
             (Some(b'M'), Some(b'n')) => (GeneralCategory::MarkNonSpacing, 2),
             (Some(b'M'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -733,8 +753,8 @@ impl<'a> Parser<'a> {
             (Some(b'N'), Some(b'l')) => (GeneralCategory::NumberLetter, 2),
             (Some(b'N'), Some(b'o')) => (GeneralCategory::NumberOther, 2),
             (Some(b'N'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -750,8 +770,8 @@ impl<'a> Parser<'a> {
             (Some(b'P'), Some(b's')) => (GeneralCategory::PunctuationOpen, 2),
             (Some(b'P'), Some(b'o')) => (GeneralCategory::PunctuationOther, 2),
             (Some(b'P'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -763,8 +783,8 @@ impl<'a> Parser<'a> {
             (Some(b'Z'), Some(b'p')) => (GeneralCategory::SeparatorParagraph, 2),
             (Some(b'Z'), Some(b's')) => (GeneralCategory::SeparatorSpace, 2),
             (Some(b'Z'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -777,8 +797,8 @@ impl<'a> Parser<'a> {
             (Some(b'S'), Some(b'm')) => (GeneralCategory::SymbolMath, 2),
             (Some(b'S'), Some(b'o')) => (GeneralCategory::SymbolOther, 2),
             (Some(b'S'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
@@ -791,21 +811,21 @@ impl<'a> Parser<'a> {
             (Some(b'C'), Some(b'n')) => (GeneralCategory::OtherNotAssigned, 2),
             (Some(b'C'), Some(b'o')) => (GeneralCategory::OtherPrivateUse, 2),
             (Some(b'C'), Some(b)) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos + 1,
                 });
             }
 
             (None, _) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: self.pos,
                 });
             }
             (Some(b), _) => {
-                return Err(RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(*b),
+                return Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
                     pos: self.pos,
                 });
             }
@@ -815,7 +835,7 @@ impl<'a> Parser<'a> {
         Ok(category)
     }
 
-    fn push_node(&mut self, node: Regexp) -> usize {
+    fn push_node(&mut self, node: Regex) -> usize {
         self.nodes.push(node);
         self.nodes.len() - 1
     }
@@ -838,7 +858,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn is_escape_char(b: u8) -> bool {
+fn is_metacharacter(b: u8) -> bool {
     matches!(
         b,
         b'(' | b')'
@@ -848,12 +868,7 @@ fn is_escape_char(b: u8) -> bool {
             | b'.'
             | b'?'
             | b'['
-            | b'\\'
             | b']'
-            | b'^'
-            | b'n'
-            | b'r'
-            | b't'
             | b'{'
             | b'|'
             | b'}'
@@ -938,15 +953,15 @@ enum GeneralCategory {
 }
 
 #[derive(Debug, PartialEq)]
-struct RegexpError {
-    kind: RegexpErrorKind,
+struct RegexError {
+    kind: RegexErrorKind,
     pos: usize,
 }
 
-impl From<OutOfRangeError> for RegexpError {
+impl From<OutOfRangeError> for RegexError {
     fn from(err: OutOfRangeError) -> Self {
-        RegexpError {
-            kind: RegexpErrorKind::OutOfRange,
+        RegexError {
+            kind: RegexErrorKind::OutOfRange,
             pos: err.pos,
         }
     }
@@ -976,7 +991,7 @@ impl From<Escape> for CharClass {
 }
 
 #[derive(Debug, PartialEq)]
-enum RegexpErrorKind {
+enum RegexErrorKind {
     // invalid character set range
     InvalidCsRange,
     // parsing ints for range quantifiers
@@ -987,7 +1002,7 @@ enum RegexpErrorKind {
 
 #[cfg(test)]
 mod test {
-    use super::{CharClass, GeneralCategory, Parser, Regexp, RegexpError, RegexpErrorKind};
+    use super::{GeneralCategory, Parser, Regex, RegexError, RegexErrorKind};
 
     // this test is more about not missing a case rather than testing the match call of map_category()
     fn valid_categories() -> Vec<(&'static str, GeneralCategory)> {
@@ -1031,101 +1046,101 @@ mod test {
         ]
     }
 
-    fn invalid_categories() -> Vec<(&'static str, RegexpError)> {
+    fn invalid_categories() -> Vec<(&'static str, RegexError)> {
         vec![
             (
                 r"\p{La}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Mq}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'q'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'q'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Nx}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'x'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'x'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Pz}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'z'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'z'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Zo}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'o'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'o'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Sl}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'l'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'l'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{Cp}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'p'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'p'),
                     pos: 4,
                 },
             ),
             (
                 r"\p{aa}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 3,
                 },
             ),
             (
                 r"\p{",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 3,
                 },
             ),
         ]
     }
 
-    fn invalid_properties() -> Vec<(&'static str, RegexpError)> {
+    fn invalid_properties() -> Vec<(&'static str, RegexError)> {
         vec![
             (
                 r"\p",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 1,
                 },
             ),
             (
                 r"\pa",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 2,
                 },
             ),
             (
                 r"\p{N",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 3,
                 },
             ),
             (
                 r"\p{Soa",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 5,
                 },
             ),
@@ -1133,95 +1148,80 @@ mod test {
     }
 
     // character sets, escapes are tested indirectly
-    fn invalid_cs() -> Vec<(&'static str, RegexpError)> {
+    fn invalid_cs() -> Vec<(&'static str, RegexError)> {
         vec![
             (
                 "[a-z",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 3,
                 },
             ),
             // hyphen at the start is fine, then it must be escaped
             (
                 "[--a]",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'-'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'-'),
                     pos: 2,
                 },
             ),
             // escaped char unescaped
             (
                 "[a*]",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'*'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'*'),
                     pos: 2,
                 },
             ),
             // unknown escaped char
             (
                 "[a\\b]",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'b'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'b'),
                     pos: 3,
                 },
             ),
             // start > end
             (
                 "[ω-α]",
-                RegexpError {
-                    kind: RegexpErrorKind::InvalidCsRange,
+                RegexError {
+                    kind: RegexErrorKind::InvalidCsRange,
                     pos: 1,
                 },
             ),
             // mismatch, the lhs of the range is not a char but a property
             (
                 r"[\p{L}-z]",
-                RegexpError {
-                    kind: RegexpErrorKind::InvalidCsRange,
+                RegexError {
+                    kind: RegexErrorKind::InvalidCsRange,
                     pos: 1,
                 },
             ),
         ]
     }
 
-    fn valid_quantifiers() -> Vec<(&'static str, Vec<Regexp>)> {
+    fn valid_quantifiers() -> Vec<(&'static str, Vec<Regex>)> {
         vec![
-            (
-                "a*",
-                vec![Regexp::Atom(0), Regexp::Star(0)],
-            ),
+            ("a*", vec![Regex::Atom(0), Regex::Star(0)]),
             // expands to aa*
-            (
-                "a+",
-                vec![
-                    Regexp::Atom(0),
-                    Regexp::Plus(0),
-                ],
-            ),
+            ("a+", vec![Regex::Atom(0), Regex::Plus(0)]),
             // expands to a|ε
-            (
-                "a?",
-                vec![
-                    Regexp::Atom(0),
-                    Regexp::Question(0),
-                ],
-            ),
+            ("a?", vec![Regex::Atom(0), Regex::Question(0)]),
             (
                 "a{3,5}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(0),
+                    Regex::Atom(0),
                     // creates a? -> returns 1
-                    Regexp::Question(0),
+                    Regex::Question(0),
                     // creates aa -> returns 3
-                    Regexp::Concat(0, 0),
+                    Regex::Concat(0, 0),
                     // creates aaa -> returns 4
-                    Regexp::Concat(2, 0),
+                    Regex::Concat(2, 0),
                     // creates aaaa? -> returns 5
-                    Regexp::Concat(3, 1),
+                    Regex::Concat(3, 1),
                     // creates aaaaa? -> returns 5
-                    Regexp::Concat(4, 1),
+                    Regex::Concat(4, 1),
                 ],
             ),
             // a?a?a?a?
@@ -1229,26 +1229,26 @@ mod test {
                 "a{0,4}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(0),
+                    Regex::Atom(0),
                     // creates a? -> returns 1
-                    Regexp::Question(0),
+                    Regex::Question(0),
                     // creates a?a? -> returns 3
-                    Regexp::Concat(1, 1),
+                    Regex::Concat(1, 1),
                     // creates a?a?a? -> returns 4
-                    Regexp::Concat(2, 1),
+                    Regex::Concat(2, 1),
                     // creates a?a?a?a? -> returns 5
-                    Regexp::Concat(3, 1),
+                    Regex::Concat(3, 1),
                 ],
             ),
             (
                 "a{3}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(0),
+                    Regex::Atom(0),
                     // creates aa -> returns 1
-                    Regexp::Concat(0, 0),
+                    Regex::Concat(0, 0),
                     // creates aaa
-                    Regexp::Concat(1, 0),
+                    Regex::Concat(1, 0),
                 ],
             ),
             // expands to aaaa*
@@ -1256,15 +1256,15 @@ mod test {
                 "a{3,}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(0),
+                    Regex::Atom(0),
                     // creates a* -> returns 1
-                    Regexp::Star(0),
+                    Regex::Star(0),
                     // creates aa -> returns 2
-                    Regexp::Concat(0, 0),
+                    Regex::Concat(0, 0),
                     // creates aaa -> returns 3
-                    Regexp::Concat(2, 0),
+                    Regex::Concat(2, 0),
                     // creates aaaa*
-                    Regexp::Concat(3, 1),
+                    Regex::Concat(3, 1),
                 ],
             ),
             // is just a*
@@ -1272,69 +1272,121 @@ mod test {
                 "a{0,}",
                 vec![
                     // creates 'a' -> returns 0
-                    Regexp::Atom(0),
+                    Regex::Atom(0),
                     // creates a* -> returns 1
-                    Regexp::Star(0),
+                    Regex::Star(0),
                 ],
             ),
         ]
     }
 
-    fn invalid_quantifiers() -> Vec<(&'static str, RegexpError)> {
+    fn invalid_quantifiers() -> Vec<(&'static str, RegexError)> {
         vec![
             // expected digit got char
             (
                 "z{a,}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 2,
                 },
             ),
             (
                 "z{3",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 2,
                 },
             ),
             // expected comma got char
             (
                 "z{2c3}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'c'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'c'),
                     pos: 3,
                 },
             ),
             // expected digit got char
             (
                 "z{2,c}",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'c'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'c'),
                     pos: 4,
                 },
             ),
             (
                 "z{2,",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 3,
                 },
             ),
             // expected '}' got 'a'
             (
                 "z{2,3a",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedCharacter(b'a'),
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(b'a'),
                     pos: 5,
                 },
             ),
             (
                 "z{2,3",
-                RegexpError {
-                    kind: RegexpErrorKind::UnexpectedEof,
+                RegexError {
+                    kind: RegexErrorKind::UnexpectedEof,
                     pos: 4,
                 },
             ),
+        ]
+    }
+
+    fn full() -> Vec<(&'static str, &'static str, bool)> {
+        vec![
+            ("", "", true),
+            ("", "(foo)*", true),
+            ("", "(foo)?", true),
+            ("", "(foo)*f?", true),
+            ("foo", "foo", true),
+            ("foo", ".*", true),
+            ("foo", ".*foo", true),
+            ("foo", "foo.*", true),
+            ("foo", ".*foo.*", true),
+            ("foo", "foo(foo)*", true),
+            ("foo", "foo(foo)*f?", true),
+            ("foo", "...", true),
+            ("foo", ".{3}", true),
+            ("foo", "f{1}o{2}", true),
+            ("foo", "\\p{L}*", true),
+            ("foo", "\\p{Ll}*", true),
+            ("foo", "\\P{N}*", true),
+            ("Foo", "[a-zA-Z][a-zA-Z][a-zA-Z]", true),
+            ("foo", "[a-z\\p{N}3]{3}", true),
+            ("foo.", "[a-z\\p{N}3]{3}\\.", true),
+            ("foo", "(foo)+", true),
+            ("foo", "[^0-9]*", true),
+            ("ab", "(a|b)*", true),
+            ("a", "aa*", true),
+            ("aaaa", "a{3,}", true),
+            ("aaaa", "a{3,4}", true),
+            ("[3]", "\\[[0-9]\\]", true),
+            ("[@]", "\\[\\p{S}\\]", true),
+            ("🙂🎉", "[🙂].", true),
+            ("foo", "fo", false),
+            ("foo", "", false),
+            ("foo", "FOO", false),
+            ("", "foo", false),
+            // Dot matches anything but newline
+            ("\n", ".", false),
+            ("^", "[^^]", false),
+        ]
+    }
+
+    // for these cases we only care about the prefix/suffix, the actual matching has already been
+    // tested in full_match()
+    fn partial() -> Vec<(&'static str, &'static str, bool)> {
+        vec![
+            ("abab", "ab", true),
+            ("foobarbaz", "bar", true),
+            ("barfoobaz", ".*foo", true),
+            ("barfoobaz", "foo.*", true),
         ]
     }
 
@@ -1401,6 +1453,20 @@ mod test {
             let result = parser.parse_quantifier();
 
             assert_eq!(result, Err(err));
+        }
+    }
+
+    #[test]
+    fn test_full_match() {
+        for (input, pattern, result) in full() {
+            assert_eq!(result, super::full_match(input, pattern));
+        }
+    }
+
+    #[test]
+    fn test_partial_match() {
+        for (input, pattern, result) in partial() {
+            assert_eq!(result, super::partial_match(input, pattern));
         }
     }
 }

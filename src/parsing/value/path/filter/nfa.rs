@@ -1,4 +1,4 @@
-use crate::parsing::value::path::filter::regexp::{CharClass, Regexp};
+use crate::parsing::value::path::filter::regex::{CharClass, Regex};
 
 enum State {
     // from the paper we can see that single characters have 1 danging arrow in their fragment
@@ -23,7 +23,7 @@ pub(super) struct Fragment {
 
 pub(super) struct NfaBuilder {
     states: Vec<State>,
-    nodes: Vec<Regexp>,
+    nodes: Vec<Regex>,
     classes: Vec<CharClass>,
 }
 
@@ -53,7 +53,7 @@ impl NfaBuilder {
         }
     }
 
-    pub(super) fn new(nodes: Vec<Regexp>, classes: Vec<CharClass>) -> Self {
+    pub(super) fn new(nodes: Vec<Regex>, classes: Vec<CharClass>) -> Self {
         Self {
             states: Vec::new(),
             nodes,
@@ -93,7 +93,7 @@ impl NfaBuilder {
             // empty input string
             // we create a single split state where we have 2 dangling arrows that will be connected
             // to the ACCEPT state
-            Regexp::Empty => {
+            Regex::Empty => {
                 let s = self.append(State::Split(None, None));
                 Fragment {
                     start: s,
@@ -103,7 +103,7 @@ impl NfaBuilder {
             // closure under concatenation(check the notes)
             // we know that we use as start the lhs start, f1.start, and outs the rhs outs but with
             // patch we make sure we connect the lhs.outs to the rhs. start
-            Regexp::Concat(lhs, rhs) => {
+            Regex::Concat(lhs, rhs) => {
                 // from the paper we can see that concat does not create a new state
                 let f1 = self.walk(lhs);
                 let f2 = self.walk(rhs);
@@ -132,7 +132,7 @@ impl NfaBuilder {
             // what we want after is no matter what choice we made a or b to move to the next state, this
             // happens by doing f1.expand(f2.outs), we merge the dangling arrows; important to note there
             // is no patch in this case
-            Regexp::Union(lhs, rhs) => {
+            Regex::Union(lhs, rhs) => {
                 let mut f1 = self.walk(lhs);
                 let f2 = self.walk(rhs);
                 let start = self.append(State::Split(Some(f1.start), Some(f2.start)));
@@ -150,7 +150,7 @@ impl NfaBuilder {
             // next take f.outs the dangling arrow that we have from creating fragment 'a' and make
             // it point to split to handle the multiple a's case // self.patch(&f.outs, split)
             // look at the image in the paper, easier when visualized
-            Regexp::Star(idx) => {
+            Regex::Star(idx) => {
                 let f = self.walk(idx);
                 let split = self.append(State::Split(Some(f.start), None));
                 self.patch(&f.outs, split);
@@ -167,7 +167,7 @@ impl NfaBuilder {
             // the starting state for this new fragment is f.start because we expect at least one
             // 'a+' needs at least one 'a' so the fragment starts from f.start(a)
             // 'a?' and 'a*' start from the new split state because it can be 'a' or empty
-            Regexp::Plus(idx) => {
+            Regex::Plus(idx) => {
                 let f = self.walk(idx);
                 let split = self.append(State::Split(Some(f.start), None));
                 self.patch(&f.outs, split);
@@ -192,7 +192,7 @@ impl NfaBuilder {
             //               └────────────────────┘
             //
             // in either case both need to be patched later to point to Accept
-            Regexp::Question(idx) => {
+            Regex::Question(idx) => {
                 let mut f = self.walk(idx);
                 let split = self.append(State::Split(Some(f.start), None));
                 f.outs.push(split);
@@ -201,7 +201,7 @@ impl NfaBuilder {
                     outs: f.outs,
                 }
             }
-            Regexp::Atom(idx) => {
+            Regex::Atom(idx) => {
                 // this none is the dangling arrow that the paper shows for matching a single character
                 // for example if all we have is 'a' after walking the ast we will connect(patch) this
                 // dangling arrow to the ACCEPT state
@@ -219,13 +219,15 @@ impl NfaBuilder {
 
 pub(super) struct Nfa {
     states: Vec<State>,
-    // read the comment on parser struct in regexp.rs
+    // read the comment on parser struct in regex
     classes: Vec<CharClass>,
     start: usize,
 }
 
 impl Nfa {
     // for detailed examples look at the notes: Tracing
+    //
+    // for full match we ask: Does the pattern match the entire input?
     //
     // in the full match case we return true when we are done processing the input and we 1 Accept
     // state
@@ -234,6 +236,9 @@ impl Nfa {
 
         for c in input.chars() {
             states = self.step(states, c);
+            if states.is_empty() {
+                return false;
+            }
             states = self.advance_epsilon(states);
         }
         states
@@ -241,6 +246,18 @@ impl Nfa {
             .any(|s| matches!(self.states[s], State::Accept))
     }
 
+    // For the partial match we ask: Does the pattern appear anywhere inside the input?
+    //
+    // We can approach this in two different ways:
+    //  - prepend .* in the input
+    //  - push the start after every step
+    //
+    // the 1st one changes the input which we will avoid and go with the 2nd approach
+    // look for examples in the notes: Tracing, on why it works
+    //
+    // At every character we say: Continue any in-progress matches from previous positions, also
+    // start a fresh match attempt from this position. This handles the prefix part and for the suffix
+    // we check after every step if we landed in an Accept state
     pub(super) fn partial_match(&mut self, input: &str) -> bool {
         let mut states = self.advance_epsilon(vec![self.start]);
 
@@ -310,6 +327,7 @@ impl Nfa {
             seen |= 1 << i;
             next.push(i);
             if let State::Split(out1, out2) = self.states[i] {
+                // at this point no state has dangling arrows so it is safe to call unwrap()
                 stack.push(out1.unwrap());
                 stack.push(out2.unwrap());
             }

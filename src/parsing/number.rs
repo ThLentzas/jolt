@@ -1,6 +1,6 @@
-#[cfg(feature = "big_decimal")]
+#[cfg(feature = "arbitrary_precision")]
 use bigdecimal::BigDecimal;
-#[cfg(feature = "big_decimal")]
+#[cfg(feature = "arbitrary_precision")]
 use bigdecimal::num_bigint::BigInt;
 use std::cmp::Ordering;
 use std::{error, fmt};
@@ -78,9 +78,9 @@ pub struct Number {
 enum NumberKind {
     I64(i64),
     F64(f64),
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     BigInt(BigInt),
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     BigDecimal(BigDecimal),
 }
 
@@ -101,7 +101,7 @@ impl Number {
         }
     }
 
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     pub fn as_big_decimal(&self) -> Option<BigDecimal> {
         match &self.kind {
             NumberKind::BigDecimal(v) => Some(v.clone()),
@@ -109,7 +109,7 @@ impl Number {
         }
     }
 
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     pub fn as_big_int(&self) -> Option<BigInt> {
         match &self.kind {
             NumberKind::BigInt(v) => Some(v.clone()),
@@ -145,31 +145,31 @@ impl PartialOrd for Number {
             (NumberKind::F64(lhs), NumberKind::F64(rhs)) => lhs.partial_cmp(rhs),
             (NumberKind::I64(lhs), NumberKind::F64(rhs)) => (*lhs as f64).partial_cmp(rhs),
             (NumberKind::F64(lhs), NumberKind::I64(rhs)) => lhs.partial_cmp(&(*rhs as f64)),
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigDecimal(lhs), NumberKind::I64(rhs)) => {
                 lhs.partial_cmp(&BigDecimal::from(rhs))
             }
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::I64(lhs), NumberKind::BigDecimal(rhs)) => {
                 BigDecimal::from(lhs).partial_cmp(rhs)
             }
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigInt(lhs), NumberKind::BigDecimal(rhs)) => {
                 BigDecimal::from(lhs.clone()).partial_cmp(rhs)
             }
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigDecimal(lhs), NumberKind::BigInt(rhs)) => {
                 lhs.partial_cmp(&BigDecimal::from(rhs.clone()))
             }
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigInt(lhs), NumberKind::BigInt(rhs)) => lhs.partial_cmp(rhs),
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigDecimal(lhs), NumberKind::BigDecimal(rhs)) => lhs.partial_cmp(rhs),
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::BigInt(lhs), NumberKind::I64(rhs)) => lhs.partial_cmp(&BigInt::from(*rhs)),
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             (NumberKind::I64(lhs), NumberKind::BigInt(rhs)) => BigInt::from(*lhs).partial_cmp(rhs),
-            #[cfg(feature = "big_decimal")]
+            #[cfg(feature = "arbitrary_precision")]
             _ => None,
         }
     }
@@ -191,7 +191,7 @@ impl From<f64> for Number {
     }
 }
 
-#[cfg(feature = "big_decimal")]
+#[cfg(feature = "arbitrary_precision")]
 impl From<BigDecimal> for Number {
     fn from(val: BigDecimal) -> Self {
         Number {
@@ -200,7 +200,7 @@ impl From<BigDecimal> for Number {
     }
 }
 
-#[cfg(feature = "big_decimal")]
+#[cfg(feature = "arbitrary_precision")]
 impl From<BigInt> for Number {
     fn from(val: BigInt) -> Self {
         Number {
@@ -293,9 +293,9 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
     let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
     let s = std::str::from_utf8(buffer).unwrap();
 
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     type N = BigDecimal;
-    #[cfg(not(feature = "big_decimal"))]
+    #[cfg(not(feature = "arbitrary_precision"))]
     type N = f64;
     if float {
         return Number::from(s.parse::<N>().unwrap());
@@ -304,7 +304,7 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
     // Try to optimize even if big_decimal is true; for any integer we can still store it as i64
     // as long as it is not out of range. In read() we don't check if the number is out of range
     // when big_decimal is enabled
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     {
         let digits = if buffer[0] == b'-' { &buffer[1..] } else { buffer };
         if is_out_of_range_i64(digits) {
@@ -378,7 +378,7 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     }
 
     let slice = &buffer[start..*pos];
-    if !cfg!(feature = "big_decimal") && is_out_of_range(slice, state) {
+    if !cfg!(feature = "arbitrary_precision") && is_out_of_range(slice, state) {
         return Err(NumericError {
             kind: NumericErrorKind::OutOfRange(OutOfRangeError { pos: start }),
             pos: start,
@@ -582,7 +582,7 @@ impl error::Error for NumericError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     use std::str::FromStr;
 
     fn invalid_numbers() -> Vec<(&'static [u8], NumericError)> {
@@ -767,7 +767,7 @@ mod tests {
             (Number::from(5.0), Number::from(5), Some(Ordering::Equal)),
         ];
 
-        #[cfg(feature = "big_decimal")]
+        #[cfg(feature = "arbitrary_precision")]
         {
             // i64/BigInt
             entries.push((

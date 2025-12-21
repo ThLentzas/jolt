@@ -527,11 +527,11 @@ fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::BigDecimal;
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::num_bigint::BigInt;
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     use std::str::FromStr;
 
     fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "big_decimal")]
+    #[cfg(feature = "arbitrary_precision")]
     fn valid_array() {
         let buffer = "[116, -943, 9007199254740991, -3.14159265358979e+100, 0.1, 340282366920938463463374607431768211456]".as_bytes();
 
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "big_decimal"))]
+    #[cfg(not(feature = "arbitrary_precision"))]
     fn valid_object() {
         // can't use br## because 🙂 is a Non ASCII character, empty strings as keys are allowed
         let buffer = r#"{

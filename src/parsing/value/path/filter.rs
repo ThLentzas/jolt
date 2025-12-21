@@ -1,11 +1,11 @@
 use crate::parsing::value::path::{Segment, SegmentKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::Value;
-use std::borrow::Cow;
 use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
+use std::borrow::Cow;
 
 pub(crate) mod function;
-mod regexp;
+mod regex;
 mod nfa;
 
 // https://docs.rs/recursion/latest/recursion/
@@ -20,7 +20,6 @@ mod nfa;
 // AST
 #[derive(Debug, PartialEq)]
 pub(crate) enum LogicalExpr {
-    // toDo: explain how with the order of read methods in logical expression we handle precedence
     Comparison(ComparisonExpr),
     Test(TestExpr),
     And(Box<LogicalExpr>, Box<LogicalExpr>),
@@ -227,11 +226,9 @@ impl ComparisonOp {
     }
 }
 
-// toDo: check this for our `Regex` validation https://docs.rs/regex/latest/regex/
 // toDo: check section 4 for any Security Concerns
 // toDo: consider writing a LinkedHashMap
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
-// toDo: write about precedence in read_logical
 // toDo: explain the lifetimes in each case
 // toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
 // toDo:  adjust the paths for the constants in parsing
@@ -241,3 +238,5 @@ impl ComparisonOp {
 // toDo: maybe rename every lifetime that refers to a value in root as r?
 // toDo: remove pos from Eof error variants
 // toDo: is it possible to use the arena approach for the logical expressions
+// toDo: check peek() if it should return current or next
+// toDo: review anchors

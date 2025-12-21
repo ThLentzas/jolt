@@ -1730,7 +1730,7 @@ mod tests {
     fn wildcard_on_object() {
         let val = json!({
             "key": "value",
-            "key_1": "value_1"
+            "key1": "value1"
         });
         let res = val.select_as_values("$.*").unwrap();
 
