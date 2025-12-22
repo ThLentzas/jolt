@@ -1,51 +1,6 @@
 use crate::parsing::value::Value;
 use std::rc::Rc;
 
-pub(crate) trait Tracker<'a>: Clone {
-    type Trace: Clone;
-
-    fn root() -> Self::Trace;
-    // keys live as long as the root, since they exist in root
-    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace;
-}
-
-#[derive(Copy, Clone)]
-pub(crate) struct NoOpTracker;
-
-impl Tracker<'_> for NoOpTracker {
-    type Trace = ();
-
-    fn root() -> Self::Trace {}
-    fn descend(_: &(), _: Step) -> () {} // this works as well {()} because it also returns ()
-}
-
-#[derive(Copy, Clone)]
-pub(crate) struct PathTracker;
-
-impl<'a> Tracker<'a> for PathTracker {
-    // Trace needs to have at least the same visibility as PathTrace
-    type Trace = Option<Rc<PathTrace<'a>>>;
-
-    fn root() -> Self::Trace {
-        Some(Rc::new(PathTrace {
-            parent: None,
-            step: Step::Root,
-        }))
-    }
-
-    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace {
-        if let Some(p) = parent {
-            Some(Rc::new(PathTrace {
-                // idiomatic way according to the docs, don't use p.clone()
-                parent: Some(Rc::clone(p)),
-                step,
-            }))
-        } else {
-            None
-        }
-    }
-}
-
 // It describes only the specific move we just made, where we stepped into.
 pub(crate) enum Step<'a> {
     Root,
@@ -63,7 +18,7 @@ pub(crate) struct PathTrace<'a> {
 }
 
 impl<'a> PathTrace<'a> {
-    pub(crate) fn to_npath(&self) -> String{
+    pub(crate) fn to_npath(&self) -> String {
         let mut steps = Vec::new();
         let mut current = self;
 
@@ -91,13 +46,86 @@ impl<'a> PathTrace<'a> {
             match step {
                 Step::Root => (),
                 Step::Key(key) => path.push_str(format_name(key).as_str()),
-                // char in Rust is a Unicode Scalar value so it is safe cast
-                Step::Index(i) => path.push(char::from_u32(*i as u32).unwrap()),
+                // we can't call char::from_u32(*i as u32).unwrap()
+                // 'i' in this case is the codepoint, so if index is 1 we get back '\u{1}' which
+                // is a control character
+                Step::Index(i) => path.push_str(&*i.to_string()),
             }
             path.push(']');
         }
         path
     }
+}
+
+pub(crate) trait Tracker<'a>: Clone {
+    type Trace: Clone;
+
+    fn root() -> Self::Trace;
+    // keys live as long as the root, since they exist in root
+    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace;
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct NoOpTracker;
+
+impl Tracker<'_> for NoOpTracker {
+    type Trace = ();
+
+    fn root() -> Self::Trace {}
+    fn descend(_: &(), _: Step) -> () {} // this works as well {()} because it also returns ()
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct PathTracker;
+
+impl<'a> Tracker<'a> for PathTracker {
+    // Trace needs to have at least the same visibility as PathTrace
+    // We use Option because root has no parent path
+    type Trace = Option<Rc<PathTrace<'a>>>;
+
+    fn root() -> Self::Trace {
+        Some(Rc::new(PathTrace {
+            parent: None,
+            step: Step::Root,
+        }))
+    }
+
+    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace {
+        if let Some(p) = parent {
+            Some(Rc::new(PathTrace {
+                // idiomatic way according to the docs, don't use p.clone()
+                parent: Some(Rc::clone(p)),
+                step,
+            }))
+        } else {
+            None
+        }
+    }
+}
+
+// value and the root to value path
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PathNode<'a, T> {
+    pub(crate) val: &'a Value,
+    pub(crate) trace: T,
+}
+
+// Consumes PathNode returns Node
+impl<'a> From<PathNode<'a, Option<Rc<PathTrace<'a>>>>> for Node<'a> {
+    fn from(cursor: PathNode<'a, Option<Rc<PathTrace<'a>>>>) -> Self {
+        let path = cursor.trace.unwrap().to_npath();
+        Node {
+            value: cursor.val,
+            path,
+        }
+    }
+}
+
+// what we return to the user
+#[derive(Debug, PartialEq, Clone)]
+pub struct Node<'a> {
+    pub value: &'a Value,
+    pub path: String,
 }
 
 // formats a name selector to be compliant with the npath requirements
@@ -126,30 +154,6 @@ fn format_name(name: &str) -> String {
             c => val.push(c),
         }
     }
+    val.push('\'');
     val
-}
-
-// value and the root to value path
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PathNode<'a, T> {
-    pub(crate) val: &'a Value,
-    pub(crate) trace: T,
-}
-
-// Consumes PathNode returns Node
-impl<'a> From<PathNode<'a, Option<Rc<PathTrace<'a>>>>> for Node<'a> {
-    fn from(cursor: PathNode<'a, Option<Rc<PathTrace<'a>>>>) -> Self {
-        let path = cursor.trace.unwrap().to_npath();
-        Node {
-            value: cursor.val,
-            path,
-        }
-    }
-}
-
-// what we return to the user
-#[derive(Debug, Clone)]
-pub struct Node<'a> {
-    pub value: &'a Value,
-    pub path: String,
 }

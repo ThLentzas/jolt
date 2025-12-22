@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
         if utf8::is_bom_present(self.buffer) {
-            self.lexer.consume(3);
+            self.lexer.advance(3);
         }
 
         let token = self.peek()?;
@@ -397,7 +397,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume(&mut self, n: usize) {
-        self.lexer.consume(n)
+        self.lexer.advance(n)
     }
 
     // peek and consume are used during the parsing process, next is used when we build the value

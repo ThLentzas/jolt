@@ -1,6 +1,6 @@
-use crate::parsing::utf8;
 use crate::parsing::error::{StringError, StringErrorKind};
 use crate::parsing::escapes::{self, EscapeError, EscapeErrorKind};
+use crate::parsing::utf8;
 use crate::parsing::value::error::{PointerError, PointerErrorKind};
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
@@ -11,18 +11,17 @@ use crate::parsing::value::error::{PointerError, PointerErrorKind};
 // original pointer path.
 pub(super) struct RefToken {
     pub(super) val: String,
-    pub(super) pos: usize
+    pub(super) pos: usize,
 }
 
 pub(super) struct Pointer<'a> {
     buffer: &'a [u8],
-    pos: usize
+    pos: usize,
 }
 
 impl<'a> Pointer<'a> {
-
     pub(super) fn new(buffer: &'a [u8]) -> Self {
-        Self { buffer, pos: 0}
+        Self { buffer, pos: 0 }
     }
 
     //  when we encounter '/' we treat it as a delimiter, and we create a token(apart from the 1st one)
@@ -60,10 +59,15 @@ impl<'a> Pointer<'a> {
         let mut start = self.pos;
         while self.pos < len && current != b'/' {
             match current {
-                c if c.is_ascii_control() => return Err(StringError{ kind: StringErrorKind::InvalidControlCharacter { byte: current }, pos: self.pos }),
+                c if c.is_ascii_control() => {
+                    return Err(StringError {
+                        kind: StringErrorKind::InvalidControlCharacter { byte: current },
+                        pos: self.pos,
+                    });
+                }
                 b'\\' => {
                     escapes::check_escape_character(self.buffer, self.pos)?;
-                    let ch = escapes::map_escape_character(self.buffer,  self.pos);
+                    let ch = escapes::map_escape_character(self.buffer, self.pos);
                     self.pos += escapes::len(self.buffer, self.pos) - 1;
                     if ch == '~' {
                         // check the next character in the buffer after the Unicode sequence mapped to `~`
@@ -99,7 +103,10 @@ impl<'a> Pointer<'a> {
 
         // We never check if token exceeds the StringValueLengthLimit because even if it does, no key
         // will ever map to that and we will return None
-        Ok(Some(RefToken { val: token, pos: start }))
+        Ok(Some(RefToken {
+            val: token,
+            pos: start,
+        }))
     }
 
     pub(super) fn check_start(&mut self) -> Result<(), PointerError> {
@@ -107,9 +114,12 @@ impl<'a> Pointer<'a> {
         // a pointer path always starts with '/', unless it is empty which we already checked by the time
         // this method gets called
         if self.buffer[0] != b'/' && self.buffer[0] != b'\\' {
-            return Err(PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 });
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidPointerSyntax,
+                pos: 0,
+            });
         }
-        self.pos += 1;// move past '/' or '\'
+        self.pos += 1; // move past '/' or '\'
 
         // was an escape sequence but didn't map to '/'
         if self.buffer[0] == b'\\' {
@@ -117,9 +127,12 @@ impl<'a> Pointer<'a> {
                 return Err(PointerError::from(StringError::from(e)));
             }
             if escapes::map_escape_character(self.buffer, 0) != '/' {
-                return Err(PointerError { kind: PointerErrorKind::InvalidPointerSyntax, pos: 0 });
+                return Err(PointerError {
+                    kind: PointerErrorKind::InvalidPointerSyntax,
+                    pos: 0,
+                });
             }
-            self.pos += 5;  // move past the sequence that mapped to '\'
+            self.pos += 5; // move past the sequence that mapped to '\'
         }
 
         Ok(())
@@ -149,18 +162,27 @@ impl<'a> Pointer<'a> {
                     '0' => {
                         self.pos += 6;
                         Ok('~')
-                    },
+                    }
                     '1' => {
                         self.pos += 6;
                         Ok('/')
                     }
-                    _ => Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\'}, pos: self.pos + 1 })
+                    _ => Err(EscapeError {
+                        kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\' },
+                        pos: self.pos + 1,
+                    }),
                 }
             }
             // ~8
-            Some(b) => Err(EscapeError { kind: EscapeErrorKind::UnknownEscapedCharacter { byte: *b }, pos: self.pos + 1 }),
+            Some(b) => Err(EscapeError {
+                kind: EscapeErrorKind::UnknownEscapedCharacter { byte: *b },
+                pos: self.pos + 1,
+            }),
             // ~ unpaired
-            None => Err(EscapeError { kind: EscapeErrorKind::UnexpectedEof, pos: self.pos })
+            None => Err(EscapeError {
+                kind: EscapeErrorKind::UnexpectedEof,
+                pos: self.pos,
+            }),
         }
     }
 }
@@ -171,21 +193,33 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
     let second = token.val.chars().nth(1);
 
     match (first, second) {
-        (Some('+') | Some('-'), Some('0'..='9')) => return Err(PointerError {
-            kind: PointerErrorKind::InvalidIndex { message: "index can not be prefixed with a sign" },
-            pos: token.pos
-        }),
-        (Some('0'), Some('0'..='9')) => return Err(PointerError {
-            kind: PointerErrorKind::InvalidIndex { message: "leading zeros are not allowed" },
-            pos: token.pos
-        }),
+        (Some('+') | Some('-'), Some('0'..='9')) => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "index can not be prefixed with a sign",
+                },
+                pos: token.pos,
+            });
+        }
+        (Some('0'), Some('0'..='9')) => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "leading zeros are not allowed",
+                },
+                pos: token.pos,
+            });
+        }
         (Some('-'), None) => return Ok(None),
         // if the token val does not start with a digit, it is invalid
-        (Some(d), _) if !d.is_ascii_digit() => return Err(PointerError {
-            kind: PointerErrorKind::InvalidIndex { message: "invalid array index" },
-            pos: token.pos
-        }),
-        _ => ()
+        (Some(d), _) if !d.is_ascii_digit() => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "invalid array index",
+                },
+                pos: token.pos,
+            });
+        }
+        _ => (),
     }
 
     // token had a digit as the first character, but it was not parsable to usize, we treat that

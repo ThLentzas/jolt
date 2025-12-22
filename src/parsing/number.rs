@@ -234,58 +234,6 @@ pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {
     Ok(val)
 }
 
-fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
-    if state.decimal_point || state.scientific_notation {
-        is_out_of_range_f64(buffer)
-    } else {
-        let digits = if state.negative { &buffer[1..] } else { buffer };
-        is_out_of_range_i64(digits)
-    }
-}
-
-// how we handle negatives?
-//
-// because the range is symmetric, if the number is greater than the limit in absolute value it means
-// that if positive, num > LIMIT and if num is negative it is smaller than -LIMIT.
-// this approach wouldn't work if LIMIT was i64::MAX because MIN/MAX are not symmetric
-fn is_out_of_range_i64(buffer: &[u8]) -> bool {
-    match buffer.len().cmp(&INT_LIMIT.len()) {
-        // fewer digits, in range
-        Ordering::Less => false,
-        // same length, compares the buffers lexicographically
-        Ordering::Equal => buffer > INT_LIMIT,
-        // more digits, definitely out of range
-        Ordering::Greater => true,
-    }
-}
-
-// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parsing::<f64>() to return inf/-inf
-// Based on that handling normal numbers is straightforward. If the result of parsing is inf/-inf since
-// infinity and nan are not supported in the json rfc we can safely say that the number is out of range
-//
-// If we actually had to parsing parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
-fn is_out_of_range_f64(buffer: &[u8]) -> bool {
-    let s = str::from_utf8(buffer).unwrap();
-    let val = s.parse::<f64>().unwrap();
-
-    val.is_infinite()
-}
-
-#[derive(Debug, PartialEq)]
-pub struct NumericError {
-    pub(super) kind: NumericErrorKind,
-    pub(super) pos: usize,
-}
-
-#[derive(Debug, PartialEq)]
-pub(super) enum NumericErrorKind {
-    LeadingZeros,
-    InvalidSign { message: &'static str },
-    InvalidScientific { message: &'static str },
-    InvalidDecimal { message: &'static str },
-    OutOfRange(OutOfRangeError),
-}
-
 // we are parsing from a buffer that represent the number's value as a utf8 string; it is a two-step
 // process: 1) convert the byte buffer to string 2) parse the string
 // always safe to call unwrap because previously we have called read()
@@ -306,7 +254,11 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
     // when big_decimal is enabled
     #[cfg(feature = "arbitrary_precision")]
     {
-        let digits = if buffer[0] == b'-' { &buffer[1..] } else { buffer };
+        let digits = if buffer[0] == b'-' {
+            &buffer[1..]
+        } else {
+            buffer
+        };
         if is_out_of_range_i64(digits) {
             return Number::from(s.parse::<BigInt>().unwrap());
         }
@@ -385,6 +337,159 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
         });
     };
     Ok(())
+}
+
+// the code below would work, but we needed to parse different numeric types(u8, i64 etc.)
+// when we want to parse integers for index selectors we need to use i64::MAX for our bound but
+// when we parse range quantifiers for regex we need min/max to be at most 3 digits to prevent
+// resource exhaustion we can't keep scanning for more than that and have a bound like i64::MAX
+// we need u8 or even i8.
+pub(crate) trait Atoi: Sized {
+    fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
+}
+
+// Leetcode atoi baby let's go!!!!!!!!!!!
+//
+// this is different from reading a json number when calling next(); in that case, we didn't
+// care about the value of the number, we just needed the range of the number in the initial
+// buffer, also we didn't know what type of number we had(i64, f64 etc)
+// we could also try to create a string by keeping track of the starting position and then
+// call s.parse() but that way we would traverse the same buffer range twice, once to create the
+// string and once to parse the number
+//
+// this way we handle overflow cases and having the number value with a single pass
+// pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
+//     let mut num: i64 = 0;
+//     let sign = if buffer[*pos] == b'-' {
+//         *pos += 1;
+//         -1
+//     } else {
+//         1
+//     };
+//
+//     let start = *pos;
+//     let mut current = buffer[*pos];
+//     while *pos < buffer.len() && current.is_ascii_digit() {
+//         if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
+//             return Err(OutOfRangeError { pos: start });
+//         }
+//         num = num * 10 + (current - 0x30) as i64;
+//         *pos += 1;
+//         if *pos < buffer.len() {
+//             current = buffer[*pos];
+//         }
+//     }
+//     Ok(sign * num)
+// }
+
+// this is probably poor design
+// why not have an enum NumericError with the variants below?
+//
+// a method like atoi() can return NumericError if nobody depended on it, like the case with JsonError
+// we never do From<JsonError> for Foo but for NumericError we do;  we do: impl From<NumericError>
+// for EscapeError then we call match on the NumericError variants, and we see that other than the
+// InvalidHexDigit there is not a variant on EscapeError that maps to OutOfRange so we end up doing
+// _ => unreachable() which is not recommended, from() should not panic!
+//
+// the same logic applies for impl From<NumericError> for PathError where we have the OutOfRange case
+#[derive(Debug, PartialEq)]
+pub(super) struct HexError {
+    pub(super) digit: u8,
+    pub(super) pos: usize,
+}
+
+// toDo: add the range as field
+#[derive(Debug, PartialEq)]
+pub(crate) struct OutOfRangeError {
+    pub(crate) pos: usize,
+}
+
+impl fmt::Display for OutOfRangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct NumericError {
+    pub(super) kind: NumericErrorKind,
+    pub(super) pos: usize,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum NumericErrorKind {
+    LeadingZeros,
+    InvalidSign { message: &'static str },
+    InvalidScientific { message: &'static str },
+    InvalidDecimal { message: &'static str },
+    OutOfRange(OutOfRangeError),
+}
+
+impl fmt::Display for NumericError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // for Leading zeros add: "json specification prohibits numbers from being prefixed with a plus sign"
+        match &self.kind {
+            NumericErrorKind::LeadingZeros => {
+                write!(
+                    f,
+                    "json specification prohibits numbers from being prefixed with a plus sign at index {} ",
+                    self.pos
+                )
+            }
+            NumericErrorKind::InvalidSign { message } => {
+                write!(f, "{} at index {}", message, self.pos)
+            }
+            NumericErrorKind::InvalidScientific { message } => {
+                write!(f, "{} at index {}", message, self.pos)
+            }
+            NumericErrorKind::InvalidDecimal { message } => {
+                write!(f, "{} at index {}", message, self.pos)
+            }
+            NumericErrorKind::OutOfRange(err) => {
+                write!(f, "{} at index {}", err, self.pos)
+            }
+        }
+    }
+}
+
+impl error::Error for OutOfRangeError {}
+impl error::Error for NumericError {}
+
+fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
+    if state.decimal_point || state.scientific_notation {
+        is_out_of_range_f64(buffer)
+    } else {
+        let digits = if state.negative { &buffer[1..] } else { buffer };
+        is_out_of_range_i64(digits)
+    }
+}
+
+// how we handle negatives?
+//
+// because the range is symmetric, if the number is greater than the limit in absolute value it means
+// that if positive, num > LIMIT and if num is negative it is smaller than -LIMIT.
+// this approach wouldn't work if LIMIT was i64::MAX because MIN/MAX are not symmetric
+fn is_out_of_range_i64(buffer: &[u8]) -> bool {
+    match buffer.len().cmp(&INT_LIMIT.len()) {
+        // fewer digits, in range
+        Ordering::Less => false,
+        // same length, compares the buffers lexicographically
+        Ordering::Equal => buffer > INT_LIMIT,
+        // more digits, definitely out of range
+        Ordering::Greater => true,
+    }
+}
+
+// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parsing::<f64>() to return inf/-inf
+// Based on that handling normal numbers is straightforward. If the result of parsing is inf/-inf since
+// infinity and nan are not supported in the json rfc we can safely say that the number is out of range
+//
+// If we actually had to parsing parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
+fn is_out_of_range_f64(buffer: &[u8]) -> bool {
+    let s = str::from_utf8(buffer).unwrap();
+    let val = s.parse::<f64>().unwrap();
+
+    val.is_infinite()
 }
 
 fn check_decimal_point(
@@ -477,107 +582,6 @@ fn check_scientific_notation(
     }
     Ok(())
 }
-
-// the code below would work, but we needed to parse different numeric types(u8, i64 etc.)
-// when we want to parse integers for index selectors we need to use i64::MAX for our bound but
-// when we parse range quantifiers for regex we need min/max to be at most 3 digits to prevent
-// resource exhaustion we can't keep scanning for more than that and have a bound like i64::MAX
-// we need u8 or even i8.
-pub(crate) trait Atoi: Sized {
-    fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
-}
-
-// Leetcode atoi baby let's go!!!!!!!!!!!
-//
-// this is different from reading a json number when calling next(); in that case, we didn't
-// care about the value of the number, we just needed the range of the number in the initial
-// buffer, also we didn't know what type of number we had(i64, f64 etc)
-// we could also try to create a string by keeping track of the starting position and then
-// call s.parse() but that way we would traverse the same buffer range twice, once to create the
-// string and once to parse the number
-//
-// this way we handle overflow cases and having the number value with a single pass
-// pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
-//     let mut num: i64 = 0;
-//     let sign = if buffer[*pos] == b'-' {
-//         *pos += 1;
-//         -1
-//     } else {
-//         1
-//     };
-//
-//     let start = *pos;
-//     let mut current = buffer[*pos];
-//     while *pos < buffer.len() && current.is_ascii_digit() {
-//         if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
-//             return Err(OutOfRangeError { pos: start });
-//         }
-//         num = num * 10 + (current - 0x30) as i64;
-//         *pos += 1;
-//         if *pos < buffer.len() {
-//             current = buffer[*pos];
-//         }
-//     }
-//     Ok(sign * num)
-// }
-
-// this is probably poor design
-// why not have an enum NumericError with the variants below?
-//
-// a method like atoi() can return NumericError if nobody depended on it, like the case with JsonError
-// we never do From<JsonError> for Foo but for NumericError we do;  we do: impl From<NumericError>
-// for EscapeError then we call match on the NumericError variants, and we see that other than the
-// InvalidHexDigit there is not a variant on EscapeError that maps to OutOfRange so we end up doing
-// _ => unreachable() which is not recommended, from() should not panic!
-//
-// the same logic applies for impl From<NumericError> for PathError where we have the OutOfRange case
-#[derive(Debug, PartialEq)]
-pub(super) struct HexError {
-    pub(super) digit: u8,
-    pub(super) pos: usize,
-}
-
-// toDo: add the range as field
-#[derive(Debug, PartialEq)]
-pub(crate) struct OutOfRangeError {
-    pub(crate) pos: usize,
-}
-
-impl fmt::Display for OutOfRangeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
-    }
-}
-
-impl fmt::Display for NumericError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // for Leading zeros add: "json specification prohibits numbers from being prefixed with a plus sign"
-        match &self.kind {
-            NumericErrorKind::LeadingZeros => {
-                write!(
-                    f,
-                    "json specification prohibits numbers from being prefixed with a plus sign at index {} ",
-                    self.pos
-                )
-            }
-            NumericErrorKind::InvalidSign { message } => {
-                write!(f, "{} at index {}", message, self.pos)
-            }
-            NumericErrorKind::InvalidScientific { message } => {
-                write!(f, "{} at index {}", message, self.pos)
-            }
-            NumericErrorKind::InvalidDecimal { message } => {
-                write!(f, "{} at index {}", message, self.pos)
-            }
-            NumericErrorKind::OutOfRange(err) => {
-                write!(f, "{} at index {}", err, self.pos)
-            }
-        }
-    }
-}
-
-impl error::Error for OutOfRangeError {}
-impl error::Error for NumericError {}
 
 #[cfg(test)]
 mod tests {

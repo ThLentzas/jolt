@@ -62,7 +62,7 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
             // 128 - 256 = -128 in i8, 191 - 256 = -95 so for the value to be valid it has to be
             // in the range -128 to -65, any number greater than -64 is not
             if second as i8 >= -64 {
-                return Err(Utf8Error{ len: 2, pos });
+                return Err(Utf8Error { len: 2, pos });
             }
         }
         3 => {
@@ -74,14 +74,14 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
                 | (0xE1..=0xEC, 0x80..=0xBF)
                 | (0xED, 0x80..=0x9F)
                 | (0xEE..=0xEF, 0x80..=0xBF) => {}
-                _ => return Err(Utf8Error{ len: 3, pos }),
+                _ => return Err(Utf8Error { len: 3, pos }),
             }
             let Some(third) = next(buffer, &mut i) else {
                 return Err(Utf8Error { len: 3, pos });
             };
             // 1 tail byte
             if third as i8 >= -64 {
-                return Err(Utf8Error{ len: 3, pos });
+                return Err(Utf8Error { len: 3, pos });
             }
         }
         4 => {
@@ -118,10 +118,30 @@ pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
 
 pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> char {
     let width = utf8_char_width(buffer[pos]);
-    str::from_utf8(&buffer[pos..pos + width]).unwrap()
+    str::from_utf8(&buffer[pos..pos + width])
+        .unwrap()
         .chars()
         .next()
         .unwrap()
+}
+
+// only 1 kind of Utf8Error, InvalidByteSequence
+#[derive(Debug, PartialEq)]
+pub(super) struct Utf8Error {
+    pub(super) len: u8,
+    pub(super) pos: usize,
+}
+
+impl error::Error for Utf8Error {}
+
+impl fmt::Display for Utf8Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid {} byte utf-8 sequence from index {}",
+            self.len, self.pos
+        )
+    }
 }
 
 fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
@@ -130,21 +150,6 @@ fn next(bytes: &[u8], pos: &mut usize) -> Option<u8> {
         return None;
     }
     Some(bytes[*pos])
-}
-
-// only 1 kind of Utf8Error, InvalidByteSequence
-#[derive(Debug, PartialEq)]
-pub(super) struct Utf8Error {
-    pub(super) len: u8,
-    pub(super) pos: usize
-}
-
-impl error::Error for Utf8Error {}
-
-impl fmt::Display for Utf8Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid {} byte utf-8 sequence from index {}", self.len, self.pos)
-    }
 }
 
 #[cfg(test)]
@@ -173,77 +178,35 @@ mod tests {
             // incomplete 2-byte
             (&[0xC7], Utf8Error { len: 2, pos: 0 }),
             // invalid tail
-            (
-                &[0xC2, 0x7F],
-                Utf8Error { len: 2, pos: 0 },
-            ),
+            (&[0xC2, 0x7F], Utf8Error { len: 2, pos: 0 }),
             // incomplete 3-byte
             (&[0xE0], Utf8Error { len: 3, pos: 0 }),
-            (
-                &[0xE0, 0xA2],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xE0, 0xA2], Utf8Error { len: 3, pos: 0 }),
             // E0 needs A0-BF as 2nd byte
-            (
-                &[0xE0, 0xC1, 0x82],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xE0, 0xC1, 0x82], Utf8Error { len: 3, pos: 0 }),
             // E1..=EC needs 0x80..=0xBF as 2nd byte
-            (
-                &[0xE8, 0x72, 0x89],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xE8, 0x72, 0x89], Utf8Error { len: 3, pos: 0 }),
             // E0 needs 80-9F as 2nd byte
-            (
-                &[0xED, 0xB1, 0x83],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xED, 0xB1, 0x83], Utf8Error { len: 3, pos: 0 }),
             // EE..=EF needs 0x80..=0xBF as 2nd byte
-            (
-                &[0xEE, 0x63, 0x94],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xEE, 0x63, 0x94], Utf8Error { len: 3, pos: 0 }),
             // 3rd byte must always be tail no matter the first two, 0x80..=0xBF
-            (
-                &[0xE0, 0xA7, 0xD1],
-                Utf8Error { len: 3, pos: 0 },
-            ),
+            (&[0xE0, 0xA7, 0xD1], Utf8Error { len: 3, pos: 0 }),
             // incomplete 4-byte
             (&[0xF0], Utf8Error { len: 4, pos: 0 }),
-            (
-                &[0xF2, 0x99],
-                Utf8Error { len: 4, pos: 0 },
-            ),
-            (
-                &[0xF4, 0x81, 0x82],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF2, 0x99], Utf8Error { len: 4, pos: 0 }),
+            (&[0xF4, 0x81, 0x82], Utf8Error { len: 4, pos: 0 }),
             // F0 needs 90-BF as 2nd byte
-            (
-                &[0xF0, 0x41, 0xBD, 0xAF],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF0, 0x41, 0xBD, 0xAF], Utf8Error { len: 4, pos: 0 }),
             // 0xF1..=0xF3 needs 0x80..=0xBF as 2nd byte
-            (
-                &[0xF2, 0xD2, 0x92, 0x98],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF2, 0xD2, 0x92, 0x98], Utf8Error { len: 4, pos: 0 }),
             // 0xF4, needs 0x80..=0x8F as 2nd byte
-            (
-                &[0xF4, 0xAB, 0xB3, 0xB5],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF4, 0xAB, 0xB3, 0xB5], Utf8Error { len: 4, pos: 0 }),
             // any 4-byte sequence needs 2 trail bytes
             // out of range 3rd byte
-            (
-                &[0xF3, 0x97, 0x52, 0x8D],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF3, 0x97, 0x52, 0x8D], Utf8Error { len: 4, pos: 0 }),
             // out of range 4th byte
-            (
-                &[0xF3, 0x97, 0xBB, 0x022],
-                Utf8Error { len: 4, pos: 0 },
-            ),
+            (&[0xF3, 0x97, 0xBB, 0x022], Utf8Error { len: 4, pos: 0 }),
         ]
     }
 

@@ -1,30 +1,18 @@
 use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::value::Value;
+use crate::parsing::number::{self, Atoi};
 use crate::parsing::value::error::{PathError, PathErrorKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnExprArg};
 use crate::parsing::value::path::filter::{
-    Comparable,
-    ComparisonExpr,
-    ComparisonOp,
-    EmbeddedQuery,
-    EmbeddedQueryType,
-    LogicalExpr,
+    Comparable, ComparisonExpr, ComparisonOp, EmbeddedQuery, EmbeddedQueryType, LogicalExpr,
     TestExpr,
 };
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
-use crate::parsing::{self, escapes, number, utf8};
+use crate::parsing::value::Value;
+use crate::parsing::{self, escapes, utf8};
 use std::cmp;
-use crate::parsing::number::Atoi;
 
 pub(super) mod filter;
 pub(crate) mod tracker;
-
-pub(super) struct Parser<'a, 'v> {
-    // toDo: this could also be chars() since we never have to worry about running into an invalid ut8
-    buffer: &'a [u8],
-    pos: usize,
-    root: &'v Value,
-}
 
 #[derive(Debug, PartialEq)]
 struct Segment {
@@ -38,15 +26,6 @@ enum SegmentKind {
     Descendant,
 }
 
-// this is similar to NumberState, otherwise we would have to pass Option<..> 3 times every time we
-// need a slice
-#[derive(Debug, PartialEq)]
-struct Slice {
-    start: Option<i64>,
-    end: Option<i64>,
-    step: Option<i64>,
-}
-
 #[derive(Debug, PartialEq)]
 enum Selector {
     Name(String),
@@ -57,18 +36,13 @@ enum Selector {
     Filter(LogicalExpr),
 }
 
-#[derive(Debug, PartialEq)]
-struct Range {
-    // current can become negative when traversing from right to left(negative step)
-    // current = 1, step = -2 -> current becomes -1
-    current: isize,
-    // end can also be negative when we iterate in reverse order, the lower bound is exclusive
-    // len = 5, current = 4, end = -1, step = -1 gives us all elements in reverse order (-1, 4]
-    end: isize,
-    step: i64,
-}
-
 impl Segment {
+    fn new(kind: SegmentKind) -> Self {
+        Self {
+            kind,
+            selectors: Vec::new(),
+        }
+    }
     fn is_singular(&self) -> bool {
         match self.kind {
             SegmentKind::Descendant => false,
@@ -87,6 +61,26 @@ impl Selector {
             Selector::Filter(_) => false,
         }
     }
+}
+
+// this is similar to NumberState, otherwise we would have to pass Option<..> 3 times every time we
+// need a slice
+#[derive(Debug, PartialEq)]
+struct Slice {
+    start: Option<i64>,
+    end: Option<i64>,
+    step: Option<i64>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Range {
+    // current can become negative when traversing from right to left(negative step)
+    // current = 1, step = -2 -> current becomes -1
+    current: isize,
+    // end can also be negative when we iterate in reverse order, the lower bound is exclusive
+    // len = 5, current = 4, end = -1, step = -1 gives us all elements in reverse order (-1, 4]
+    end: isize,
+    step: i64,
 }
 
 impl Range {
@@ -149,7 +143,7 @@ impl Range {
             } else {
                 upper as isize
             },
-            // end keeps track of where our range ends, if step is negative it is the lower bound 
+            // end keeps track of where our range ends, if step is negative it is the lower bound
             // else the upper
             end: if step >= 0 {
                 upper as isize
@@ -186,13 +180,11 @@ impl Iterator for Range {
     }
 }
 
-impl Segment {
-    fn new(kind: SegmentKind) -> Self {
-        Self {
-            kind,
-            selectors: Vec::new(),
-        }
-    }
+pub(super) struct Parser<'a, 'v> {
+    // toDo: this could also be chars() since we never have to worry about running into an invalid ut8
+    buffer: &'a [u8],
+    pos: usize,
+    root: &'v Value,
 }
 
 impl<'a, 'v> Parser<'a, 'v> {
@@ -209,9 +201,9 @@ impl<'a, 'v> Parser<'a, 'v> {
     // value the query is applied to. No further errors relating to the well-formedness and the
     // validity of a JSONPath query can be raised during application of the query to a value.
     //
-    // As mentioned above invalid paths should always return an error which means even if we process
-    // some segment and returned an empty list we can NOT stop and return immediately because the
-    // path expression might still be invalid.
+    // Invalid paths should always return an error which means even if we process some segment and
+    // returned an empty list we can NOT stop and return immediately because the path expression
+    // might still be invalid.
     //
     // path_expr = "$[1]['foo]"
     // val = "3"
@@ -224,7 +216,7 @@ impl<'a, 'v> Parser<'a, 'v> {
     // v as lifetime for the Tracker because the "keys" will live as long as the root, since they
     // exist in the root
     //
-    // we need to be explicit with the lifetime for PathNode otherwise it would tie to ti Query due to
+    // we need to be explicit with the lifetime for PathNode otherwise it would tie to Query due to
     // the 3rd rule
     // had this initially and caused issues in value.select(),
     // fn parse<T>(&mut self) -> Result<Vec<PathNode<T::Trace>>, PathError>
@@ -234,7 +226,9 @@ impl<'a, 'v> Parser<'a, 'v> {
     // From the Query's definition we know that it will never outlive the root, but it does not
     // mean that the root can not outlive the query, which is what happens in this case, query goes
     // out of scope, root still valid, returned values have the lifetime of root
-    pub(super) fn parse<T: Tracker<'v>>(&mut self) -> Result<Vec<PathNode<'v, T::Trace>>, PathError> {
+    pub(super) fn parse<T: Tracker<'v>>(
+        &mut self,
+    ) -> Result<Vec<PathNode<'v, T::Trace>>, PathError> {
         self.check_root()?;
 
         let root_trace = PathNode {
@@ -255,7 +249,6 @@ impl<'a, 'v> Parser<'a, 'v> {
         while let Some(segment) = self.parse_seg()? {
             writer.clear();
             match segment.kind {
-                // it is self.root and not &self.root because root is already a reference
                 SegmentKind::Child => {
                     apply_child_seg::<T>(self.root, &reader, &mut writer, &segment)
                 }
@@ -265,7 +258,6 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
             std::mem::swap(&mut reader, &mut writer);
         }
-
         // the final nodelist is in reader after the last swap
         Ok(reader)
     }
@@ -1042,7 +1034,10 @@ impl<'a, 'v> Parser<'a, 'v> {
                 parsing::read_keyword(self.buffer, &mut self.pos, "value".as_bytes())?;
                 name.push_str("value");
             }
-            _ => unreachable!("parse_fn_expr() called with invalid byte {} at index {}", current, self.pos),
+            _ => unreachable!(
+                "parse_fn_expr() called with invalid byte {} at index {}",
+                current, self.pos
+            ),
         }
 
         self.skip_ws()?;
@@ -1123,12 +1118,8 @@ impl<'a, 'v> Parser<'a, 'v> {
                     // we encountered no operator, map it as is
                     match arg {
                         Comparable::Literal(l) => args.push(FnExprArg::Literal(l)),
-                        Comparable::EmbeddedQuery(q) => {
-                            args.push(FnExprArg::EmbeddedQuery(q))
-                        }
-                        Comparable::FnExpr(f) => {
-                            args.push(FnExprArg::FnExpr(Box::new(f)))
-                        },
+                        Comparable::EmbeddedQuery(q) => args.push(FnExprArg::EmbeddedQuery(q)),
+                        Comparable::FnExpr(f) => args.push(FnExprArg::FnExpr(Box::new(f))),
                     }
                 }
             }
@@ -1364,7 +1355,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
             }
         }
         // the expression is evaluated for every value
-        // check the second to last entry in test_valid_selectors() in value.rs
+        // check the comment on the 4th to last entry in test_valid_selectors() in value.rs
         (Value::Object(map), Selector::Filter(expr)) => {
             for (key, val) in map.iter() {
                 if expr.evaluate(root, val) {
@@ -1406,10 +1397,10 @@ pub(super) fn normalize_index(index: i64, len: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::macros::json;
-    use crate::parsing::value::IndexMap;
     use crate::parsing::value::path::filter::function::FnExprError;
     use crate::parsing::value::path::filter::function::FnType;
     use crate::parsing::value::path::tracker::NoOpTracker;
+    use crate::parsing::value::IndexMap;
 
     fn invalid_root() -> Vec<(&'static str, PathError)> {
         vec![
@@ -1705,7 +1696,7 @@ mod tests {
         for (path_expr, err) in invalid_root() {
             let root = json!({});
             let mut query = Parser::new(path_expr.as_bytes(), &root);
-            let result  = query.parse::<NoOpTracker>();
+            let result = query.parse::<NoOpTracker>();
 
             assert_eq!(result, Err(err));
         }

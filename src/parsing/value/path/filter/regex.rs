@@ -40,6 +40,27 @@ pub(super) enum CharClass {
     Property(Property),
 }
 
+impl CharClass {
+    pub(super) fn matches(&self, t: char) -> bool {
+        match self {
+            CharClass::Literal(c) => *c == t,
+            // https://www.regular-expressions.info/dot.html
+            CharClass::Dot => t != '\n',
+            CharClass::ClassExpr(expr) => expr.matches(t),
+            CharClass::Property(p) => p.matches(t),
+        }
+    }
+}
+
+impl From<Escape> for CharClass {
+    fn from(value: Escape) -> Self {
+        match value {
+            Escape::Literal(c) => CharClass::Literal(c),
+            Escape::Property(p) => CharClass::Property(p),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) struct ClassExpr {
     negated: bool,
@@ -69,21 +90,7 @@ impl ExprItem {
             ExprItem::Range(l, h) => *l <= t && t <= *h,
         }
     }
-}
 
-impl CharClass {
-    pub(super) fn matches(&self, t: char) -> bool {
-        match self {
-            CharClass::Literal(c) => *c == t,
-            // https://www.regular-expressions.info/dot.html
-            CharClass::Dot => t != '\n',
-            CharClass::ClassExpr(expr) => expr.matches(t),
-            CharClass::Property(p) => p.matches(t),
-        }
-    }
-}
-
-impl ExprItem {
     // extracts the char from a literal to form a range
     fn as_char(&self) -> Option<char> {
         match self {
@@ -91,6 +98,75 @@ impl ExprItem {
             ExprItem::Literal(c) => Some(*c),
             _ => None,
         }
+    }
+}
+
+impl From<Escape> for ExprItem {
+    fn from(value: Escape) -> Self {
+        match value {
+            Escape::Literal(c) => ExprItem::Literal(c),
+            Escape::Property(p) => ExprItem::Property(p),
+        }
+    }
+}
+
+// major, minor
+#[derive(Debug, PartialEq)]
+enum GeneralCategory {
+    Letter,
+    LetterLowercase,
+    LetterModifier,
+    LetterOther,
+    LetterTitlecase,
+    LetterUppercase,
+    Mark,
+    MarkSpacingCombining,
+    MarkEnclosing,
+    MarkNonSpacing,
+    Number,
+    NumberDecimalDigit,
+    NumberLetter,
+    NumberOther,
+    Punctuation,
+    PunctuationConnector,
+    PunctuationDash,
+    PunctuationClose,
+    PunctuationFinalQuote,
+    PunctuationInitialQuote,
+    PunctuationOpen,
+    PunctuationOther,
+    Separator,
+    SeparatorLine,
+    SeparatorParagraph,
+    SeparatorSpace,
+    Symbol,
+    SymbolCurrency,
+    SymbolModifier,
+    SymbolMath,
+    SymbolOther,
+    Other,
+    // surrogates not allowed
+    OtherControl,
+    OtherFormat,
+    OtherNotAssigned,
+    OtherPrivateUse,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct Property {
+    category: GeneralCategory,
+    negated: bool,
+}
+
+enum Escape {
+    Literal(char),
+    Property(Property),
+}
+
+impl Property {
+    // toDo: load the property categories somehow :(
+    fn matches(&self, t: char) -> bool {
+        true
     }
 }
 
@@ -188,7 +264,7 @@ impl<'a> Parser<'a> {
     fn parse_union(&mut self) -> Result<usize, RegexError> {
         let mut lhs = self.parse_concat()?;
 
-        while self.peek().copied() == Some(b'|') {
+        while self.buffer.get(self.pos) == Some(&b'|') {
             self.consume(1);
             let rhs = self.parse_concat()?;
             lhs = self.push_node(Regex::Union(lhs, rhs));
@@ -221,7 +297,7 @@ impl<'a> Parser<'a> {
         // a?bb* -> parse_atom() returns a and then parse_quantifier() peeks and sees ?, expands it and
         // control returns back to parse_concat()
         loop {
-            match self.peek() {
+            match self.buffer.get(self.pos) {
                 Some(b'|') | Some(b')') | None => break,
                 _ => {
                     let rhs = self.parse_quantifier()?;
@@ -235,7 +311,7 @@ impl<'a> Parser<'a> {
     fn parse_quantifier(&mut self) -> Result<usize, RegexError> {
         let atom_idx = self.parse_atom()?;
 
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b'*') => {
                 self.consume(1);
                 let node = Regex::Star(atom_idx);
@@ -363,7 +439,7 @@ impl<'a> Parser<'a> {
     // parses a range quantifier
     // we return min, Optional<max>
     fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexError> {
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b) if !b.is_ascii_digit() => Err(RegexError {
                 kind: RegexErrorKind::UnexpectedCharacter(*b),
                 pos: self.pos,
@@ -371,10 +447,10 @@ impl<'a> Parser<'a> {
             Some(_) => {
                 // we can infer the type here, we don't need to be explicit and call u8::atoi()
                 let min = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
-                match self.peek() {
+                match self.buffer.get(self.pos) {
                     Some(b',') => {
                         self.consume(1);
-                        match self.peek() {
+                        match self.buffer.get(self.pos) {
                             // {2,}
                             Some(b'}') => {
                                 self.consume(1);
@@ -386,7 +462,7 @@ impl<'a> Parser<'a> {
                             }),
                             Some(_) => {
                                 let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
-                                match self.peek() {
+                                match self.buffer.get(self.pos) {
                                     Some(b'}') => {
                                         self.consume(1);
                                         Ok((min, Some(max)))
@@ -447,11 +523,11 @@ impl<'a> Parser<'a> {
     // if we get a character that must be escaped unescaped it is an error
     // in any other case, it is a char literal
     fn parse_atom(&mut self) -> Result<usize, RegexError> {
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b'(') => {
                 self.consume(1);
                 let expr_idx = self.parse_union()?;
-                match self.peek() {
+                match self.buffer.get(self.pos) {
                     Some(b')') => {
                         self.consume(1);
                         Ok(expr_idx)
@@ -476,17 +552,24 @@ impl<'a> Parser<'a> {
             // any other metacharacter if appeared unescaped it is invalid
             //
             // Now for the escaped characters, the ones that can appear after '\' are the following
-            // n, r, t -> those map to \n, \t, \r; this is how we did the mapping in json too
+            // n, r, t -> those map to \n, \t, \r; this is how we did the mapping in json too.
             // any of the metacharacters maps to themselves: ( -> ( and so on
             Some(b'[') | Some(b'.') | Some(b'\\') => {
                 let class = self.parse_class()?;
                 let id = self.push_class(class);
                 Ok(self.push_node(Regex::Atom(id)))
             }
-            Some(b) if is_metacharacter(*b) => Err(RegexError {
-                kind: RegexErrorKind::UnexpectedCharacter(*b),
-                pos: self.pos,
-            }),
+            Some(b)
+                if matches!(
+                    *b,
+                    b'(' | b')' | b'*' | b'+' | b'-' | b'?' | b']' | b'{' | b'|' | b'}'
+                ) =>
+            {
+                Err(RegexError {
+                    kind: RegexErrorKind::UnexpectedCharacter(*b),
+                    pos: self.pos,
+                })
+            }
             Some(_) => {
                 let char = self.parse_char();
                 let id = self.push_class(CharClass::Literal(char));
@@ -524,14 +607,14 @@ impl<'a> Parser<'a> {
         let len = self.buffer.len();
         let mut negated = false;
 
-        if let Some(b) = self.peek() {
+        if let Some(b) = self.buffer.get(self.pos) {
             if *b == b'^' {
                 negated = true;
                 self.consume(1);
             }
         }
 
-        if let Some(b'-') = self.peek() {
+        if let Some(b'-') = self.buffer.get(self.pos) {
             self.consume(1);
             items.push(ExprItem::Literal('-'));
         }
@@ -539,7 +622,7 @@ impl<'a> Parser<'a> {
         while self.pos < len && self.buffer[self.pos] != b']' {
             let start = self.pos;
             let item = self.parse_class_expr_item()?;
-            if let Some(b) = self.peek() {
+            if let Some(b) = self.buffer.get(self.pos) {
                 // we have 4 cases to consider when we parse a hyphen unescaped
                 // [^-...]
                 // [-a] is treated as a literal
@@ -550,7 +633,7 @@ impl<'a> Parser<'a> {
                 // in any other case, it must be escaped
                 if *b == b'-' {
                     self.consume(1);
-                    match self.peek() {
+                    match self.buffer.get(self.pos) {
                         //[a-]
                         Some(b) if *b == b']' => {
                             // we don't have to consume ']' now; it is consumed when we exit the loop
@@ -605,7 +688,20 @@ impl<'a> Parser<'a> {
             b'\\' => Ok(ExprItem::from(self.parse_escape()?)),
             // can't appear unescaped
             b => {
-                if is_metacharacter(b) {
+                if matches!(
+                    b,
+                    b'(' | b')'
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'?'
+                        | b'['
+                        | b']'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                ) {
                     return Err(RegexError {
                         kind: RegexErrorKind::UnexpectedCharacter(b),
                         pos: self.pos,
@@ -619,7 +715,7 @@ impl<'a> Parser<'a> {
     fn parse_escape(&mut self) -> Result<Escape, RegexError> {
         // consume '\'
         self.consume(1);
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b'p') | Some(b'P') => Ok(Escape::Property(self.parse_property()?)),
             Some(_) => Ok(Escape::Literal(self.map_escape_character()?)),
             None => Err(RegexError {
@@ -655,7 +751,7 @@ impl<'a> Parser<'a> {
         //         pos: self.pos - 1,
         //     });
         // }
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b) if *b == b'{' => self.consume(1),
             Some(b) => {
                 return Err(RegexError {
@@ -673,7 +769,7 @@ impl<'a> Parser<'a> {
 
         let category = self.map_category()?;
 
-        match self.peek() {
+        match self.buffer.get(self.pos) {
             Some(b) if *b == b'}' => self.consume(1),
             Some(b) => {
                 return Err(RegexError {
@@ -696,7 +792,11 @@ impl<'a> Parser<'a> {
             b'n' => '\n',
             b'r' => '\r',
             b't' => '\t',
-            b if !is_metacharacter(b) => {
+            b if !matches!(
+                b,
+                b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'?' | b'[' | b']' | b'{' | b'|' | b'}'
+            ) =>
+            {
                 return Err(RegexError {
                     kind: RegexErrorKind::UnexpectedCharacter(b),
                     pos: self.pos,
@@ -711,8 +811,8 @@ impl<'a> Parser<'a> {
     // the case where we get a major category into none like /p{L is handled by the caller
     // the category itself is not invalid, /p{ is and is handled by this method(2nd to last arm)
     fn map_category(&mut self) -> Result<GeneralCategory, RegexError> {
-        let current = self.peek();
-        let next = self.peek_next();
+        let current = self.buffer.get(self.pos);
+        let next = self.peek();
 
         // major, minor order
         // after parsing a category we need to advance pos by the category's length, 1 for major,
@@ -846,33 +946,12 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&self) -> Option<&u8> {
-        self.buffer.get(self.pos)
-    }
-
-    fn peek_next(&self) -> Option<&u8> {
         self.buffer.get(self.pos + 1)
     }
 
     fn consume(&mut self, n: usize) {
         self.pos += n;
     }
-}
-
-fn is_metacharacter(b: u8) -> bool {
-    matches!(
-        b,
-        b'(' | b')'
-            | b'*'
-            | b'+'
-            | b'-'
-            | b'.'
-            | b'?'
-            | b'['
-            | b']'
-            | b'{'
-            | b'|'
-            | b'}'
-    )
 }
 
 // the range is fine as long both operands are characters
@@ -899,57 +978,13 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Property {
-    category: GeneralCategory,
-    negated: bool,
-}
-
-impl Property {
-    fn matches(&self, t: char) -> bool {
-        true
-    }
-}
-
-// major, minor
-#[derive(Debug, PartialEq)]
-enum GeneralCategory {
-    Letter,
-    LetterLowercase,
-    LetterModifier,
-    LetterOther,
-    LetterTitlecase,
-    LetterUppercase,
-    Mark,
-    MarkSpacingCombining,
-    MarkEnclosing,
-    MarkNonSpacing,
-    Number,
-    NumberDecimalDigit,
-    NumberLetter,
-    NumberOther,
-    Punctuation,
-    PunctuationConnector,
-    PunctuationDash,
-    PunctuationClose,
-    PunctuationFinalQuote,
-    PunctuationInitialQuote,
-    PunctuationOpen,
-    PunctuationOther,
-    Separator,
-    SeparatorLine,
-    SeparatorParagraph,
-    SeparatorSpace,
-    Symbol,
-    SymbolCurrency,
-    SymbolModifier,
-    SymbolMath,
-    SymbolOther,
-    Other,
-    // surrogates not allowed
-    OtherControl,
-    OtherFormat,
-    OtherNotAssigned,
-    OtherPrivateUse,
+enum RegexErrorKind {
+    // invalid character set range
+    InvalidCsRange,
+    // parsing ints for range quantifiers
+    OutOfRange,
+    UnexpectedCharacter(u8),
+    UnexpectedEof,
 }
 
 #[derive(Debug, PartialEq)]
@@ -965,39 +1000,6 @@ impl From<OutOfRangeError> for RegexError {
             pos: err.pos,
         }
     }
-}
-
-enum Escape {
-    Literal(char),
-    Property(Property),
-}
-
-impl From<Escape> for ExprItem {
-    fn from(value: Escape) -> Self {
-        match value {
-            Escape::Literal(c) => ExprItem::Literal(c),
-            Escape::Property(p) => ExprItem::Property(p),
-        }
-    }
-}
-
-impl From<Escape> for CharClass {
-    fn from(value: Escape) -> Self {
-        match value {
-            Escape::Literal(c) => CharClass::Literal(c),
-            Escape::Property(p) => CharClass::Property(p),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum RegexErrorKind {
-    // invalid character set range
-    InvalidCsRange,
-    // parsing ints for range quantifiers
-    OutOfRange,
-    UnexpectedCharacter(u8),
-    UnexpectedEof,
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
+use crate::parsing::value::path::filter::{regex, EmbeddedQuery, LogicalExpr};
 use crate::parsing::value::Value;
-use crate::parsing::value::path::filter::{EmbeddedQuery, LogicalExpr, regex};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
@@ -26,12 +26,6 @@ fn registry() -> &'static Registry {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct FnExpr {
-    pub(crate) name: String,
-    pub(crate) args: Vec<FnExprArg>,
-}
-
-#[derive(Debug, PartialEq)]
 pub(crate) enum FnExprArg {
     Literal(Value),
     EmbeddedQuery(EmbeddedQuery),
@@ -41,91 +35,24 @@ pub(crate) enum FnExprArg {
     LogicalExpr(LogicalExpr),
 }
 
-// types used in the signature of the function
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum FnType {
-    ValueType,
-    NodesType,
-    Logical,
-    Nothing,
-}
-
-// the resolved values that will be passed as parameters in a function
-#[derive(Debug, PartialEq)]
-enum FnArg<'a> {
-    Value(Cow<'a, Value>),
-    Nodelist(Vec<&'a Value>),
-    Logical(bool),
-    Nothing,
-}
-
-impl<'a> FnArg<'a> {
-    fn as_value(&self) -> Option<&Value> {
-        match self {
-            // Cow<Value> -> &Value
-            // v.as_ref() is the same as &**v
-            // v: &Cow<'a, Value> from &args[0]
-            // *v: Cow<'a, Value> deref the reference
-            // **v: Value, Cow derefs to Value
-            // &**v: &Value, take reference
-            FnArg::Value(v) => Some(v.as_ref()),
-            FnArg::Nodelist(nodes) => match nodes.len() {
-                // singular query returned an empty list, it's valid(returns at most 1)
-                0 => None,
-                1 => Some(nodes[0]),
-                // there is a bug in our type_check() method we only expect singular queries
-                // can't have 2+
-                _ => unreachable!(
-                    "received nodelist with {} nodes, expected singular query",
-                    nodes.len()
-                ),
-            },
-            // there is a bug in our type_check() method we can only convert to ValueType either a
-            // Value or a singular query, anything else is a type mismatch
-            _ => unreachable!(
-                "received {:?}, expected {:?}",
-                self.to_fn_type(),
-                FnType::ValueType
-            ),
-        }
-    }
-
-    // from the 3rd elision rule, the outer reference's lifetime is the same as self but if we don't
-    // specify the inner we will get 'lifetime might not live long enough' when we try to use it
-    fn as_nodelist(&self) -> &Vec<&'a Value> {
-        match self {
-            FnArg::Nodelist(nodes) => nodes,
-            // there is a bug in our type_check() method
-            _ => unreachable!(
-                "received {:?}, expected {:?}",
-                self.to_fn_type(),
-                FnType::NodesType
-            ),
-        }
-    }
-
+impl FnExprArg {
     fn to_fn_type(&self) -> FnType {
         match self {
-            FnArg::Value(_) => FnType::ValueType,
-            FnArg::Nodelist(_) => FnType::NodesType,
-            FnArg::Logical(_) => FnType::Logical,
-            FnArg::Nothing => FnType::Nothing,
+            FnExprArg::Literal(_) => FnType::ValueType,
+            FnExprArg::EmbeddedQuery(_) => FnType::NodesType,
+            FnExprArg::FnExpr(expr) => {
+                let func = registry().get(&expr.name).unwrap();
+                func.return_type()
+            }
+            FnExprArg::LogicalExpr(_) => FnType::Logical,
         }
     }
 }
 
-// length, count and value return ValueType
-// search, match return Logical
 #[derive(Debug, PartialEq)]
-pub(super) enum FnResult<'a> {
-    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
-    // length(), match(), search() and count() all create new data, but value() returns an existing
-    // value that lives in root, so we would have to clone in this case. length() and count() return
-    // ints which we will wrap to Number, match() and search() will return Logical and with Cow
-    // we can return the reference to the value
-    Value(Cow<'a, Value>),
-    Logical(bool),
-    Nothing,
+pub(crate) struct FnExpr {
+    pub(crate) name: String,
+    pub(crate) args: Vec<FnExprArg>,
 }
 
 impl FnExpr {
@@ -234,16 +161,89 @@ impl FnExpr {
     }
 }
 
-impl FnExprArg {
+// types used in the signature of the function
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum FnType {
+    ValueType,
+    NodesType,
+    Logical,
+    Nothing,
+}
+
+// length, count and value return ValueType
+// search, match return Logical
+#[derive(Debug, PartialEq)]
+pub(super) enum FnResult<'a> {
+    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
+    // length(), match(), search() and count() all create new data, but value() returns an existing
+    // value that lives in root, so we would have to clone in this case. length() and count() return
+    // ints which we will wrap to Number, match() and search() will return Logical and with Cow
+    // we can return the reference to the value
+    Value(Cow<'a, Value>),
+    Logical(bool),
+    Nothing,
+}
+
+// the resolved values that will be passed as parameters in a function
+#[derive(Debug, PartialEq)]
+enum FnArg<'a> {
+    Value(Cow<'a, Value>),
+    Nodelist(Vec<&'a Value>),
+    Logical(bool),
+    Nothing,
+}
+
+impl<'a> FnArg<'a> {
+    fn as_value(&self) -> Option<&Value> {
+        match self {
+            // Cow<Value> -> &Value
+            // v.as_ref() is the same as &**v
+            // v: &Cow<'a, Value> from &args[0]
+            // *v: Cow<'a, Value> deref the reference
+            // **v: Value, Cow derefs to Value
+            // &**v: &Value, take reference
+            FnArg::Value(v) => Some(v.as_ref()),
+            FnArg::Nodelist(nodes) => match nodes.len() {
+                // singular query returned an empty list, it's valid(returns at most 1)
+                0 => None,
+                1 => Some(nodes[0]),
+                // there is a bug in our type_check() method we only expect singular queries
+                // can't have 2+
+                _ => unreachable!(
+                    "received nodelist with {} nodes, expected singular query",
+                    nodes.len()
+                ),
+            },
+            // there is a bug in our type_check() method we can only convert to ValueType either a
+            // Value or a singular query, anything else is a type mismatch
+            _ => unreachable!(
+                "received {:?}, expected {:?}",
+                self.to_fn_type(),
+                FnType::ValueType
+            ),
+        }
+    }
+
+    // from the 3rd elision rule, the outer reference's lifetime is the same as self but if we don't
+    // specify the inner we will get 'lifetime might not live long enough' when we try to use it
+    fn as_nodelist(&self) -> &Vec<&'a Value> {
+        match self {
+            FnArg::Nodelist(nodes) => nodes,
+            // there is a bug in our type_check() method
+            _ => unreachable!(
+                "received {:?}, expected {:?}",
+                self.to_fn_type(),
+                FnType::NodesType
+            ),
+        }
+    }
+
     fn to_fn_type(&self) -> FnType {
         match self {
-            FnExprArg::Literal(_) => FnType::ValueType,
-            FnExprArg::EmbeddedQuery(_) => FnType::NodesType,
-            FnExprArg::FnExpr(expr) => {
-                let func = registry().get(&expr.name).unwrap();
-                func.return_type()
-            }
-            FnExprArg::LogicalExpr(_) => FnType::Logical,
+            FnArg::Value(_) => FnType::ValueType,
+            FnArg::Nodelist(_) => FnType::NodesType,
+            FnArg::Logical(_) => FnType::Logical,
+            FnArg::Nothing => FnType::Nothing,
         }
     }
 }
@@ -261,9 +261,7 @@ impl Registry {
     }
 
     // toDo: remove static lifetime check what happens to Box::new()
-    // older syntax: https://stackoverflow.com/questions/57562632/why-is-impl-needed-when-passing-traits-as-function-parameters
-    // fn register<F: Function + 'static>(&mut self, f: F)
-    fn register(&mut self, f: impl Function + 'static) {
+    fn register<F: Function + 'static>(&mut self, f: F) {
         self.functions.insert(f.name().to_string(), Box::new(f));
     }
 

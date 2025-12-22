@@ -17,7 +17,6 @@ enum State {
 pub(super) struct Fragment {
     start: usize,
     // dangling arrows, the values of outs are pointers to states that are not yet connected to anything
-    // dangling arrows are represented as None
     outs: Vec<usize>,
 }
 
@@ -268,7 +267,8 @@ impl Nfa {
 
             if states
                 .iter()
-                .any(|s| matches!(self.states[*s], State::Accept)) {
+                .any(|s| matches!(self.states[*s], State::Accept))
+            {
                 return true;
             }
         }

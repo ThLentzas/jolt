@@ -1,13 +1,14 @@
-use crate::parsing::{error::ParserError, parser::Parser, value::Value};
 use crate::parsing::error::{KeywordError, KeywordErrorKind};
+use crate::parsing::{error::ParserError, parser::Parser, value::Value};
 
 pub(super) mod error;
-pub(super) mod value;
 mod escapes;
 mod lexer;
+mod map;
 pub(super) mod number;
 mod parser;
 mod utf8;
+pub(super) mod value;
 
 //implementation limits: https://www.ibm.com/docs/en/datapower-gateway/10.6.0?topic=20-json-parser-limits
 const INPUT_BUFFER_LIMIT: usize = 4_194_304; // also mentioned as Document size, 4MB
@@ -28,7 +29,7 @@ fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), Ke
     if keyword.len() > remaining.len() {
         return Err(KeywordError {
             kind: KeywordErrorKind::UnexpectedEndOf,
-            pos: buffer.len() - 1
+            pos: buffer.len() - 1,
         });
     }
 
@@ -36,7 +37,7 @@ fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), Ke
         if buffer[*pos] != *byte {
             return Err(KeywordError {
                 kind: KeywordErrorKind::UnexpectedCharacter { byte: buffer[*pos] },
-                pos: *pos
+                pos: *pos,
             });
         }
         *pos += 1;
@@ -44,11 +45,11 @@ fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), Ke
     Ok(())
 }
 
-fn is_rfc_whitespace(byte: u8)  -> bool {
+fn is_rfc_whitespace(byte: u8) -> bool {
     matches!(byte, b'\t' | b'\n' | b'\r' | b' ')
 }
 
-fn skip_whitespaces(buffer: &[u8], pos: &mut usize)  {
+fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
     while *pos < buffer.len() {
         if is_rfc_whitespace(buffer[*pos]) {
             *pos += 1;

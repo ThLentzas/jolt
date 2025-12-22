@@ -1,4 +1,4 @@
-use crate::parsing::error::{ParserErrorKind, ParserError, StringErrorKind, StringError};
+use crate::parsing::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
 use crate::parsing::{self, escapes, number, utf8};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -47,7 +47,7 @@ impl<'a> Lexer<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub(super) fn consume(&mut self, n: usize) {
+    pub(super) fn advance(&mut self, n: usize) {
         self.pos += n;
     }
 
@@ -63,32 +63,32 @@ impl<'a> Lexer<'a> {
             b'{' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::LCurlyBracket
+                token_type: LexerTokenType::LCurlyBracket,
             })),
             b'}' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::RCurlyBracket
+                token_type: LexerTokenType::RCurlyBracket,
             })),
             b'[' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::LSquareBracket
+                token_type: LexerTokenType::LSquareBracket,
             })),
             b']' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::RSquareBracket
+                token_type: LexerTokenType::RSquareBracket,
             })),
             b':' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::Colon
+                token_type: LexerTokenType::Colon,
             })),
             b',' => Ok(Some(LexerToken {
                 start_index: self.pos,
                 offset: 1,
-                token_type: LexerTokenType::Comma
+                token_type: LexerTokenType::Comma,
             })),
             b'-' | b'+' | b'0'..=b'9' => {
                 let start = self.pos;
@@ -96,7 +96,7 @@ impl<'a> Lexer<'a> {
                 Ok(Some(LexerToken {
                     start_index: start,
                     offset: (self.pos - start + 1) as u32,
-                    token_type: LexerTokenType::Number
+                    token_type: LexerTokenType::Number,
                 }))
             }
             b'"' => {
@@ -105,7 +105,7 @@ impl<'a> Lexer<'a> {
                 Ok(Some(LexerToken {
                     start_index: start,
                     offset: (self.pos - start + 1) as u32,
-                    token_type: LexerTokenType::String
+                    token_type: LexerTokenType::String,
                 }))
             }
             b't' | b'f' => {
@@ -114,7 +114,7 @@ impl<'a> Lexer<'a> {
                 Ok(Some(LexerToken {
                     start_index: start,
                     offset: (self.pos - start + 1) as u32,
-                    token_type: LexerTokenType::Boolean
+                    token_type: LexerTokenType::Boolean,
                 }))
             }
             b'n' => {
@@ -123,13 +123,13 @@ impl<'a> Lexer<'a> {
                 Ok(Some(LexerToken {
                     start_index: start,
                     offset: (self.pos - start + 1) as u32,
-                    token_type: LexerTokenType::Null
+                    token_type: LexerTokenType::Null,
                 }))
             }
             _ => Err(ParserError {
                 kind: ParserErrorKind::UnexpectedCharacter { byte: current },
-                pos: Some(self.pos)
-            })
+                pos: Some(self.pos),
+            }),
         }
     }
 
@@ -141,28 +141,37 @@ impl<'a> Lexer<'a> {
         let next = self.buffer.get(self.pos + 1);
         let start = self.pos;
 
-        match(current, next) {
+        match (current, next) {
             // sign into eof
-            (b'-', None) => return Err(ParserError {
-                kind: ParserErrorKind::UnexpectedEof,
-                pos: Some(self.pos)
-            }),
+            (b'-', None) => {
+                return Err(ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(self.pos),
+                });
+            }
             // +9
-            (b'+', Some(n)) if !n.is_ascii_digit() => return Err(ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte: current },
-                pos: Some(self.pos)
-            }),
-            (b'+', None) => return Err(ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte: current },
-                pos: Some(self.pos)
-            }),
+            (b'+', Some(n)) if !n.is_ascii_digit() => {
+                return Err(ParserError {
+                    kind: ParserErrorKind::UnexpectedCharacter { byte: current },
+                    pos: Some(self.pos),
+                });
+            }
+            (b'+', None) => {
+                return Err(ParserError {
+                    kind: ParserErrorKind::UnexpectedCharacter { byte: current },
+                    pos: Some(self.pos),
+                });
+            }
             _ => number::read(self.buffer, &mut self.pos)
                 // why not from? This the only case where we have to convert from a NumericError to
                 // a ParserError, so I thought to do it via map_err(). The body of the closure would
                 // be the body of the from() impl.
                 .map_err(|err| {
                     let pos = err.pos;
-                    ParserError { kind: ParserErrorKind::InvalidNumber(err), pos: Some(pos) }
+                    ParserError {
+                        kind: ParserErrorKind::InvalidNumber(err),
+                        pos: Some(pos),
+                    }
                 })?,
         }
 
@@ -187,7 +196,7 @@ impl<'a> Lexer<'a> {
                 c if c.is_ascii_control() => {
                     return Err(StringError {
                         kind: StringErrorKind::InvalidControlCharacter { byte: current },
-                        pos: self.pos
+                        pos: self.pos,
                     });
                 }
                 c if !c.is_ascii() => {
@@ -203,9 +212,12 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         if self.pos == len {
-            return Err(StringError { kind: StringErrorKind::UnexpectedEndOf, pos: self.pos - 1 })
+            return Err(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: self.pos - 1,
+            });
         }
-        // at this point we are at the closing '"', parser will call advance() via parse_value() 
+        // at this point we are at the closing '"', parser will call advance() via parse_value()
         // skip it and move on to the next character
         Ok(())
     }
@@ -233,7 +245,7 @@ impl<'a> Lexer<'a> {
 
         Ok(())
     }
-    
+
     fn backup(&mut self) {
         self.pos -= 1;
     }
@@ -246,131 +258,260 @@ mod tests {
 
     fn valid_numbers() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"0", LexerToken { start_index: 0, offset: 1, token_type: LexerTokenType::Number }),
-            (b"-0", LexerToken { start_index: 0, offset: 2, token_type: LexerTokenType::Number }),
-            (b"123", LexerToken { start_index: 0, offset: 3, token_type: LexerTokenType::Number }),
-            (b"-45", LexerToken { start_index: 0, offset: 3, token_type: LexerTokenType::Number }),
-            (b"123.45", LexerToken { start_index: 0, offset: 6, token_type: LexerTokenType::Number }),
-            (b"1e10", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Number }),
-            (b"-0.1e-2", LexerToken { start_index: 0, offset: 7, token_type: LexerTokenType::Number }),
+            (
+                b"0",
+                LexerToken {
+                    start_index: 0,
+                    offset: 1,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"-0",
+                LexerToken {
+                    start_index: 0,
+                    offset: 2,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"123",
+                LexerToken {
+                    start_index: 0,
+                    offset: 3,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"-45",
+                LexerToken {
+                    start_index: 0,
+                    offset: 3,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"123.45",
+                LexerToken {
+                    start_index: 0,
+                    offset: 6,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"1e10",
+                LexerToken {
+                    start_index: 0,
+                    offset: 4,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
+            (
+                b"-0.1e-2",
+                LexerToken {
+                    start_index: 0,
+                    offset: 7,
+                    token_type: LexerTokenType::Number,
+                },
+            ),
         ]
     }
 
     // rest of the cases are tested in number::read()
     fn invalid_signs() -> Vec<(&'static [u8], ParserError)> {
         vec![
-            (b"-", ParserError {
-                kind: ParserErrorKind::UnexpectedEof,
-                pos: Some(0)
-            }),
-            (b"+", ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
-                pos: Some(0)
-            }),
-            (b"+a", ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
-                pos: Some(0)
-            }),
+            (
+                b"-",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(0),
+                },
+            ),
+            (
+                b"+",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
+                    pos: Some(0),
+                },
+            ),
+            (
+                b"+a",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedCharacter { byte: b'+' },
+                    pos: Some(0),
+                },
+            ),
         ]
     }
 
     fn valid_strings() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"\"abc\"", LexerToken {
-                start_index: 0,
-                offset: 5,
-                token_type: LexerTokenType::String
-            }),
-            (b"\"A\\uD83D\\uDE00B\"", LexerToken {
-                start_index: 0,
-                offset: 16,
-                token_type: LexerTokenType::String
-            }),
-            (b"\"b\\n\"", LexerToken {
-                start_index: 0,
-                offset: 5,
-                token_type: LexerTokenType::String
-            }),
-            (b"\"\\u00E9\"", LexerToken {
-                start_index: 0,
-                offset: 8,
-                token_type: LexerTokenType::String
-            }),
+            (
+                b"\"abc\"",
+                LexerToken {
+                    start_index: 0,
+                    offset: 5,
+                    token_type: LexerTokenType::String,
+                },
+            ),
+            (
+                b"\"A\\uD83D\\uDE00B\"",
+                LexerToken {
+                    start_index: 0,
+                    offset: 16,
+                    token_type: LexerTokenType::String,
+                },
+            ),
+            (
+                b"\"b\\n\"",
+                LexerToken {
+                    start_index: 0,
+                    offset: 5,
+                    token_type: LexerTokenType::String,
+                },
+            ),
+            (
+                b"\"\\u00E9\"",
+                LexerToken {
+                    start_index: 0,
+                    offset: 8,
+                    token_type: LexerTokenType::String,
+                },
+            ),
             // 2-byte sequence same as (b"\"\xC3\xA9\"", 0, 4)
-            ("\"é\"".as_bytes(), LexerToken {
-                start_index: 0,
-                offset: 4,
-                token_type: LexerTokenType::String
-            }),
+            (
+                "\"é\"".as_bytes(),
+                LexerToken {
+                    start_index: 0,
+                    offset: 4,
+                    token_type: LexerTokenType::String,
+                },
+            ),
         ]
     }
 
     fn invalid_strings() -> Vec<(&'static [u8], ParserError)> {
         vec![
             // raw byte control character
-            (b"\"\x00", ParserError::from(StringError {
-                kind: StringErrorKind::InvalidControlCharacter { byte: 0 },
-                pos: 1
-            })),
+            (
+                b"\"\x00",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::InvalidControlCharacter { byte: 0 },
+                    pos: 1,
+                }),
+            ),
             // unpaired escaped
-            (b"\"\\", ParserError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 1
-            })),
+            (
+                b"\"\\",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 1,
+                }),
+            ),
             // unknown escaped
-            (b"\"\\g\"", ParserError::from(StringError {
-                kind: StringErrorKind::UnknownEscapedCharacter { byte: b'g' },
-                pos: 2
-            })),
+            (
+                b"\"\\g\"",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'g' },
+                    pos: 2,
+                }),
+            ),
             // incomplete unicode
-            (b"\"\\u", ParserError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 2
-            })),
+            (
+                b"\"\\u",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 2,
+                }),
+            ),
             // // not enough bytes to form a low surrogate
-            (b"\"\\uD83D\"", ParserError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 7
-            })),
+            (
+                b"\"\\uD83D\"",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 7,
+                }),
+            ),
             // // high not followed by low
-            (b"\"\\uD83Dabcdef\"", ParserError::from(StringError {
-                kind: StringErrorKind::InvalidSurrogate,
-                pos: 1
-            })),
+            (
+                b"\"\\uD83Dabcdef\"",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::InvalidSurrogate,
+                    pos: 1,
+                }),
+            ),
             // // high followed by high
-            (b"\"\\uD83D\\uD83D\"", ParserError::from(StringError {
-                kind: StringErrorKind::InvalidSurrogate,
-                pos: 1
-            })),
+            (
+                b"\"\\uD83D\\uD83D\"",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::InvalidSurrogate,
+                    pos: 1,
+                }),
+            ),
             // // low surrogate
-            (b"\"\\uDC00\"", ParserError::from(StringError {
-                kind: StringErrorKind::InvalidSurrogate,
-                pos: 1
-            })),
-            (b"\"abc", ParserError::from(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: 3
-            })),
+            (
+                b"\"\\uDC00\"",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::InvalidSurrogate,
+                    pos: 1,
+                }),
+            ),
+            (
+                b"\"abc",
+                ParserError::from(StringError {
+                    kind: StringErrorKind::UnexpectedEndOf,
+                    pos: 3,
+                }),
+            ),
         ]
     }
 
     fn valid_literals() -> Vec<(&'static [u8], LexerToken)> {
         vec![
-            (b"false", LexerToken { start_index: 0, offset: 5, token_type: LexerTokenType::Boolean }),
-            (b"true", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Boolean }),
-            (b"null", LexerToken { start_index: 0, offset: 4, token_type: LexerTokenType::Null }),
+            (
+                b"false",
+                LexerToken {
+                    start_index: 0,
+                    offset: 5,
+                    token_type: LexerTokenType::Boolean,
+                },
+            ),
+            (
+                b"true",
+                LexerToken {
+                    start_index: 0,
+                    offset: 4,
+                    token_type: LexerTokenType::Boolean,
+                },
+            ),
+            (
+                b"null",
+                LexerToken {
+                    start_index: 0,
+                    offset: 4,
+                    token_type: LexerTokenType::Null,
+                },
+            ),
         ]
     }
 
     // 1 mismatch and 1 not enough characters is enough
     fn invalid_literals() -> Vec<(&'static [u8], ParserError)> {
         vec![
-            (b"falte", ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte: b't' },
-                pos: Some(3)
-            }),
-            (b"tru", ParserError { kind: ParserErrorKind::UnexpectedEof, pos: Some(2)
-            }),
+            (
+                b"falte",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedCharacter { byte: b't' },
+                    pos: Some(3),
+                },
+            ),
+            (
+                b"tru",
+                ParserError {
+                    kind: ParserErrorKind::UnexpectedEof,
+                    pos: Some(2),
+                },
+            ),
         ]
     }
 
@@ -441,7 +582,7 @@ mod tests {
         let result = lexer.next();
         let error = ParserError {
             kind: ParserErrorKind::UnexpectedCharacter { byte: b'@' },
-            pos: Some(0)
+            pos: Some(0),
         };
 
         assert_eq!(result, Err(error));

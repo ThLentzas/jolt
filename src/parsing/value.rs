@@ -203,8 +203,8 @@ impl Value {
 
         let mut current = self;
         loop {
-            // We never check if the number of tokens exceeds the NestingDepthLimit, each token 
-            // increases the depth by 1 level,  because even if it did we would get no match at 
+            // We never check if the number of tokens exceeds the NestingDepthLimit, each token
+            // increases the depth by 1 level,  because even if it did we would get no match at
             // NestingDepthLimit + 1 and we would return None
             match ptr.gen_ref_token()? {
                 Some(token) => match current {
@@ -225,7 +225,7 @@ impl Value {
         Ok(Some(current))
     }
 
-    // we need to specify a lifetime for Node, otherwise it would be unclear to the user that reads 
+    // we need to specify a lifetime for Node, otherwise it would be unclear to the user that reads
     // the code that Node holds a reference; we fix that by returning Node<'_>.
     // The lifetime can be elided based on the 3rd elision rule:
     //  "if there are multiple input lifetime parameters, but one of them is &self or
@@ -1563,14 +1563,12 @@ mod tests {
                         "z": 3
                     }
                 ]),
-                vec![
-                    json!(
-                        {   "x": 1,
-                            "y": 2,
-                            "z": 3
-                        }
-                    )
-                ],
+                vec![json!(
+                    {   "x": 1,
+                        "y": 2,
+                        "z": 3
+                    }
+                )],
             ),
             // same as above with OR
             (
@@ -1638,9 +1636,8 @@ mod tests {
                         "x": 2
                     }
                 ),
-                vec![json!(2)]
+                vec![json!(2)],
             ),
-
             // non singular query -> nothing
             (
                 "$[?value(@.*) == 2]",
@@ -1649,7 +1646,76 @@ mod tests {
                         "x": 2
                     }
                 ),
-                vec![]
+                vec![],
+            ),
+            // look at the comment in path::apply_selector() for the filter selector if confused
+            (
+                "$[?match(@.timezone, 'Europe/.*')]",
+                json!([
+                    {
+                        "timezone": "Europe/Finland",
+                    },
+                    {
+                        "timezone": "Europe/Iceland",
+                    },
+                    {
+                        "timezone": "America/New_York",
+                    }
+                ]),
+                vec![
+                    json!({"timezone": "Europe/Finland"}),
+                    json!({"timezone": "Europe/Iceland"}),
+                ],
+            ),
+            // LogicalTrue can't be compared with boolean true
+            (
+                "$[?match(@.timezone, 'Europe/.*') == true]",
+                json!([
+                    {
+                        "timezone": "Europe/Finland",
+                    },
+                    {
+                        "timezone": "Europe/Iceland",
+                    },
+                    {
+                        "timezone": "America/New_York",
+                    }
+                ]),
+                vec![],
+            ),
+            (
+                "$[?search(@.timezone, 'Europe')]",
+                json!([
+                    {
+                        "timezone": "Europe/Finland",
+                    },
+                    {
+                        "timezone": "Europe/Iceland",
+                    },
+                    {
+                        "timezone": "America/New_York",
+                    }
+                ]),
+                vec![
+                    json!({"timezone": "Europe/Finland"}),
+                    json!({"timezone": "Europe/Iceland"}),
+                ],
+            ),
+            // LogicalTrue can't be compared with boolean true
+            (
+                "$[?search(@.timezone, 'Europe/.*') == true]",
+                json!([
+                    {
+                        "timezone": "Europe/Finland",
+                    },
+                    {
+                        "timezone": "Europe/Iceland",
+                    },
+                    {
+                        "timezone": "America/New_York",
+                    }
+                ]),
+                vec![],
             ),
         ]
     }
@@ -1851,8 +1917,8 @@ mod tests {
                 }
             }
         );
-        let nodelist = root.select_as_values(path_expr).unwrap();
-        let expected = vec![
+        let nodelist = root.select(path_expr).unwrap();
+        let vals = vec![
             json!(2),
             json!("Alice"),
             json!(4),
@@ -1860,10 +1926,55 @@ mod tests {
             json!(11),
             json!("Dave"),
         ];
+        let expected = vec![
+            Node {
+                path: String::from("$['users'][1]['id']"),
+                value: &vals[0],
+            },
+            Node {
+                path: String::from("$['users'][1]['name']"),
+                value: &vals[1],
+            },
+            Node {
+                path: String::from("$['users'][3]['id']"),
+                value: &vals[2],
+            },
+            Node {
+                path: String::from("$['users'][3]['name']"),
+                value: &vals[3],
+            },
+            Node {
+                path: String::from("$['other']['mods'][1]['id']"),
+                value: &vals[4],
+            },
+            Node {
+                path: String::from("$['other']['mods'][1]['name']"),
+                value: &vals[5],
+            },
+        ];
 
         assert_eq!(expected.len(), nodelist.len());
         for (i, val) in expected.into_iter().enumerate() {
-            assert_eq!(val, *nodelist[i], "invalid path: {path_expr}");
+            assert_eq!(val, nodelist[i], "invalid path: {path_expr}");
+        }
+    }
+
+    #[test]
+    fn test_npaths_edge_cases() {
+        let path_expr = "$.*";
+        let root = json!(
+            {
+                "\\": 0,
+                "\n": 1,
+                "\u{001F}": 2
+            }
+        );
+        let nodelist = root.select_as_npaths(path_expr).unwrap();
+        let expected_paths = vec!["$['\\\\']", "$['\\n']", "$['\\u001f']"];
+
+        assert_eq!(expected_paths.len(), nodelist.len());
+        for (i, path) in expected_paths.into_iter().enumerate() {
+            assert_eq!(path, nodelist[i], "invalid path at index {i}");
         }
     }
 }
