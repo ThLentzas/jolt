@@ -7,14 +7,27 @@ use std::error::Error;
 use std::fmt;
 use std::sync::OnceLock;
 
+// It can be done with LazyLock too
+// https://users.rust-lang.org/t/whats-the-difference-between-std-lazylock-oncelock/116603/2
+//
+// we want one instance of our registry, populate it once and then reuse itl; by making it static
+// it will have the lifetime of our program, therefore anything we store in the registry must also
+// be able to live for the lifetime of our program.
+//
+// Thread Safety: What if Thread A access REGISTRY, tries to initialize it but then Thread B also
+// tries to access REGISTRY while still not being fully initialized? OnceLock/LazyLock guarantees
+// that if thread A has the lock and the state is "Initializing" any other Thread that tries to access
+// Registry has to wait. It guarantees that the value is initialized on the first access. The contents
+// will never change in the future even if multiple threads have access it at the same time, because
+// we return an immutable reference.
+//
+// Read Registry and Function definitions
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| {
-        // This closure runs ONLY ONCE, no matter how many times we call it.
-        // It acts exactly like Java's "static { ... }" block.
+        // It acts exactly like Java's static initialization block.
         let mut registry = Registry::new();
-
         registry.register(LengthFn {});
         registry.register(CountFn {});
         registry.register(MatchFn {});
@@ -133,7 +146,7 @@ impl FnExpr {
     // to be used as FnArg
     fn to_fn_args<'a>(
         &'a self,
-        // toDo: why f: &impl Function failed
+        // this is the value of our map
         f: &dyn Function,
         root: &'a Value,
         current: &'a Value,
@@ -141,7 +154,6 @@ impl FnExpr {
         let mut args = Vec::with_capacity(f.args().len());
 
         for arg in self.args.iter() {
-            // this could also be a method to_fn_arg() or from<FnExpr> for FnArg
             match arg {
                 FnExprArg::Literal(v) => args.push(FnArg::Value(Cow::Borrowed(v))),
                 FnExprArg::EmbeddedQuery(q) => {
@@ -249,7 +261,23 @@ impl<'a> FnArg<'a> {
 }
 
 struct Registry {
-    // toDo: why Box<dyn Function> and not something like impl Function?
+    // dyn Trait is by default dyn Trait + static. We need the lifetime because trait objects can
+    // potentially hold references inside them. When we write dyn Function Rust does not know which
+    // concrete is behind it. It can be a type that holds no references or some type that holds
+    // references. With the use of static we make sure that whatever concrete type is inside,
+    // it must not contain any borrowed references (or only 'static ones)
+    //
+    // This is why register() has this signature:
+    //
+    // fn register<F: Function + 'static>(&mut self, f: F) {
+    //         self.functions.insert(f.name().to_string(), Box::new(f));
+    // }
+    //
+    // f will be stored inside the Box which needs to hold dyn Function + 'static so we either define
+    // f as F: Function + 'static or add the static lifetime as a trait bound. If we need some other
+    // lifetime we need to be explicit: fn foo<'a>(s: &'a str) -> Box<dyn Foo + 'a>
+    //
+    // https://users.rust-lang.org/t/why-does-t-need-static-in-box-dyn-trait/37384
     functions: HashMap<String, Box<dyn Function>>,
 }
 
@@ -260,8 +288,10 @@ impl Registry {
         }
     }
 
-    // toDo: remove static lifetime check what happens to Box::new()
-    fn register<F: Function + 'static>(&mut self, f: F) {
+    // The REGISTRY variable lives forever, the HashMap inside it lives forever, the Box<dyn Function>
+    // pointers inside the map must be valid forever and the data within each struct needs to live
+    // forever to avoid any dangling references. Read the comment above
+    fn register<F: Function>(&mut self, f: F) {
         self.functions.insert(f.name().to_string(), Box::new(f));
     }
 
@@ -270,8 +300,44 @@ impl Registry {
     }
 }
 
-// toDo: why we need Send + Sync for OnceLock
-trait Function: Send + Sync {
+// Send + Sync: https://doc.rust-lang.org/nomicon/send-and-sync.html
+// The term: A type is Sync if it is safe to share between threads (T is Sync if and only if &T is Send)
+// means that multiple threads can take a &T to it
+//
+// Multiple threads can access REGISTRY at the same time, Rust forces us to prove that it is safe
+// to do so. Send and Sync are auto traits, we don't have to implement them.
+// Registry does not impl either of those traits and the reason is that Rust needs to make sure
+// that the fields of Registry also implement those 2 traits and their inner fields and so on. Rust
+// automatically derives Send and Sync for structs if all their fields are Send and Sync. Most
+// types in Rust implement the Sync trait apart from things that work interior mutability(mutating
+// while holding an immutable reference using unsafe).
+//
+// HashMap is Send + Sync if K and V are.
+//  K (String) is standard and safe.
+//  V is of type Box<dyn Function>
+//
+// Box<T> is Send + Sync if T is
+//  T is dyn Function
+//
+// dyn Function
+//  For trait objects the compiler cannot see the fields inside the object, it cannot check if
+// those fields are thread-safe.
+//
+// If one of the impls of Function had a Rc we would have the following issue
+//  Rc<RefCell<T>>
+//  Even if T is &T a read only we can mutate with a RefCell
+//    If Thread A and Thread B do this at the exact same time:
+//     Thread A reads 5.
+//     Thread B reads 5.
+//     Thread A writes 6.
+//     Thread B writes 6.
+//
+//  The count should be 7, but it is 6
+//
+// We want Registry to be Sync. (Safe to share globally). This implies &Registry must be Send.
+// (Safe for threads to grab a reference to it). This implies everything inside Registry must be
+// safe to access simultaneously
+trait Function: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     // we can't return [Arg] because we will get an error like:
     //  Trait `std::marker::Sized` is not implemented for `[Arg]`
@@ -305,7 +371,6 @@ impl Function for LengthFn {
         "length"
     }
 
-    // rfc uses argument for the fn expressions and parameters when resolved
     fn args(&self) -> &[FnType] {
         &[FnType::ValueType]
     }
@@ -466,6 +531,8 @@ pub enum FnExprError {
     TypeMismatch { expected: FnType, found: FnType },
 }
 
+impl Error for FnExprError {}
+
 impl fmt::Display for FnExprError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -477,14 +544,8 @@ impl fmt::Display for FnExprError {
                 )
             }
             FnExprError::TypeMismatch { expected, found } => {
-                // check the dif between {:?} and {}
                 write!(f, "expected {:?}, found {:?}", expected, found)
             }
         }
     }
 }
-
-impl Error for FnExprError {}
-
-// toDo: $[?match(@.timezone, 'Europe/.*') == true]	not well-typed as LogicalType may not be used in comparisons
-// check that this returns false

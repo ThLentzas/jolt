@@ -1,7 +1,7 @@
-use crate::parsing::value::Value;
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
 use crate::parsing::value::path::{Segment, SegmentKind};
+use crate::parsing::value::Value;
 use std::borrow::Cow;
 
 pub(crate) mod function;
@@ -177,7 +177,6 @@ pub(super) enum EmbeddedQueryType {
     Relative,
 }
 
-// toDo: cache absolute path queries
 #[derive(Debug, PartialEq)]
 pub(crate) struct EmbeddedQuery {
     pub(super) query_type: EmbeddedQueryType,

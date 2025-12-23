@@ -1,9 +1,10 @@
 use crate::parsing::number::Number;
 use crate::parsing::value::error::{PathError, PointerError};
-use crate::parsing::value::path::Parser;
 use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
+use crate::parsing::value::path::Parser;
 use crate::parsing::value::pointer::Pointer;
-use indexmap::IndexMap; // toDo: consider moving to a linked hash map because deletions are slow
+use indexmap::IndexMap;
+// toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
 
 mod error;
@@ -159,7 +160,6 @@ impl Value {
         let buffer = pointer.as_bytes();
         let mut ptr = Pointer::new(buffer);
         ptr.check_start()?;
-
         // In the previous approach, we generated all the ref tokens and then iterated over the vector
         // calling match on current and returning a value if present. It worked, but we iterated twice
         // once the input buffer to generate all the tokens and once the vector of those tokens. We

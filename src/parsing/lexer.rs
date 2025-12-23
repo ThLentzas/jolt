@@ -1,5 +1,5 @@
 use crate::parsing::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
-use crate::parsing::{self, escapes, number, utf8};
+use crate::parsing::{escapes, number, utf8};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(super) enum LexerTokenType {
@@ -53,7 +53,7 @@ impl<'a> Lexer<'a> {
 
     // toDo: explain why we moved away from storing the tokens in a vector?
     pub(super) fn next(&mut self) -> Result<Option<LexerToken>, ParserError> {
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        super::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);
         }
@@ -233,14 +233,14 @@ impl<'a> Lexer<'a> {
         } else {
             "false".as_bytes()
         };
-        parsing::read_keyword(self.buffer, &mut self.pos, target)?;
+        super::read_keyword(self.buffer, &mut self.pos, target)?;
         self.backup();
 
         Ok(())
     }
 
     fn read_null(&mut self) -> Result<(), ParserError> {
-        parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
+        super::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
         self.backup();
 
         Ok(())
