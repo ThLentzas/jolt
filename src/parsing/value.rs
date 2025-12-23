@@ -6,13 +6,14 @@ use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap;
 // toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
+use std::hash::{Hash, Hasher};
 
 mod error;
 mod path;
 mod pointer;
 
 // Clone is needed for Cow
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Value {
     // Value is recursive type like LogicalExpression, but we don't need Box because both map and
     // vec store their data in the heap
@@ -25,6 +26,22 @@ pub enum Value {
 } // toDo: pretty print https://crates.io/crates/pprint
 // https://docs.rs/ryu/latest/ryu/
 // https://docs.rs/itoa/latest/itoa/
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            // https://github.com/indexmap-rs/indexmap/issues/288
+            // toDo: Consider moving to LinkedHashMap which impls Hash
+            Value::Object(map) => map.as_slice().hash(state),
+            Value::Array(arr) => arr.hash(state),
+            Value::Number(n) => n.hash(state),
+            Value::String(s) => s.hash(state),
+            Value::Boolean(b) => b.hash(state),
+            Value::Null => {}
+        }
+    }
+}
 
 impl Value {
     pub fn is_object(&self) -> bool {

@@ -14,19 +14,19 @@ use std::cmp;
 pub(super) mod filter;
 pub(crate) mod tracker;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct Segment {
     kind: SegmentKind,
     selectors: Vec<Selector>,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 enum SegmentKind {
     Child,
     Descendant,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 enum Selector {
     Name(String),
     WildCard,
@@ -65,7 +65,7 @@ impl Selector {
 
 // this is similar to NumberState, otherwise we would have to pass Option<..> 3 times every time we
 // need a slice
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct Slice {
     start: Option<i64>,
     end: Option<i64>,

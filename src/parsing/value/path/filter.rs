@@ -18,7 +18,7 @@ mod regex;
 // Rust needs to know the size of LogicalExpression and because it is a recursive the size grows
 // infinite
 // AST
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LogicalExpr {
     Comparison(ComparisonExpr),
     Test(TestExpr),
@@ -28,7 +28,6 @@ pub(crate) enum LogicalExpr {
 }
 
 impl LogicalExpr {
-    // toDo: if embedded absolute path query we need to find a way to cache it
     // short circuiting and well-typedness of functions
     // because the type checking happens during parsing, we will never encounter a case where we
     // might have an invalid function(Arity/Type mismatch) that we will miss because the lhs evaluated
@@ -48,7 +47,7 @@ impl LogicalExpr {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ComparisonExpr {
     pub(super) lhs: Comparable,
     pub(super) op: ComparisonOp,
@@ -77,7 +76,7 @@ impl ComparisonExpr {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum TestExpr {
     EmbeddedQuery(EmbeddedQuery),
     FnExpr(FnExpr),
@@ -100,7 +99,7 @@ impl TestExpr {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) enum Comparable {
     Literal(Value),
     EmbeddedQuery(EmbeddedQuery),
@@ -138,7 +137,7 @@ impl Comparable {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) enum ComparisonOp {
     Equal,
     NotEqual,
@@ -171,13 +170,13 @@ impl ComparisonOp {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) enum EmbeddedQueryType {
     Absolute,
     Relative,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct EmbeddedQuery {
     pub(super) query_type: EmbeddedQueryType,
     pub(super) segments: Vec<Segment>,
@@ -194,13 +193,24 @@ impl EmbeddedQuery {
             EmbeddedQueryType::Relative => current,
             EmbeddedQueryType::Absolute => root,
         };
+        // we can hard-code () as Trace because we don't care about the paths for embedded queries
         let mut reader: Vec<PathNode<'v, ()>> = vec![PathNode {
             val: start,
             trace: (),
         }];
         let mut writer: Vec<PathNode<'v, ()>> = Vec::new();
+        let cached = {
+            if let EmbeddedQueryType::Absolute = self.query_type {
+                Some(self.evaluate(root, current))
+            } else {
+                None
+            }
+        };
 
         for seg in self.segments.iter() {
+            if cached.is_some() {
+                return cached.unwrap();
+            }
             writer.clear();
             match seg.kind {
                 SegmentKind::Child => {
@@ -214,6 +224,15 @@ impl EmbeddedQuery {
         }
         // the final nodelist is in reader after the last swap
         reader.into_iter().map(|c| c.val).collect()
+    }
+
+    fn run<'v>(
+        &self,
+        reader: &mut Vec<PathNode<'v, ()>>,
+        writer: Vec<PathNode<'v, ()>>,
+        root: &'v Value,
+        cached: Option<Vec<&'v Value>>,
+    ) {
     }
 
     // returns at most 1 node

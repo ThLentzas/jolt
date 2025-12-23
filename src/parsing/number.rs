@@ -1,8 +1,9 @@
 #[cfg(feature = "arbitrary_precision")]
-use bigdecimal::BigDecimal;
-#[cfg(feature = "arbitrary_precision")]
 use bigdecimal::num_bigint::BigInt;
+#[cfg(feature = "arbitrary_precision")]
+use bigdecimal::BigDecimal;
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 use std::{error, fmt};
 
 // https://www.rfc-editor.org/rfc/rfc7493#section-2.2
@@ -17,11 +18,6 @@ struct NumberState {
     decimal_point: bool,
     scientific_notation: bool,
     negative: bool,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Number {
-    kind: NumberKind,
 }
 
 // The way BigDecimal works is by storing every digit of the number as BigInt, (unscaled value,
@@ -82,6 +78,31 @@ enum NumberKind {
     BigInt(BigInt),
     #[cfg(feature = "arbitrary_precision")]
     BigDecimal(BigDecimal),
+}
+
+impl Eq for NumberKind {}
+
+impl Hash for NumberKind {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+
+        match self {
+            NumberKind::I64(i) => i.hash(state),
+            NumberKind::F64(f) => {
+                let bits = if *f == 0.0 { 0 } else { f.to_bits() };
+                bits.hash(state);
+            }
+            #[cfg(feature = "arbitrary_precision")]
+            NumberKind::BigInt(bi) => bi.hash(state),
+            #[cfg(feature = "arbitrary_precision")]
+            NumberKind::BigDecimal(bd) => bd.hash(state),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct Number {
+    kind: NumberKind,
 }
 
 impl Number {

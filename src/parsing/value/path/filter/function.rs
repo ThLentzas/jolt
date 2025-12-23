@@ -38,7 +38,7 @@ fn registry() -> &'static Registry {
     })
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FnExprArg {
     Literal(Value),
     EmbeddedQuery(EmbeddedQuery),
@@ -62,7 +62,7 @@ impl FnExprArg {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FnExpr {
     pub(crate) name: String,
     pub(crate) args: Vec<FnExprArg>,
