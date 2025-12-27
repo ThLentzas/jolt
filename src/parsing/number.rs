@@ -255,38 +255,6 @@ pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {
     Ok(val)
 }
 
-// we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
-// process: 1) convert the byte buffer to string 2) parse the string
-pub(super) fn parse(buffer: &[u8]) -> Number {
-    let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
-    // SAFETY: the buffer is always created from calling as_bytes() in an str
-    let s = unsafe { std::str::from_utf8_unchecked(buffer) };
-
-    #[cfg(feature = "arbitrary_precision")]
-    type N = BigDecimal;
-    #[cfg(not(feature = "arbitrary_precision"))]
-    type N = f64;
-    if float {
-        return Number::from(s.parse::<N>().unwrap());
-    }
-
-    // Try to optimize even if arbitrary_precision is enabled; for any integer we can still store it
-    // as i64 as long as it is not out of range. In read() we don't check if the number is out of range
-    // when arbitrary_precision is enabled
-    #[cfg(feature = "arbitrary_precision")]
-    {
-        let digits = if buffer[0] == b'-' {
-            &buffer[1..]
-        } else {
-            buffer
-        };
-        if is_out_of_range_i64(digits) {
-            return Number::from(s.parse::<BigInt>().unwrap());
-        }
-    }
-    Number::from(s.parse::<i64>().unwrap())
-}
-
 pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     let len = buffer.len();
     let start = *pos;
@@ -358,6 +326,38 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
         });
     };
     Ok(())
+}
+
+// we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
+// process: 1) convert the byte buffer to string 2) parse the string
+pub(super) fn parse(buffer: &[u8]) -> Number {
+    let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
+    // SAFETY: the buffer is always created from calling as_bytes() in an str
+    let s = unsafe { std::str::from_utf8_unchecked(buffer) };
+
+    #[cfg(feature = "arbitrary_precision")]
+    type N = BigDecimal;
+    #[cfg(not(feature = "arbitrary_precision"))]
+    type N = f64;
+    if float {
+        return Number::from(s.parse::<N>().unwrap());
+    }
+
+    // Try to optimize even if arbitrary_precision is enabled; for any integer we can still store it
+    // as i64 as long as it is not out of range. In read() we don't check if the number is out of range
+    // when arbitrary_precision is enabled
+    #[cfg(feature = "arbitrary_precision")]
+    {
+        let digits = if buffer[0] == b'-' {
+            &buffer[1..]
+        } else {
+            buffer
+        };
+        if is_out_of_range_i64(digits) {
+            return Number::from(s.parse::<BigInt>().unwrap());
+        }
+    }
+    Number::from(s.parse::<i64>().unwrap())
 }
 
 // when we want to parse integers for index selectors we need to use i64::MAX for our bound but

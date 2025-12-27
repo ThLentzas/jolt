@@ -788,6 +788,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     // x || y || z
     // the logical expression is (x || y) || z
     // pass x, rhs is y, then (x || y) is the lhs for || z
+    // read the comment inside parse_fn_args() on why we need this method
     fn parse_logical_or_tail(&mut self, mut lhs: LogicalExpr) -> Result<LogicalExpr, PathError> {
         loop {
             self.skip_ws()?;
@@ -816,6 +817,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     // x && y && z
     // the logical expression is (x && y) && z
     // pass x, rhs is y, then (x && y) is the lhs for && z
+    // read the comment inside parse_fn_args() on why we need this method
     fn parse_logical_and_tail(&mut self, mut lhs: LogicalExpr) -> Result<LogicalExpr, PathError> {
         loop {
             self.skip_ws()?;
@@ -900,6 +902,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         Ok(expr)
     }
 
+    // read the comment inside parse_fn_args() on why we need this method
     fn parse_comparison_tail(&mut self, lhs: Comparable) -> Result<LogicalExpr, PathError> {
         self.skip_ws()?;
 
@@ -929,7 +932,6 @@ impl<'a, 'r> Parser<'a, 'r> {
                     Ok(LogicalExpr::Test(TestExpr::EmbeddedQuery(query)))
                 }
                 Comparable::FnExpr(expr) => Ok(LogicalExpr::Test(TestExpr::FnExpr(expr))),
-                // toDo: write a test for this
                 // $[?42]
                 // this is invalid, we just have lhs being a literal not followed by a comparison
                 // operator
@@ -968,28 +970,29 @@ impl<'a, 'r> Parser<'a, 'r> {
     //
     // we try to parse the embedded relative query and the 1st segment is a name shorthand; following
     // the syntax for name-shorthand we know that encountering '>' would result in an error; for example:
-    // $.price> is an invalid name shorthand because it is not part of a filter selector, but in the
+    // $.price> is an invalid, because it is not part of a filter selector, but in the
     // filter selector case we need to return a child segment with a single selector and let the
     // call of parse_embedded_seg() handle the next character; we update the ending conditions in
     // parse_name_shorthand() and let the caller handle it.
     //
     // parse_name_shorthand() -> returns price to parse_shorthand()
-    // parse_shorthand() -> returns a segment with a single selector(shorthand notation can't have multiple selectors) to parse_notation()
+    // parse_shorthand() -> returns a segment with a single selector to parse_notation()
     // parse_notation() -> returns to parse_seg()
     // parse_seg() -> returns to parse_embedded_seg()
     // parse_embedded_seg() -> returns a segment for the embedded query from parse_comparable() and
     // is called again.
     // This is the key point it needs to look for any expression related character. If we didn't have
     // that check, calling parse_seg() directly would result in an error because no segment starts
-    // with '<'. Note that we don't check for the full operators(<=, >=, !=, &&, ||). We encounter '<'
-    // and we know we processed all the segments for the subquery. The control returns to the parse_comparison_or_test()
-    // which checks if the current, next is a valid comparison operator. If not control returns to
-    // parse_basic_expr() which will handle parenthesized expression and then back to parse_logical_and/or()
+    // with '>'. Note that we don't check for the full operators(<=, >=, !=, &&, ||). We encounter '<'
+    // and we know we processed all the segments for the subquery. The control returns to the
+    // parse_comparison_tail() which checks if the current, next is a valid comparison operator.
+    // If not, control returns to parse_basic_expr() which will handle parenthesized expression and
+    // then back to parse_logical_and/or().
     // Those 2 methods will handle logical operators. But what if we have $[?@.price&* 10]?
     // &* will not matching to anything in the parse_filter() call chain and the control returns to
     // parse_selector() and then to parse_bracket() which expects after processing the current selector
-    // a comma to indicate multiple selectors or ']' to stop processing the current one, but it encounters
-    // an unpaired '&' and we get a PathError
+    // a comma to indicate multiple selectors or ']' to stop processing the current one, but it
+    // encounters an unpaired '&' and we get a PathError
     //
     // an alternative would be to pass the boundaries as a predicate everytime we call parse_seg();
     // something similar to how we initially did it for name-shorthand at
@@ -1169,15 +1172,17 @@ impl<'a, 'r> Parser<'a, 'r> {
         Ok(args)
     }
 
-    // we read literals in 2 cases: filter selectors or function arguments
     fn parse_literal(&mut self) -> Result<Value, PathError> {
         let current = self.buffer[self.pos];
 
         match current {
             b'-' | b'0'..=b'9' => {
-                // toDo: maybe this can be optimized to build the string as we read the number so we can call parse directly
                 // now we scan 3 times the same buffer. once for read and twice for parse
                 // maybe we can make read return the current byte? so look at a byte at a time
+                // we could have a method number::scan() that essentially parses the number without
+                // knowing the span of the number in the buffer. This could be problematic because
+                // we might have to parse floats? We did something similar in convertNumber() in
+                // NumberNode on the java parser
                 let start = self.pos;
                 // why not from? This the only case where we have to convert from a NumericError to
                 // a PathError, so I thought to do it via map_err(). The body of the closure would
@@ -1191,10 +1196,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 })?;
                 Ok(Value::Number(number::parse(&self.buffer[start..self.pos])))
             }
-            b'"' | b'\'' => {
-                let string = self.parse_name()?;
-                Ok(Value::String(string))
-            }
+            b'"' | b'\'' => Ok(Value::String(self.parse_name()?)),
             b't' | b'f' => {
                 let keyword = if current == b't' {
                     "true".as_bytes()
@@ -1220,7 +1222,6 @@ impl<'a, 'r> Parser<'a, 'r> {
                 pos: self.pos - 1,
             });
         }
-
         Ok(())
     }
 }
@@ -1588,6 +1589,55 @@ mod tests {
         ]
     }
 
+    // fn errors like arity/type mismatch are handled in a different test case
+    fn invalid_filter() -> Vec<(&'static str, Value, PathError)> {
+        vec![
+            // None arm in the parse_comparison_tail() case
+            (
+                "$[?1]",
+                json!({}),
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b']' },
+                    pos: 4,
+                }
+            ),
+            // Missing closing ')'
+            (
+                "$[?(@.a]",
+                json!({}),
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b']' },
+                    pos: 7,
+                }
+            ),
+            (
+                "$[?@.a)]",
+                json!({}),
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b')' },
+                    pos: 6,
+                }
+            ),
+            // can't negate literals
+            (
+                "$[?!10]",
+                json!({}),
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b'1' },
+                    pos: 4,
+                }
+            ),
+            (
+                "$[?@.a == @.b == @.c]",
+                json!({}),
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b'=' },
+                    pos: 14,
+                }
+            ),
+        ]
+    }
+
     fn fn_arity_mismatch() -> Vec<(&'static str, Value, PathError)> {
         vec![
             (
@@ -1779,6 +1829,16 @@ mod tests {
     fn test_invalid_index_selectors() {
         for (path_expr, err) in invalid_indices() {
             let root = json!({});
+            let mut query = Parser::new(path_expr.as_bytes(), &root);
+            let result = query.parse::<NoOpTracker>();
+
+            assert_eq!(result, Err(err), "invalid path_expr: {path_expr}")
+        }
+    }
+
+    #[test]
+    fn test_invalid_filter_selectors() {
+        for (path_expr, root, err) in invalid_filter() {
             let mut query = Parser::new(path_expr.as_bytes(), &root);
             let result = query.parse::<NoOpTracker>();
 
