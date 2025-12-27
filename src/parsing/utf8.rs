@@ -1,7 +1,7 @@
 use std::{error, fmt};
 // Returns the number of bytes in an utf8 sequence based on the value of the leading byte
 // https://en.wikipedia.org/wiki/UTF-8
-
+//
 // Index 0-127 (0x00-0x7F): ASCII = 1 byte
 // Index 128-191 (0x80-0xBF): Continuation bytes = 0 (invalid as first byte)
 // Index 192-223 (0xC0-0xDF): 2-byte sequence starters = 2, C0-C1 are invalid (0)
@@ -59,7 +59,7 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
             // Clever way the Rust team checks for trailing bytes
             // A valid utf8 tail byte is in the range 0x80-0xBF (128-191)
             // If we cast that number to i8(-128, 127) it will overflow and Rust wraps around it
-            // 128 - 256 = -128 in i8, 191 - 256 = -95 so for the value to be valid it has to be
+            // 128 - 256 = -128 in i8, 191 - 256 = -65 so for the value to be valid it has to be
             // in the range -128 to -65, any number greater than -64 is not
             if second as i8 >= -64 {
                 return Err(Utf8Error { len: 2, pos });
@@ -118,11 +118,13 @@ pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
 
 pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> char {
     let width = utf8_char_width(buffer[pos]);
-    str::from_utf8(&buffer[pos..pos + width])
-        .unwrap()
-        .chars()
-        .next()
-        .unwrap()
+    // SAFETY: always called on a valid sequence
+    unsafe {
+        str::from_utf8_unchecked(&buffer[pos..pos + width])
+            .chars()
+            .next()
+            .unwrap()
+    }
 }
 
 // only 1 kind of Utf8Error, InvalidByteSequence

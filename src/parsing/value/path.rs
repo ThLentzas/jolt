@@ -8,8 +8,9 @@ use crate::parsing::value::path::filter::{
 };
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
 use crate::parsing::value::Value;
-use crate::parsing::{self, escapes, utf8};
+use crate::parsing::{self, escapes, utf8, STRING_VALUE_LENGTH_LIMIT};
 use std::cmp;
+use std::collections::HashMap;
 
 pub(super) mod filter;
 pub(crate) mod tracker;
@@ -180,56 +181,67 @@ impl Iterator for Range {
     }
 }
 
-pub(super) struct Parser<'a, 'v> {
-    // toDo: this could also be chars() since we never have to worry about running into an invalid ut8
-    buffer: &'a [u8],
-    pos: usize,
-    root: &'v Value,
+// lifetimes: EvalContext holds a reference to root and the map that we use to cache the result of
+// evaluating absolute path embedded queries, that result is a vector of references to values that
+// live in root, so they share the same lifetime
+struct EvalContext<'r> {
+    root: &'r Value,
+    cache: HashMap<usize, Vec<&'r Value>>,
 }
 
-impl<'a, 'v> Parser<'a, 'v> {
-    pub(super) fn new(buffer: &'a [u8], root: &'v Value) -> Self {
+impl<'r> EvalContext<'r> {
+    fn new(root: &'r Value) -> Self {
+        Self {
+            root,
+            cache: HashMap::new(),
+        }
+    }
+}
+
+// lifetimes: buffer originates from calling as_bytes() on the path arg that was passed in select()
+// root is the root of the document
+pub(super) struct Parser<'a, 'r> {
+    buffer: &'a [u8],
+    pos: usize,
+    root: &'r Value,
+    eq_id: usize,
+}
+
+impl<'a, 'r> Parser<'a, 'r> {
+    pub(super) fn new(buffer: &'a [u8], root: &'r Value) -> Self {
         Self {
             buffer,
             pos: 0,
             root,
+            eq_id: 0,
         }
     }
 
-    // A JSONPath implementation MUST raise an error for any query that is not well-formed and
-    // valid. The well-formedness and the validity of JSONPath queries are independent of the JSON
-    // value the query is applied to. No further errors relating to the well-formedness and the
-    // validity of a JSONPath query can be raised during application of the query to a value.
+    // json path requires validation of the entire query before returning results. A malformed query
+    // must always return an error, regardless of whether earlier segments produce an empty nodelist.
     //
-    // Invalid paths should always return an error which means even if we process some segment and
-    // returned an empty list we can NOT stop and return immediately because the path expression
-    // might still be invalid.
+    // path: "$[1]['foo]", root: "3"
     //
-    // path_expr = "$[1]['foo]"
-    // val = "3"
+    // The index selector [1] yields an empty list (string is not indexable), but we cannot return
+    // early, the unterminated string 'foo] makes the query invalid. We must parse all segments to
+    // detect this error.
     //
-    // If we try to apply [1] to val it returns an empty list because it is not an array and in theory
-    // we could return without processing the rest of the segments, but we return something from an
-    // invalid path which is not allowed. Processing the next segment will result in an UnterminatedString
-    // case.
-    //
-    // v as lifetime for the Tracker because the "keys" will live as long as the root, since they
+    // 'r as lifetime for the Tracker because the "keys" will live as long as the root, since they
     // exist in the root
     //
-    // we need to be explicit with the lifetime for PathNode otherwise it would tie to Query due to
+    // we need to be explicit with the lifetime for PathNode otherwise it would tie to self due to
     // the 3rd rule
-    // had this initially and caused issues in value.select(),
-    // fn parse<T>(&mut self) -> Result<Vec<PathNode<T::Trace>>, PathError>
-    //
-    // rust ties the lifetime of PathNode to the lifetime of the query and query was a local variable
+    // rust ties the lifetime of PathNode to the lifetime of the parser and parser was a local variable
     // that was getting dropped at the end of scope causing issues when calling value.select().
-    // From the Query's definition we know that it will never outlive the root, but it does not
-    // mean that the root can not outlive the query, which is what happens in this case, query goes
-    // out of scope, root still valid, returned values have the lifetime of root
-    pub(super) fn parse<T: Tracker<'v>>(
+    //
+    // fn parse<T>(&mut self) -> Result<Vec<PathNode<'_, T::Trace>>, PathError>
+    //
+    // we don't return a reference but owned data that hold a reference; elision rules are applied
+    // the same. If no lifetime is specified, it is always tied to self.
+    pub(super) fn parse<T: Tracker<'r>>(
         &mut self,
-    ) -> Result<Vec<PathNode<'v, T::Trace>>, PathError> {
-        self.check_root()?;
+    ) -> Result<Vec<PathNode<'r, T::Trace>>, PathError> {
+        self.parse_root()?;
 
         let root_trace = PathNode {
             val: self.root,
@@ -239,21 +251,18 @@ impl<'a, 'v> Parser<'a, 'v> {
         // created locally, they do reference values from the root, but we can't pass references
         // to something that was created locally it would be a dangling reference once it goes out
         // of scope
-        let mut reader: Vec<PathNode<'v, T::Trace>> = vec![root_trace];
-        let mut writer: Vec<PathNode<'v, T::Trace>> = Vec::new();
-
-        // this is the only place that we get an error, when we process the expression,
-        // any other case, calling a selector to a value that can't be applied we return an empty list
-        // we follow the same logic as we did with lexer/parser.
-        // parse don't validate; we don't get all the segments first and then try to apply them
+        let mut reader: Vec<PathNode<'r, T::Trace>> = vec![root_trace];
+        let mut writer: Vec<PathNode<'r, T::Trace>> = Vec::new();
+        let mut context = EvalContext::new(self.root);
         while let Some(segment) = self.parse_seg()? {
             writer.clear();
             match segment.kind {
+                // toDo: rewrite apply_seg() under impl Segment
                 SegmentKind::Child => {
-                    apply_child_seg::<T>(self.root, &reader, &mut writer, &segment)
+                    apply_child_seg::<T>(&mut context, &reader, &mut writer, &segment)
                 }
                 SegmentKind::Descendant => {
-                    apply_descendant_seg::<T>(self.root, &reader, &mut writer, &segment)
+                    apply_descendant_seg::<T>(&mut context, &reader, &mut writer, &segment)
                 }
             }
             std::mem::swap(&mut reader, &mut writer);
@@ -262,23 +271,30 @@ impl<'a, 'v> Parser<'a, 'v> {
         Ok(reader)
     }
 
-    // we have already checked for empty input
-    // the query(json path expression) is not a json string like pointer, which means that we won't
-    // check if a Unicode sequence could map to '$'
-    // jsonpath-query = root-identifier *(S segment)
-    //
-    // root identifier('$') followed by zero or more segments
-    fn check_root(&mut self) -> Result<(), PathError> {
-        let root = self.buffer[self.pos];
-
-        if root != b'$' {
+    // unlike pointer, the query is not a json string, so we don't need to handle Unicode escapes
+    // like \u0024 for '$'
+    fn parse_root(&mut self) -> Result<(), PathError> {
+        if self.buffer.is_empty() {
             return Err(PathError {
-                kind: PathErrorKind::UnexpectedCharacter { byte: root },
+                kind: PathErrorKind::UnexpectedEndOf,
                 pos: self.pos,
             });
         }
 
-        self.pos += 1; // move past '$'
+        let identifier = self.buffer[self.pos];
+        if identifier != b'$' {
+            return Err(PathError {
+                kind: PathErrorKind::UnexpectedCharacter { byte: identifier },
+                pos: self.pos,
+            });
+        }
+        self.pos += 1; // consume '$'
+        // Case: "$"
+        // advancing pos and calling skip_ws() would result in an error because pos is already out
+        // of bounds
+        if self.buffer.len() == 1 {
+            return Ok(());
+        }
         // whitespaces are allowed after '$' only when followed by a segment
         // " $", "$ " neither is allowed
         self.skip_ws()?;
@@ -293,29 +309,19 @@ impl<'a, 'v> Parser<'a, 'v> {
 
         let current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
-
         match (current, next) {
-            (b'.', Some(b'.')) if self.buffer.get(self.pos + 2).is_none() => Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
-                pos: self.pos + 1,
-            }),
             (b'.', Some(b'.')) => {
                 // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
-                // we have 2 dots(..) followed by either a bracketed-selection or a wildcard or a member name shorthand
+                // we have 2 dots(..) followed by, either a bracketed-selection or a wildcard or a member name shorthand
                 // if what follows '..' is not '[', we call parse_shorthand(), if the current character
                 // is '*', it's a wildcard shorthand, otherwise it is treated as the start of name-shorthand
                 // whitespaces are not allowed in between
-                // consume ..
-                self.pos += 2;
+                self.pos += 1;
                 Ok(Some(self.parse_notation(SegmentKind::Descendant)?))
             }
-            (b'.' | b'[', None) => Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
-                pos: self.pos,
-            }),
             // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
             // we have either bracketed selection or '.' followed by either a wildcard or a member-name-shorthand
-            (b'.' | b'[', Some(_)) => Ok(Some(self.parse_notation(SegmentKind::Child)?)),
+            (b'.' | b'[', _) => Ok(Some(self.parse_notation(SegmentKind::Child)?)),
             // a segment always starts with '.', '..' or '['
             _ => Err(PathError {
                 kind: PathErrorKind::UnexpectedCharacter { byte: current },
@@ -324,7 +330,23 @@ impl<'a, 'v> Parser<'a, 'v> {
         }
     }
 
+    // pos is either at '.' or '['
+    // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
+    // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
+    //
+    // if pos is at '.' we are not sure what kind of segment we are parsing; it can be the shorthand
+    // syntax for a child segment, .foo, or it can be a descendant segment that we don't know if
+    // it is represented with a bracketed selection or the shorthand syntax. We need to peek to determine
+    // the notation
+    //   if current is '.', previous is also '.' and next is '[' it is a descendant segment using
+    //   bracketed selection syntax. In any other case, it is shorthand
     fn parse_notation(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {
+        if self.buffer[self.pos] == b'.' && self.buffer[self.pos - 1] == b'.' {
+            if let Some(b'[') = self.buffer.get(self.pos + 1) {
+                self.pos += 1;
+            }
+        }
+
         if self.buffer[self.pos] == b'[' {
             Ok(self.parse_bracket(kind)?)
         } else {
@@ -346,11 +368,9 @@ impl<'a, 'v> Parser<'a, 'v> {
 
             match self.pos < len {
                 true if self.buffer[self.pos] == b']' => {
-                    // skip pass the closing bracket ']'
-                    self.pos += 1;
                     break;
                 }
-                // after parsing a selector if we don't encounter ']', we expect comma to separate
+                // after parsing a selector, if we don't encounter ']', we expect comma to separate
                 // multiple selectors.
                 true if self.buffer[self.pos] != b',' => {
                     return Err(PathError {
@@ -372,7 +392,15 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
         }
 
-        // 1 edge case to consider: [<selector>,]
+        // handles the $[ case where after consuming '[' we never enter the loop
+        if self.pos >= len {
+            return Err(PathError {
+                kind: PathErrorKind::UnexpectedEndOf,
+                pos: self.pos - 1,
+            });
+        }
+
+        // Case: [<selector>,]
         // at this point we exited the loop  because we encountered ']' but if the exact previous
         // character is ',' we have invalid syntax; after comma we expect another selector
         // this is different from [<selector>,+S]
@@ -381,32 +409,40 @@ impl<'a, 'v> Parser<'a, 'v> {
         if self.buffer[self.pos - 1] == b',' {
             return Err(PathError {
                 kind: PathErrorKind::UnexpectedCharacter {
-                    byte: self.buffer[self.pos],
+                    byte: self.buffer[self.pos - 1],
                 },
-                pos: self.pos,
+                pos: self.pos - 1,
             });
         }
+        self.pos += 1; // consume closing bracket ']'
 
         Ok(segment)
     }
 
-    // when this method gets called pos is at the 1st character after . or ..
     // member name shorthand is still treated as a name selector with more strict syntax
     fn parse_shorthand(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {
-        self.pos += 1;
-        let current = self.buffer[self.pos];
+        self.pos += 1; // consume .
         let mut segment = Segment::new(kind);
 
-        if current == b'*' {
-            segment.selectors.push(Selector::WildCard);
-            self.pos += 1;
-        } else {
-            // we can not have shorthand notation inside a bracketed selection
-            // if we need either a wildcard, or a name selector in a multi-selector segment
-            // we need to use the full syntax
-            segment
-                .selectors
-                .push(Selector::Name(self.parse_name_shorthand()?));
+        match self.buffer.get(self.pos) {
+            Some(b'*') => {
+                segment.selectors.push(Selector::WildCard);
+                self.pos += 1;
+            }
+            Some(_) => {
+                // we can not have shorthand notation inside a bracketed selection
+                // if we need either a wildcard, or a name selector in a multi-selector segment
+                // we need to use the full syntax
+                segment
+                    .selectors
+                    .push(Selector::Name(self.parse_name_shorthand()?));
+            }
+            None => {
+                return Err(PathError {
+                    kind: PathErrorKind::UnexpectedEndOf,
+                    pos: self.pos - 1,
+                });
+            }
         }
         Ok(segment)
     }
@@ -434,15 +470,11 @@ impl<'a, 'v> Parser<'a, 'v> {
         }
     }
 
-    // We never check if name exceeds the StringValueLengthLimit because even if it does, no key
-    // will ever map to that and we will return None
-    // toDo: when we check if the name exists we DO NOT do any normalization prior to comparison
-    // rfc forbids it, we MUST check the underlying Unicode scalar values that they are the exact same
     fn parse_name(&mut self) -> Result<String, StringError> {
         let quote = self.buffer[self.pos];
         let len = self.buffer.len();
         let mut name = String::new();
-        self.pos += 1; // skip opening quote
+        self.pos += 1; // skip opening quote(' or ")
 
         while self.pos < len && self.buffer[self.pos] != quote {
             let current = self.buffer[self.pos];
@@ -455,31 +487,39 @@ impl<'a, 'v> Parser<'a, 'v> {
                 }
                 c if !c.is_ascii() => {
                     name.push(utf8::read_utf8_char(self.buffer, self.pos));
-                    self.pos += utf8::utf8_char_width(current) - 1;
+                    self.pos += utf8::utf8_char_width(current);
                 }
                 b'\\' => {
                     let next = self.buffer.get(self.pos + 1);
                     match next {
-                        // This is the extra edge case where ' has to be escaped when the name is in single quotes
-                        // Not part of the escape characters defined for json string
+                        // single quotes must be escaped within single-quoted strings.
+                        // json path specific, not part of standard json escapes.
                         Some(b'\'') if quote == b'\'' => {
                             name.push('\'');
-                            // pos is at \, next is ', move pos to ' so when we exit this arm and
-                            // self.pos += 1 will move pos past '. If we don't do this increment
-                            // pos would be moved to after exiting the arm, and our loop will end
-                            // because incorrectly will treat the escaped ' as a closing quote
-                            self.pos += 1;
+                            // prevents the escaped quote from being treated as a closing delimiter
+                            self.pos += 2;
                         }
                         _ => {
                             escapes::check_escape_character(self.buffer, self.pos)?;
                             name.push(escapes::map_escape_character(self.buffer, self.pos));
-                            self.pos += escapes::len(self.buffer, self.pos) - 1;
+                            self.pos += escapes::len(self.buffer, self.pos);
                         }
                     }
                 }
-                _ => name.push(current as char),
+                _ => {
+                    name.push(current as char);
+                    self.pos += 1;
+                }
             }
-            self.pos += 1;
+            // prevent resource exhaustion
+            if name.len() > STRING_VALUE_LENGTH_LIMIT {
+                return Err(StringError {
+                    kind: StringErrorKind::StringValueLengthLimitExceed {
+                        len: STRING_VALUE_LENGTH_LIMIT,
+                    },
+                    pos: self.pos,
+                });
+            }
         }
         if self.pos == len {
             return Err(StringError {
@@ -488,13 +528,9 @@ impl<'a, 'v> Parser<'a, 'v> {
             });
         }
         self.pos += 1; // skip closing quote
-
         Ok(name)
     }
 
-    // we don't have to run any utf8 validation because buffer is the underlying vector of the input query
-    // and since it is &str Rust won't allow an invalid utf8 sequence; it is exactly the same as pointer
-    // the 1st character of member name shorthand is a special case because it can not be a digit
     fn parse_name_shorthand(&mut self) -> Result<String, PathError> {
         // term used by rfc; name_first, the 1st character of member_name_shorthand
         // name_char is every other character; the only difference is that name_first can't be a digit
@@ -503,39 +539,35 @@ impl<'a, 'v> Parser<'a, 'v> {
         let start = self.pos;
         let mut current = self.buffer[self.pos];
 
-        // . and [ will indicate the start of a new segment
-        // comparison operators indicate that the name-shorthand could be part of a comparison
-        // expression if syntax is valid
-        // logical operators indicate the name-shorthand is part of a logical expression
-        // ) and ] indicate that the name-shorthand is part of the parenthesized expression and part
-        // of a filter selector respectively
+        // We stop when we encounter 1 of the following characters without necessarily having an
+        // invalid name
         //
-        // basically all cases other than . and [ handle the possible syntax of a filter selector
-        // if it is not part of a filter selector we will try to parse the next segment, and we will
-        // fail because '<' in '$.price < ' does not start a segment. Read the comment above
-        // parse_embedded_query()
-        // ',' is for fn_expr args
+        //   '.', '[' -> start of next segment
+        //   '<', '>', '=', '&', '|' -> comparison/logical operators in filter expressions
+        //   ')', ']' -> end of parenthesized expression or filter selector
+        //   ',' -> function argument separator
+        //   whitespace -> delimiter
+        //
+        // '!' is missing because no valid expression can start in that case,
+        // @.name!... (nothing valid follows)
+        //
+        // if we have a case like "$.price< ", parsing will fail later when we attempt to parse the
+        // next segment
         while self.pos < len
             && !matches!(
                 current,
-                b'.' | b'[' | b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b')' | b']' | b','
+                b'.' | b'[' | b'<' | b'>' | b'=' | b'&' | b'|' | b')' | b']' | b','
             )
             && !parsing::is_rfc_whitespace(current)
         {
             match current {
+                // Non ascii: valid in any position
                 c if !c.is_ascii() => {
                     name.push(utf8::read_utf8_char(self.buffer, self.pos));
                     self.pos += utf8::utf8_char_width(current) - 1;
                 }
-                // name_first check
-                //
-                // name_first/char can be any non ascii character in the range 0x80..=0xD7FF | 0xE000..=0x10FFFF
-                // but in is_valid_name_first() we only check: byte.is_ascii_alphabetic() || byte == b'_', this
-                // is because we already checked for a non-ascii character, it is the 1st arm so no matter if it
-                // is the first character or not it will always be valid.
-                //
-                // if we didn't follow this logic we would have to pass the 1st character to the function not
-                // just the byte value
+                // first character: must satisfy name-first rules (alpha or '_', no digits)
+                // Non ascii already handled above, so is_valid_name_first only checks ascii
                 c if start == self.pos => {
                     if !is_valid_name_first(c) || c.is_ascii_digit() {
                         return Err(PathError {
@@ -545,6 +577,7 @@ impl<'a, 'v> Parser<'a, 'v> {
                     }
                     name.push(c as char);
                 }
+                // subsequent characters must satisfy name-char rules
                 c => {
                     if !is_valid_name_char(c) {
                         return Err(PathError {
@@ -564,18 +597,17 @@ impl<'a, 'v> Parser<'a, 'v> {
     }
 
     // when we encounter ':' it is a slice selector, but for '-' or any digit we can't know yet, we
-    // have to process the number and then check if we encounter ':', if we do, we call parse_slice()
-    // otherwise it is an index
+    // have to process the number and then if we encounter ':', we call parse_slice() otherwise it
+    // is an index
     fn parse_numeric(&mut self) -> Result<Selector, PathError> {
         let num;
 
         if self.buffer[self.pos] == b':' {
             return self.parse_slice(None);
         }
-
         num = self.parse_index()?;
         // from the slice syntax: start *S ":" *S end *S ":" *S step  we need to skip whitespaces
-        // between first index and ':'. If we don't encounter ':' we have an index case not a slice
+        // between first index and ':'
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos < self.buffer.len() && self.buffer[self.pos] == b':' {
             return self.parse_slice(Some(num));
@@ -614,9 +646,6 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
             _ => (),
         }
-        // todo: we need to find a way to adjust the bounds here because we don't want to accept anything
-        // above the INT_LIMIT defined in number.rs; with the current implementation we accept up
-        // to i64::MAX
         // can infer the type, we don't need to do i64::atoi
         Ok(Atoi::atoi(self.buffer, &mut self.pos)?)
     }
@@ -627,11 +656,9 @@ impl<'a, 'v> Parser<'a, 'v> {
         let len = self.buffer.len();
         let mut step: Option<i64> = Some(1); // default step value
         let mut end: Option<i64> = None;
-        // consume the first ':'(we encountered that during the parse_numeric() and parse_slice() was called)
-        self.pos += 1;
+        self.pos += 1; // consume ':'
 
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
-
         // 1: or :
         if self.pos >= len {
             return Ok(Selector::Slice(Slice { start, end, step }));
@@ -709,14 +736,10 @@ impl<'a, 'v> Parser<'a, 'v> {
     // the result is: 3, 5, 1, 2, 4, 6. The remaining elements of the array have a key 'b' which
     // results in a non-empty list and the comparison with .x returns false so no nodes added in the
     // list
-    //
-    // toDo: cache the subquery during evaluation? if the rhs or the lhs is a subquery the nodelist will not change in any iteration
     fn parse_filter(&mut self) -> Result<Selector, PathError> {
         self.pos += 1; // consume '?'
-        // when this method gets called self.pos is at '?', we need to handle a case like "? S" where
-        // '?' is not followed by a logical-expr
+        // "? *S"
         self.skip_ws()?;
-
         Ok(Selector::Filter(self.parse_logical_or()?))
     }
 
@@ -755,14 +778,13 @@ impl<'a, 'v> Parser<'a, 'v> {
     // precedence before returning to or.
     //
     // why  we need the tail methods and don't write the logic directly on the body of logical_or
-    // and logical_and read the comment in fn_args()
+    // and logical_and, read the comment in parse_fn_args()
     fn parse_logical_or(&mut self) -> Result<LogicalExpr, PathError> {
         let lhs = self.parse_logical_and()?;
         self.parse_logical_or_tail(lhs)
     }
 
-    // why we loop?
-    // we handle cases where we have multiple AND cases with left to right associativity
+    // loop handles associativity
     // x || y || z
     // the logical expression is (x || y) || z
     // pass x, rhs is y, then (x || y) is the lhs for || z
@@ -789,8 +811,8 @@ impl<'a, 'v> Parser<'a, 'v> {
         self.parse_logical_and_tail(lhs)
     }
 
-    // why we loop?
-    // we handle cases where we have multiple AND cases with left to right associativity
+    // loop handles associativity
+    //
     // x && y && z
     // the logical expression is (x && y) && z
     // pass x, rhs is y, then (x && y) is the lhs for && z
@@ -815,18 +837,17 @@ impl<'a, 'v> Parser<'a, 'v> {
     fn parse_basic_expr(&mut self) -> Result<LogicalExpr, PathError> {
         self.skip_ws()?;
 
-        // paren-expr = [logical-not-op S] "(" S logical-expr S ")"
-        // test-expr  = [logical-not-op S] (filter-query / function-expr)
-        //
         // for logical not operator we need to look ahead and consider only the 3 valid cases
         // 1. parenthesized expr
         // 2. filter-query
         // 3. function expr
         //
         // we can not have a case like !! or ! followed by a comparison expression
+        //
         // "$[?!$[0].foo > 2 || @[1] <= 4]"
         // this results to an UnexpectedCharacter error for '>'
-        // we look after '!' and we treat '$[0].foo' as a Test expression and not the lhs of a comparison
+        // we look after '!' and we treat '$[0].foo' as a test expression and not the lhs of a
+        // comparison expression
         if self.buffer[self.pos] == b'!' {
             self.pos += 1; // consume '!'
             self.skip_ws()?;
@@ -862,7 +883,8 @@ impl<'a, 'v> Parser<'a, 'v> {
     fn parse_parenthesized(&mut self) -> Result<LogicalExpr, PathError> {
         self.pos += 1; // consume '('
         self.skip_ws()?;
-
+        // paren-expr = [logical-not-op S] "(" S logical-expr S ")"
+        // start the chain again
         let expr = self.parse_logical_or()?;
 
         self.skip_ws()?;
@@ -883,7 +905,6 @@ impl<'a, 'v> Parser<'a, 'v> {
 
         let current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
-
         let comp_op = match (current, next) {
             (b'=', Some(b'=')) => Some(ComparisonOp::Equal),
             (b'!', Some(b'=')) => Some(ComparisonOp::NotEqual),
@@ -901,18 +922,22 @@ impl<'a, 'v> Parser<'a, 'v> {
                 let rhs = self.parse_comparable()?;
                 Ok(LogicalExpr::Comparison(ComparisonExpr { lhs, op, rhs }))
             }
-            None => {
-                match lhs {
-                    // query is moved to the TestExpr and we can no longer access lhs after
-                    Comparable::EmbeddedQuery(query) => {
-                        Ok(LogicalExpr::Test(TestExpr::EmbeddedQuery(query)))
-                    }
-                    Comparable::Literal(_) => todo!(
-                        "since no comp_operator found, it must be a test expr, and a test expr can only be fn_expr or filter query. Create an error variant"
-                    ),
-                    Comparable::FnExpr(expr) => Ok(LogicalExpr::Test(TestExpr::FnExpr(expr))),
+            // no operator, we treat the lhs as a test expression, and it can only be an embedded query
+            // or fn expr
+            None => match lhs {
+                Comparable::EmbeddedQuery(query) => {
+                    Ok(LogicalExpr::Test(TestExpr::EmbeddedQuery(query)))
                 }
-            }
+                Comparable::FnExpr(expr) => Ok(LogicalExpr::Test(TestExpr::FnExpr(expr))),
+                // toDo: write a test for this
+                // $[?42]
+                // this is invalid, we just have lhs being a literal not followed by a comparison
+                // operator
+                Comparable::Literal(_) => Err(PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: current },
+                    pos: self.pos,
+                }),
+            },
         }
     }
 
@@ -924,7 +949,8 @@ impl<'a, 'v> Parser<'a, 'v> {
             b'-' | b'0'..=b'9' | b'"' | b'\'' | b't' | b'f' | b'n' => {
                 Ok(Comparable::Literal(self.parse_literal()?))
             }
-            // For embedded queries we just parse for now, evaluation will happen when applying the filter selector
+            // for embedded queries we just parse for now, evaluation will happen when applying the
+            // filter selector
             b'@' | b'$' => Ok(Comparable::EmbeddedQuery(self.parse_embedded_query()?)),
             b'l' | b'c' | b'm' | b's' | b'v' => Ok(Comparable::FnExpr(self.parse_fn_expr()?)),
             _ => Err(PathError {
@@ -1001,10 +1027,13 @@ impl<'a, 'v> Parser<'a, 'v> {
             }
         }
 
-        Ok(EmbeddedQuery {
+        let eq = EmbeddedQuery {
+            id: self.eq_id,
             query_type,
             segments,
-        })
+        };
+        self.eq_id += 1;
+        Ok(eq)
     }
 
     // function-expr = function-name "(" S [function-argument *(S "," S function-argument)] S ")"
@@ -1065,8 +1094,7 @@ impl<'a, 'v> Parser<'a, 'v> {
                 pos: self.pos,
             });
         }
-        // consume '('
-        self.pos += 1;
+        self.pos += 1; // consume '('
         self.skip_ws()?;
 
         while self.pos < self.buffer.len() && self.buffer[self.pos] != b')' {
@@ -1074,7 +1102,7 @@ impl<'a, 'v> Parser<'a, 'v> {
             if self.buffer[self.pos] == b'!' || self.buffer[self.pos] == b'(' {
                 args.push(FnExprArg::LogicalExpr(self.parse_logical_or()?));
             } else {
-                // This is the ambiguous part. It is known as the "First set problem"
+                // this is the ambiguous part. It is known as the "First set problem"
                 //
                 // The "first set problem" in parsing, especially for LL(1) grammars, refers to when
                 // a non-terminal can derive multiple production rules that start with the exact
@@ -1095,7 +1123,6 @@ impl<'a, 'v> Parser<'a, 'v> {
                     self.buffer[self.pos],
                     b'=' | b'<' | b'>' | b'!' | b'&' | b'|'
                 );
-
                 if is_op {
                     // arg is now the lhs. parse_comparison_tail() will check for a comparison operator
                     // If the operator we encountered was one, it will try to parse the rhs if not
@@ -1138,9 +1165,7 @@ impl<'a, 'v> Parser<'a, 'v> {
                 self.skip_ws()?;
             }
         }
-        // consume ')'
-        self.pos += 1;
-
+        self.pos += 1; // consume ')'
         Ok(args)
     }
 
@@ -1200,6 +1225,7 @@ impl<'a, 'v> Parser<'a, 'v> {
     }
 }
 
+// toDo: the methods below should be apply() in selector/segment
 // child segments
 //
 //{
@@ -1234,7 +1260,7 @@ impl<'a, 'v> Parser<'a, 'v> {
 //
 // applying each segment essentially increases the depth by 1 level
 fn apply_child_seg<'v, T: Tracker<'v>>(
-    root: &'v Value,
+    context: &mut EvalContext<'v>,
     reader: &Vec<PathNode<'v, T::Trace>>,
     writer: &mut Vec<PathNode<'v, T::Trace>>,
     segment: &Segment,
@@ -1245,7 +1271,7 @@ fn apply_child_seg<'v, T: Tracker<'v>>(
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            apply_selector::<T>(root, writer, selector, v);
+            apply_selector::<T>(context, writer, selector, v);
         }
     }
 }
@@ -1255,7 +1281,7 @@ fn apply_child_seg<'v, T: Tracker<'v>>(
 // it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
 // not when recursion backtracks(postorder) we append them in the list
 fn apply_descendant_seg<'v, T: Tracker<'v>>(
-    root: &'v Value,
+    context: &mut EvalContext<'v>,
     reader: &Vec<PathNode<'v, T::Trace>>,
     writer: &mut Vec<PathNode<'v, T::Trace>>,
     segment: &Segment,
@@ -1266,13 +1292,13 @@ fn apply_descendant_seg<'v, T: Tracker<'v>>(
 
     for v in reader.iter() {
         for selector in &segment.selectors {
-            dfs::<T>(root, v, writer, selector);
+            dfs::<T>(context, v, writer, selector);
         }
     }
 }
 
 fn dfs<'v, T: Tracker<'v>>(
-    root: &'v Value,
+    context: &mut EvalContext<'v>,
     current: &PathNode<'v, T::Trace>,
     writer: &mut Vec<PathNode<'v, T::Trace>>,
     selector: &Selector,
@@ -1281,20 +1307,20 @@ fn dfs<'v, T: Tracker<'v>>(
         return;
     }
 
-    apply_selector::<T>(root, writer, selector, current);
+    apply_selector::<T>(context, writer, selector, current);
     match current.val {
         Value::Object(map) => {
             for (key, val) in map.iter() {
                 let trace = T::descend(&current.trace, Step::Key(key));
                 let node = PathNode { val, trace };
-                dfs::<T>(root, &node, writer, selector);
+                dfs::<T>(context, &node, writer, selector);
             }
         }
         Value::Array(arr) => {
             for (i, val) in arr.iter().enumerate() {
                 let trace = T::descend(&current.trace, Step::Index(i));
                 let node = PathNode { val, trace };
-                dfs::<T>(root, &node, writer, selector);
+                dfs::<T>(context, &node, writer, selector);
             }
         }
         _ => unreachable!("dfs() was called in a non container node"),
@@ -1302,12 +1328,14 @@ fn dfs<'v, T: Tracker<'v>>(
 }
 
 fn apply_selector<'v, T: Tracker<'v>>(
-    root: &'v Value,
+    context: &mut EvalContext<'v>,
     writer: &mut Vec<PathNode<'v, T::Trace>>,
     selector: &Selector,
     current: &PathNode<'v, T::Trace>,
 ) {
     match (current.val, selector) {
+        // when we check if the name exists the rfc forbids any normalization prior to comparison
+        // rfc forbids it, we MUST check the underlying Unicode scalar values that they are the exact same
         (Value::Object(map), Selector::Name(name)) => {
             // very important to borrow key from map and not from the selector. If we chose to go
             // with the selector we would have lifetime problems that bubble up to parse() because
@@ -1358,7 +1386,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
         // check the comment on the 4th to last entry in test_valid_selectors() in value.rs
         (Value::Object(map), Selector::Filter(expr)) => {
             for (key, val) in map.iter() {
-                if expr.evaluate(root, val) {
+                if expr.evaluate(context, val) {
                     let trace = T::descend(&current.trace, Step::Key(key));
                     writer.push(PathNode { val, trace });
                 }
@@ -1367,7 +1395,7 @@ fn apply_selector<'v, T: Tracker<'v>>(
         // the expression is evaluated for every element
         (Value::Array(arr), Selector::Filter(expr)) => {
             for (i, elem) in arr.iter().enumerate() {
-                if expr.evaluate(root, elem) {
+                if expr.evaluate(context, elem) {
                     let trace = T::descend(&current.trace, Step::Index(i));
                     writer.push(PathNode { val: elem, trace });
                 }
@@ -1451,6 +1479,13 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b'a' },
                     pos: 1,
+                },
+            ),
+            (
+                "$['foo',]",
+                PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: b',' },
+                    pos: 7,
                 },
             ),
         ]
@@ -1677,6 +1712,17 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    #[test]
+    fn test_empty_path() {
+        let root = json!({});
+        let err = PathError {
+            kind: PathErrorKind::UnexpectedEndOf,
+            pos: 0,
+        };
+        let res = root.select("");
+        assert_eq!(res, Err(err));
     }
 
     #[test]

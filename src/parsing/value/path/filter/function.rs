@@ -1,4 +1,5 @@
 use crate::parsing::value::path::filter::{regex, EmbeddedQuery, LogicalExpr};
+use crate::parsing::value::path::EvalContext;
 use crate::parsing::value::Value;
 use std::borrow::Cow;
 use std::cmp::PartialEq;
@@ -72,11 +73,11 @@ impl FnExpr {
     // resolve_args can return references from both self (literals) and root (query results) all
     // get the same lifetime. All hold references that live in the root so they must have the same
     // lifetime
-    pub(super) fn evaluate<'a>(&'a self, root: &'a Value, current: &'a Value) -> FnResult<'a> {
+    pub(super) fn evaluate<'v>(& self, context: &mut EvalContext<'v>, current: &'v Value) -> FnResult<'v> {
         // always safe to call unwrap; if we get None it means either we parsed the name incorrectly
         // or we didn't register our function
         let f = registry().get(&self.name).unwrap();
-        let args = self.to_fn_args(f, root, current);
+        let args = self.to_fn_args(f, context, current);
         f.execute(&args)
     }
 
@@ -132,40 +133,33 @@ impl FnExpr {
         Ok(())
     }
 
-    // the approach where we used Literal(Type) for as 1 of FnExprArg variants won't work well in the
-    // next step.
-    //
-    // the problem we face is what happens when FnArg is a literal, since FnArg owns the data, and we
-    // want to pass a reference to Value as our parameter we can not get &Value from Type without cloning
-    // even if we flip the types and expect a Type that is incorrect based on the RFC(we need to return
-    // a special value when Value is an object) we still have to do that conversion because we now have
-    // to go from &Value to Type, &Value is what a singular query returns. This will simplify the comparison
-    // expressions as well when we had to compare Type and Value
-    //
     // maps FnExprArg to FnArg, evaluates queries and logical expressions, so that their return values
     // to be used as FnArg
-    fn to_fn_args<'a>(
-        &'a self,
+    fn to_fn_args<'v>(
+        &self,
         // this is the value of our map
         f: &dyn Function,
-        root: &'a Value,
-        current: &'a Value,
-    ) -> Vec<FnArg<'a>> {
+        context: &mut EvalContext<'v>,
+        current: &'v Value,
+    ) -> Vec<FnArg<'v>> {
         let mut args = Vec::with_capacity(f.args().len());
 
+        // the loop runs at most twice and clone() will be called twice in the worst case where we
+        // have both arguments being literals, which is quite unlikely to happen. Most of the time
+        // one value is a literal(provided by the user) the other one is retrieved from root
         for arg in self.args.iter() {
             match arg {
-                FnExprArg::Literal(v) => args.push(FnArg::Value(Cow::Borrowed(v))),
+                FnExprArg::Literal(v) => args.push(FnArg::Value(Cow::Owned(v.clone()))),
                 FnExprArg::EmbeddedQuery(q) => {
-                    args.push(FnArg::Nodelist(q.evaluate(root, current)));
+                    args.push(FnArg::Nodelist(q.evaluate(context, current)));
                 }
-                FnExprArg::FnExpr(expr) => match expr.evaluate(root, current) {
+                FnExprArg::FnExpr(expr) => match expr.evaluate(context, current) {
                     FnResult::Value(v) => args.push(FnArg::Value(v)),
                     FnResult::Logical(b) => args.push(FnArg::Logical(b)),
                     FnResult::Nothing => args.push(FnArg::Nothing),
                 },
                 FnExprArg::LogicalExpr(expr) => {
-                    args.push(FnArg::Logical(expr.evaluate(root, current)));
+                    args.push(FnArg::Logical(expr.evaluate(context, current)));
                 }
             }
         }

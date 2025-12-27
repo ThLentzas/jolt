@@ -105,8 +105,8 @@ impl<'a> Tracker<'a> for PathTracker {
 
 // value and the root to value path
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PathNode<'a, T> {
-    pub(crate) val: &'a Value,
+pub(crate) struct PathNode<'r, T> {
+    pub(crate) val: &'r Value,
     pub(crate) trace: T,
 }
 
@@ -135,7 +135,7 @@ fn format_name(name: &str) -> String {
 
     // we reverse the logic we applied during parsing
     // we mapped '\' and '\n' to '\n'
-    // now we split '\n' to \' and '\n'
+    // now we split '\n' to \' and 'n'
     // what we want to achieve is represent the character with some text
     // it is not possible for all characters, this is why for the 00 - 1F range we use the Unicode
     // sequence
@@ -148,7 +148,9 @@ fn format_name(name: &str) -> String {
             '\n' => val.push_str("\\n"),
             '\r' => val.push_str("\\r"),
             '\t' => val.push_str("\\t"),
+            // 00 <= 1F
             c if c < '\u{0020}' => {
+                // always lowercase
                 val.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => val.push(c),

@@ -13,7 +13,8 @@ use std::{error, fmt};
 const INT_LIMIT: &[u8] = b"9007199254740991";
 
 // https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
-// much better approach than passing boolean flags around, foo(true, true, false) is hard to understand
+// much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
+// it is used to keep track of what we have seen so far when parsing a number
 struct NumberState {
     decimal_point: bool,
     scientific_notation: bool,
@@ -68,7 +69,7 @@ struct NumberState {
 // With u32:
 // vec![1661992960, 1808227885, 3721402093, 4028081056, 542101086]
 //
-//With u64:
+// With u64:
 // vec![7766279631452241920, 542101086035307936, 2]
 #[derive(Debug, PartialEq, Clone)]
 enum NumberKind {
@@ -106,8 +107,8 @@ pub struct Number {
 }
 
 impl Number {
-    // for i64, f64 self.0kind will copy v because all those types implement Copy; BigDecimal/Int does
-    // not, so we need to borrow it and clone it, similar to &self.kind in error.rs
+    // for i64, f64 self.kind will copy v because all those types implement Copy; BigDecimal/Int does
+    // not, we can not move it out of a borrowed context so we have to clone it
     pub fn as_i64(&self) -> Option<i64> {
         match self.kind {
             NumberKind::I64(v) => Some(v),
@@ -154,13 +155,12 @@ impl Number {
 // https://floating-point-gui.de/errors/comparison/
 //
 // when arbitrary precision is enabled we never have to consider f64 and BigInt/Decimal because
-// we never parse numbers as f64. This is true because our program runs with the flag either set or
-// not so we will never run in a case where we parsed as f64 and then somehow encounter a BigInt/Decimal
-// on the other side of the comparison
+// we never parse numbers as f64. Since the flag is set at compile time, both sides of a comparison
+// will always use the same numeric representation
 impl PartialOrd for Number {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         // match takes ownership and NumberKind does not implement Copy, so we pass a ref
-        // we have &Self, and we can not move it out of a borrowed context
+        // we have &self, and we can not move it out of a borrowed context
         match (&self.kind, &other.kind) {
             (NumberKind::I64(lhs), NumberKind::I64(rhs)) => lhs.partial_cmp(rhs),
             (NumberKind::F64(lhs), NumberKind::F64(rhs)) => lhs.partial_cmp(rhs),
@@ -255,12 +255,12 @@ pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {
     Ok(val)
 }
 
-// we are parsing from a buffer that represent the number's value as a utf8 string; it is a two-step
+// we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
 // process: 1) convert the byte buffer to string 2) parse the string
-// always safe to call unwrap because previously we have called read()
 pub(super) fn parse(buffer: &[u8]) -> Number {
     let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
-    let s = std::str::from_utf8(buffer).unwrap();
+    // SAFETY: the buffer is always created from calling as_bytes() in an str
+    let s = unsafe { std::str::from_utf8_unchecked(buffer) };
 
     #[cfg(feature = "arbitrary_precision")]
     type N = BigDecimal;
@@ -270,9 +270,9 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
         return Number::from(s.parse::<N>().unwrap());
     }
 
-    // Try to optimize even if big_decimal is true; for any integer we can still store it as i64
-    // as long as it is not out of range. In read() we don't check if the number is out of range
-    // when big_decimal is enabled
+    // Try to optimize even if arbitrary_precision is enabled; for any integer we can still store it
+    // as i64 as long as it is not out of range. In read() we don't check if the number is out of range
+    // when arbitrary_precision is enabled
     #[cfg(feature = "arbitrary_precision")]
     {
         let digits = if buffer[0] == b'-' {
@@ -322,7 +322,7 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
         _ => (),
     }
 
-    // this is the case for single digit numbers '3' where next is none, self.pos is at the digit
+    // this is the case for single digit numbers, '3', where next is none, self.pos is at the digit
     // itself, not in the 1st character after reading the number, we don't need to reset the position,
     // later advance() is called self.pos moves correctly to the next character without skipping one
     if next.is_none() {
@@ -360,7 +360,6 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     Ok(())
 }
 
-// the code below would work, but we needed to parse different numeric types(u8, i64 etc.)
 // when we want to parse integers for index selectors we need to use i64::MAX for our bound but
 // when we parse range quantifiers for regex we need min/max to be at most 3 digits to prevent
 // resource exhaustion we can't keep scanning for more than that and have a bound like i64::MAX
@@ -402,17 +401,6 @@ pub(crate) trait Atoi: Sized {
 //     }
 //     Ok(sign * num)
 // }
-
-// this is probably poor design
-// why not have an enum NumericError with the variants below?
-//
-// a method like atoi() can return NumericError if nobody depended on it, like the case with JsonError
-// we never do From<JsonError> for Foo but for NumericError we do;  we do: impl From<NumericError>
-// for EscapeError then we call match on the NumericError variants, and we see that other than the
-// InvalidHexDigit there is not a variant on EscapeError that maps to OutOfRange so we end up doing
-// _ => unreachable() which is not recommended, from() should not panic!
-//
-// the same logic applies for impl From<NumericError> for PathError where we have the OutOfRange case
 #[derive(Debug, PartialEq)]
 pub(super) struct HexError {
     pub(super) digit: u8,
@@ -448,7 +436,6 @@ pub(super) enum NumericErrorKind {
 
 impl fmt::Display for NumericError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // for Leading zeros add: "json specification prohibits numbers from being prefixed with a plus sign"
         match &self.kind {
             NumericErrorKind::LeadingZeros => {
                 write!(
@@ -487,7 +474,7 @@ fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
 
 // how we handle negatives?
 //
-// because the range is symmetric, if the number is greater than the limit in absolute value it means
+// the range is symmetric, if the number is greater than the limit in absolute value it means
 // that if positive, num > LIMIT and if num is negative it is smaller than -LIMIT.
 // this approach wouldn't work if LIMIT was i64::MAX because MIN/MAX are not symmetric
 fn is_out_of_range_i64(buffer: &[u8]) -> bool {
@@ -504,13 +491,9 @@ fn is_out_of_range_i64(buffer: &[u8]) -> bool {
 // Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parsing::<f64>() to return inf/-inf
 // Based on that handling normal numbers is straightforward. If the result of parsing is inf/-inf since
 // infinity and nan are not supported in the json rfc we can safely say that the number is out of range
-//
-// If we actually had to parsing parts of the number and check for over/under flow look at dec2flt() at src/num/dec2flt/mod.rs
 fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
-    let val = s.parse::<f64>().unwrap();
-
-    val.is_infinite()
+    s.parse::<f64>().unwrap().is_infinite()
 }
 
 fn check_decimal_point(

@@ -25,7 +25,3 @@ pub fn from_file(path: &str) -> Result<Value, FileParseError> {
 
 // toDo: write a method validate(reader: Reader) that just scans the reader and doesn't create the ast
 // it just checks if it is valid json or not
-
-// pub fn to_pointer_path(npath: &str) -> String {
-//
-// }

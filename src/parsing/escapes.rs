@@ -30,7 +30,6 @@ pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), Es
     if next == b'u' {
         check_unicode_escape(buffer, i)?;
     }
-
     Ok(())
 }
 

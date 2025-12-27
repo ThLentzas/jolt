@@ -1,9 +1,9 @@
 use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
-use super::lexer::{Lexer, LexerToken, LexerTokenType};
+use super::lexer::{Lexer, LexerToken, LexerTokenKind};
 use super::number::Number;
 use super::value::Value;
 use super::{
-    INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT, escapes, number, utf8,
+    escapes, number, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT,
 };
 use indexmap::IndexMap;
 use std::cmp::PartialEq;
@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::string::String;
 
 #[derive(Debug, PartialEq)]
-enum ParserTokenType {
+enum ParserTokenKind {
     ObjectStart,
     ObjectEnd,
     NameSeparator,
@@ -26,8 +26,8 @@ enum ParserTokenType {
 
 struct ParserToken {
     start_index: usize,
-    offset: u32,
-    token_type: ParserTokenType,
+    offset: usize,
+    kind: ParserTokenKind,
 }
 
 pub(super) struct Parser<'a> {
@@ -51,6 +51,13 @@ impl<'a> Parser<'a> {
 
     // toDo: advantages of peek/advance and recursive descendant parser, peek is just look ahead without consuming
     pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
+        // [](empty input buffer) is invalid, JsonText = ws value ws, a value is mandatory
+        if self.buffer.is_empty() {
+            return Err(ParserError {
+                kind: ParserErrorKind::UnexpectedEof,
+                pos: Some(self.buffer.len()),
+            });
+        }
         if self.buffer.len() > INPUT_BUFFER_LIMIT {
             return Err(ParserError {
                 kind: ParserErrorKind::InputBufferLimitExceeded {
@@ -61,7 +68,7 @@ impl<'a> Parser<'a> {
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
         if utf8::is_bom_present(self.buffer) {
-            self.lexer.advance(3);
+            self.consume(3);
         }
 
         let token = self.peek()?;
@@ -69,29 +76,29 @@ impl<'a> Parser<'a> {
         self.parse_value(token.as_ref())?;
         match self.peek()? {
             // after successfully parsing a value we can't have leftover tokens
-            // false5, "abc"123, {}  null, note that this could return an error, {}001, -> leading zeros are not allowed
+            // false5, "abc"123, {}  null,
+            // note that this could return an error, {}001, -> leading zeros are not allowed
             Some(token) => Err(ParserError {
                 kind: ParserErrorKind::UnexpectedToken { expected: None },
                 pos: Some(token.start_index()),
             }),
-            // whoever calls parse() will be the owner of the return value
             None => Ok(self.value()?),
         }
     }
 
     // None of the parse_* calls moves past the related tokens, we advance after
-    // For cases like object and array we perform a dfs because if an object has a value that is
-    // object or array we need to full instantiate that first and then return to continue with the
-    // rest of values. (similar to recursive descendant in path)
+    // Objects and arrays are parsed recursively: when a value is itself an object or array, we fully
+    // parse that nested structure before continuing with sibling elements.(similar to recursive
+    // descendant in path)
     fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), ParserError> {
         match token {
-            Some(t) => match t.token_type() {
-                LexerTokenType::LCurlyBracket => self.parse_object(t)?,
-                LexerTokenType::LSquareBracket => self.parse_array(t)?,
-                LexerTokenType::Number => self.parse_number(t),
-                LexerTokenType::String => self.parse_string(t),
-                LexerTokenType::Boolean => self.parse_boolean(t),
-                LexerTokenType::Null => self.parse_null(t),
+            Some(t) => match t.kind() {
+                LexerTokenKind::LCurlyBracket => self.parse_object(t)?,
+                LexerTokenKind::LSquareBracket => self.parse_array(t)?,
+                LexerTokenKind::Number => self.parse_number(t),
+                LexerTokenKind::String => self.parse_string(t),
+                LexerTokenKind::Boolean => self.parse_boolean(t),
+                LexerTokenKind::Null => self.parse_null(t),
                 _ => {
                     return Err(ParserError {
                         kind: ParserErrorKind::UnexpectedToken {
@@ -102,14 +109,9 @@ impl<'a> Parser<'a> {
                 }
             },
             None => {
-                let pos = if self.buffer.is_empty() {
-                    self.buffer.len()
-                } else {
-                    self.buffer.len() - 1
-                };
                 return Err(ParserError {
                     kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(pos),
+                    pos: Some(self.buffer.len() - 1),
                 });
             }
         }
@@ -139,7 +141,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::ObjectStart,
+            kind: ParserTokenKind::ObjectStart,
         });
         // '{'
         self.consume(1);
@@ -147,12 +149,13 @@ impl<'a> Parser<'a> {
         let buffer_len = self.buffer.len();
         let mut names = HashSet::new();
 
-        // We don't know how many tokens are part of the current object, the moment we encounter '}' we break
+        // We don't know how many tokens are part of the current object, the moment we encounter '}'
+        // we break
         loop {
             match self.peek()? {
                 // {"foo": "bar",}
-                Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
-                    if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
+                Some(next) if expect(next.kind(), LexerTokenKind::RCurlyBracket) => {
+                    if self.tokens.last().unwrap().kind == ParserTokenKind::ValueSeparator {
                         return Err(ParserError {
                             kind: ParserErrorKind::UnexpectedToken {
                                 expected: Some("object name"),
@@ -164,15 +167,15 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ObjectEnd,
+                        kind: ParserTokenKind::ObjectEnd,
                     });
                     self.depth -= 1;
                     break;
                 }
-                Some(next) if expect(next.token_type(), LexerTokenType::String) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::String) => {
                     // Drop opening/closing quotes
                     let name = &self.buffer
-                        [next.start_index() + 1..next.start_index() + (next.offset() - 1) as usize];
+                        [next.start_index() + 1..next.start_index() + (next.offset() - 1)];
                     // We don't allow duplicate names at the same depth level
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
@@ -206,11 +209,11 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek()? {
-                Some(next) if expect(next.token_type(), LexerTokenType::Colon) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::Colon) => {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::NameSeparator,
+                        kind: ParserTokenKind::NameSeparator,
                     });
                     self.consume(1);
                 }
@@ -234,19 +237,19 @@ impl<'a> Parser<'a> {
             self.parse_value(next.as_ref())?;
 
             match self.peek()? {
-                Some(next) if expect(next.token_type(), LexerTokenType::Comma) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::Comma) => {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ValueSeparator,
+                        kind: ParserTokenKind::ValueSeparator,
                     });
                     self.consume(1);
                 }
-                Some(next) if expect(next.token_type(), LexerTokenType::RCurlyBracket) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::RCurlyBracket) => {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ObjectEnd,
+                        kind: ParserTokenKind::ObjectEnd,
                     });
                     self.depth -= 1;
                     break;
@@ -291,17 +294,16 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::ArrayStart,
+            kind: ParserTokenKind::ArrayStart,
         });
         self.consume(1);
         self.depth += 1;
-        let buffer_len = self.buffer.len();
 
         loop {
             match self.peek()? {
                 // [1,2,]
-                Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
-                    if self.tokens.last().unwrap().token_type == ParserTokenType::ValueSeparator {
+                Some(next) if expect(next.kind(), LexerTokenKind::RSquareBracket) => {
+                    if self.tokens.last().unwrap().kind == ParserTokenKind::ValueSeparator {
                         return Err(ParserError {
                             kind: ParserErrorKind::UnexpectedToken {
                                 expected: Some("json value"),
@@ -313,7 +315,7 @@ impl<'a> Parser<'a> {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ArrayEnd,
+                        kind: ParserTokenKind::ArrayEnd,
                     });
                     self.depth -= 1;
                     break;
@@ -324,19 +326,19 @@ impl<'a> Parser<'a> {
                 next => self.parse_value(next.as_ref())?,
             }
             match self.peek()? {
-                Some(next) if expect(next.token_type(), LexerTokenType::Comma) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::Comma) => {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ValueSeparator,
+                        kind: ParserTokenKind::ValueSeparator,
                     });
                     self.consume(1);
                 }
-                Some(next) if expect(next.token_type(), LexerTokenType::RSquareBracket) => {
+                Some(next) if expect(next.kind(), LexerTokenKind::RSquareBracket) => {
                     self.tokens.push(ParserToken {
                         start_index: next.start_index(),
                         offset: next.offset(),
-                        token_type: ParserTokenType::ArrayEnd,
+                        kind: ParserTokenKind::ArrayEnd,
                     });
                     self.depth -= 1;
                     break;
@@ -352,7 +354,7 @@ impl<'a> Parser<'a> {
                 None => {
                     return Err(ParserError {
                         kind: ParserErrorKind::UnexpectedEof,
-                        pos: Some(buffer_len - 1),
+                        pos: Some(self.buffer.len() - 1),
                     });
                 }
             }
@@ -364,7 +366,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Number,
+            kind: ParserTokenKind::Number,
         });
     }
 
@@ -372,7 +374,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::String,
+            kind: ParserTokenKind::String,
         });
     }
 
@@ -380,7 +382,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Boolean,
+            kind: ParserTokenKind::Boolean,
         });
     }
 
@@ -388,7 +390,7 @@ impl<'a> Parser<'a> {
         self.tokens.push(ParserToken {
             start_index: token.start_index(),
             offset: token.offset(),
-            token_type: ParserTokenType::Null,
+            kind: ParserTokenKind::Null,
         });
     }
 
@@ -408,13 +410,13 @@ impl<'a> Parser<'a> {
 
     fn value(&mut self) -> Result<Value, ParserError> {
         let token = &self.tokens[self.pos];
-        let val = match token.token_type {
-            ParserTokenType::ObjectStart => Value::Object(self.object_value()?),
-            ParserTokenType::ArrayStart => Value::Array(self.array_value()?),
-            ParserTokenType::Number => Value::Number(self.number_value()),
-            ParserTokenType::String => Value::String(self.string_value()?),
-            ParserTokenType::Boolean => Value::Boolean(self.boolean_value()),
-            ParserTokenType::Null => Value::Null,
+        let val = match token.kind {
+            ParserTokenKind::ObjectStart => Value::Object(self.object_value()?),
+            ParserTokenKind::ArrayStart => Value::Array(self.array_value()?),
+            ParserTokenKind::Number => Value::Number(self.number_value()),
+            ParserTokenKind::String => Value::String(self.string_value()?),
+            ParserTokenKind::Boolean => Value::Boolean(self.boolean_value()),
+            ParserTokenKind::Null => Value::Null,
             // only the above cases will start a json value
             _ => unreachable!(
                 "Unexpected token type for the start of json value at index {}",
@@ -431,21 +433,22 @@ impl<'a> Parser<'a> {
         self.pos += 1; // move past '{'
 
         // empty object
-        if self.tokens[self.pos].token_type == ParserTokenType::ObjectEnd {
+        if self.tokens[self.pos].kind == ParserTokenKind::ObjectEnd {
             return Ok(map);
         }
 
         while let Some(token) = self.next() {
             // Drop opening/closing quotes
-            let name: &[u8] = &self.buffer
-                [token.start_index + 1..token.start_index + (token.offset - 1) as usize];
-            let key = String::from_utf8(Vec::from(name)).unwrap(); // toDo: can this be &str?
+            let name: &[u8] =
+                &self.buffer[token.start_index + 1..token.start_index + token.offset - 1];
+            // SAFETY: any invalid sequences are rejected before reaching this point(during lexing)
+            let key = unsafe { String::from_utf8_unchecked(Vec::from(name)) };
             self.pos += 2; // skip key,colon
-            let value = self.value()?;
-            map.insert(key, value);
+            let val = self.value()?;
+            map.insert(key, val);
             // we expect either ',' or '}'. The structure of the object is always valid at this point
             if let Some(token) = self.next() {
-                if token.token_type == ParserTokenType::ObjectEnd {
+                if token.kind == ParserTokenKind::ObjectEnd {
                     break;
                 }
             }
@@ -459,14 +462,14 @@ impl<'a> Parser<'a> {
         self.pos += 1; // move past '['
 
         // empty array
-        if self.tokens[self.pos].token_type == ParserTokenType::ArrayEnd {
+        if self.tokens[self.pos].kind == ParserTokenKind::ArrayEnd {
             return Ok(values);
         }
 
         while let Some(_) = self.next() {
             values.push(self.value()?);
             if let Some(token) = self.next() {
-                if token.token_type == ParserTokenType::ArrayEnd {
+                if token.kind == ParserTokenKind::ArrayEnd {
                     break;
                 }
             }
@@ -477,39 +480,39 @@ impl<'a> Parser<'a> {
 
     fn number_value(&mut self) -> Number {
         let token = &self.tokens[self.pos];
-        let slice = &self.buffer[token.start_index..token.start_index + token.offset as usize];
+        let slice = &self.buffer[token.start_index..token.start_index + token.offset];
         number::parse(slice)
     }
 
     fn string_value(&self) -> Result<String, ParserError> {
         let token = &self.tokens[self.pos];
-        let mut val = String::new();
-        let mut i = token.start_index + 1; // Skip opening quotation
+        let mut val = String::with_capacity(token.offset - 2); // drop quotes
+        let mut i = token.start_index + 1; // skip opening quote
 
-        while i < token.start_index + (token.offset - 1) as usize {
-            // Skip closing quotation
+        while i < token.start_index + token.offset - 1 { // skip closing quote
             let current = self.buffer[i];
             match current {
                 b'\\' => {
                     val.push(escapes::map_escape_character(self.buffer, i));
-                    i += escapes::len(self.buffer, i) - 1;
+                    i += escapes::len(self.buffer, i);
                 }
                 b if !b.is_ascii() => {
                     val.push(utf8::read_utf8_char(self.buffer, i));
-                    i += utf8::utf8_char_width(current) - 1;
+                    i += utf8::utf8_char_width(current);
                 }
-                _ => val.push(current as char),
-            }
-            i += 1;
-        }
-
-        if val.len() > STRING_VALUE_LENGTH_LIMIT {
-            return Err(ParserError::from(StringError {
-                kind: StringErrorKind::StringValueLengthLimitExceed {
-                    len: STRING_VALUE_LENGTH_LIMIT,
+                _ => {
+                    val.push(current as char);
+                    i += 1;
                 },
-                pos: token.start_index,
-            }));
+            }
+            if val.len() > STRING_VALUE_LENGTH_LIMIT {
+                return Err(ParserError::from(StringError {
+                    kind: StringErrorKind::StringValueLengthLimitExceed {
+                        len: STRING_VALUE_LENGTH_LIMIT,
+                    },
+                    pos: token.start_index,
+                }));
+            }
         }
         Ok(val)
     }
@@ -520,7 +523,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
+fn expect(left: &LexerTokenKind, right: LexerTokenKind) -> bool {
     *left == right
 }
 
@@ -528,9 +531,9 @@ fn expect(left: &LexerTokenType, right: LexerTokenType) -> bool {
 mod tests {
     use super::*;
     #[cfg(feature = "arbitrary_precision")]
-    use bigdecimal::BigDecimal;
-    #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::num_bigint::BigInt;
+    #[cfg(feature = "arbitrary_precision")]
+    use bigdecimal::BigDecimal;
     #[cfg(feature = "arbitrary_precision")]
     use std::str::FromStr;
 
@@ -737,7 +740,6 @@ mod tests {
         assert_eq!(Value::Object(map), result);
     }
 
-    // [](empty input buffer) is invalid, JsonText = ws value ws, a value is mandatory
     // same logic applies for [\n, \t, '\r', ' ']
     #[test]
     fn empty_input() {
@@ -792,13 +794,9 @@ mod tests {
     //
     //      assert_eq!(result, Err(JsonError::new(JsonErrorKind::InputBufferLimitExceeded { len: INPUT_BUFFER_LIMIT }, None)));
     //  }
-    //  toDo: consider this when we implement Reader
     //
     //  The above test won't work, we get a Stack Overflow error because the allocation happens in the stack
     //  and might not have 4MBs of memory
-    //
-    //  We use heap allocation because Vec always allocates its data on the heap and even if buffer
-    //  is Vec<u8> a reference to buffer is &[u8]
     #[test]
     fn input_buffer_exceeds_size_limit() {
         let buffer = vec![b'"'; INPUT_BUFFER_LIMIT + 1];

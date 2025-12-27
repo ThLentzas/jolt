@@ -23,7 +23,7 @@ pub enum Value {
     String(String),
     Boolean(bool),
     Null,
-} // toDo: pretty print https://crates.io/crates/pprint
+}
 // https://docs.rs/ryu/latest/ryu/
 // https://docs.rs/itoa/latest/itoa/
 
@@ -32,7 +32,6 @@ impl Hash for Value {
         std::mem::discriminant(self).hash(state);
         match self {
             // https://github.com/indexmap-rs/indexmap/issues/288
-            // toDo: Consider moving to LinkedHashMap which impls Hash
             Value::Object(map) => map.as_slice().hash(state),
             Value::Array(arr) => arr.hash(state),
             Value::Number(n) => n.hash(state),
@@ -148,9 +147,9 @@ impl Value {
     // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value is an object
     // it is treated as a key, if an array as an index
     //
-    // starting from the root value, for every token created by split() we check with the current val
-    //
-    // -if val is an object then the token's value must be a key of that object
+    // starting from the root value, for every token created by gen_ref_token() we check with the
+    // current val
+    // -if val is an object then the token's value must be a key
     // -if val is an array then the token's value must be an unsigned base-10 integer value
     // -any other type we return None
     //
@@ -158,12 +157,13 @@ impl Value {
     //
     // path: "/users/1/name", val = "{"users": [{"name": "Alice"}, {"name": "Bob"}]}
     //
-    // 3 tokens are generated: "tokens", 1, "name"
-    // "users" exists as key in val, update val with the value of the users key, val = [{"name": "Alice"}, {"name": "Bob"}]
-    // 1 is an index and val is an array, update val with the value of at the given index, val = {"name": "Bob"}
-    // "name" exists as key in val, update val with the value of the name key, val = "Bob"
-    //
-    // toDo: read Appendix C, pointer always returns 1 value, path expressions can return more than 1 and are more flexible
+    // 3 tokens are generated: "users", 1, "name"
+    // "users" exists as key in val, update val with the value of the users val,
+    //      val = [{"name": "Alice"}, {"name": "Bob"}]
+    // 1 is an index and val is an array, update val with the value at the given index,
+    //      val = {"name": "Bob"}
+    // "name" exists as key in val, update val with the value of the key
+    //      val = "Bob"
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -177,8 +177,8 @@ impl Value {
         let buffer = pointer.as_bytes();
         let mut ptr = Pointer::new(buffer);
         ptr.check_start()?;
-        // In the previous approach, we generated all the ref tokens and then iterated over the vector
-        // calling match on current and returning a value if present. It worked, but we iterated twice
+        // in the previous approach, we generated all the ref tokens and then iterated over the vector
+        // calling match on current and returning a value if present. It worked, but we iterated twice,
         // once the input buffer to generate all the tokens and once the vector of those tokens. We
         // can do better by generating a token at a time, check against the current value and only
         // if we find a value, we keep going.
@@ -205,6 +205,7 @@ impl Value {
         Ok(Some(current))
     }
 
+    // look at pointer() above for any comments
     pub fn pointer_mut(&mut self, pointer: &str) -> Result<Option<&mut Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -220,9 +221,6 @@ impl Value {
 
         let mut current = self;
         loop {
-            // We never check if the number of tokens exceeds the NestingDepthLimit, each token
-            // increases the depth by 1 level,  because even if it did we would get no match at
-            // NestingDepthLimit + 1 and we would return None
             match ptr.gen_ref_token()? {
                 Some(token) => match current {
                     Value::Object(map) => match map.get_mut(&token.val) {
@@ -244,10 +242,7 @@ impl Value {
 
     // we need to specify a lifetime for Node, otherwise it would be unclear to the user that reads
     // the code that Node holds a reference; we fix that by returning Node<'_>.
-    // The lifetime can be elided based on the 3rd elision rule:
-    //  "if there are multiple input lifetime parameters, but one of them is &self or
-    //  &mut self because this is a method, the lifetime of self is assigned to all output
-    //  lifetime parameters."
+    // The lifetime can be elided based on the 3rd elision rule
     //
     // in all select() methods below we call into_iter() because we don't care about PathNode at all
     // we just want to consume it and do the mapping
@@ -258,7 +253,6 @@ impl Value {
             .into_iter()
             .map(Node::from)
             .collect();
-
         Ok(nodes)
     }
 
@@ -289,7 +283,6 @@ impl Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            // toDo: is comparing hashes faster?
             (Value::String(s1), Value::String(s2)) => s1.partial_cmp(s2),
             (Value::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2),
             // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
@@ -398,108 +391,6 @@ impl From<f64> for Value {
 mod tests {
     use super::*;
     use crate::macros::json;
-    use crate::parsing::error::{StringError, StringErrorKind};
-    use crate::parsing::value::error::PointerErrorKind;
-
-    // toDo: move those tests to pointer and break it down to the 3 methods called by pointer()
-    // check_start(), gen_ref_token(), check_array_index()
-    fn invalid_pointer_paths() -> Vec<(&'static str, PointerError)> {
-        vec![
-            // does not start with '/'
-            (
-                "foo/bar",
-                PointerError {
-                    kind: PointerErrorKind::InvalidPointerSyntax,
-                    pos: 0,
-                },
-            ),
-            // does not start with the Unicode sequence of  '/'
-            (
-                "\\u005E",
-                PointerError {
-                    kind: PointerErrorKind::InvalidPointerSyntax,
-                    pos: 0,
-                },
-            ),
-            // unpaired pointer escape
-            (
-                "/foo/bar~",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
-                    pos: 8,
-                }),
-            ),
-            // unknown pointer escape
-            (
-                "/foo/bar~3",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'3' },
-                    pos: 9,
-                }),
-            ),
-            // ~e
-            (
-                "/foo/bar~\\u0065",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
-                    pos: 9,
-                }),
-            ),
-            // passing it as "/\u{007e}" is wrong because this is not how we use Unicode sequence in json strings
-            // the parser has to map the sequence to the character
-            // unpaired pointer escape where '~' is represented as Unicode sequence
-            (
-                "/\\u007e",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
-                    pos: 6,
-                }),
-            ),
-            // unknown pointer escape where '~' is represented as Unicode
-            (
-                "/\\u007e4",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'4' },
-                    pos: 7,
-                }),
-            ),
-            // // unknown pointer escape where '~' and the next character are represented as Unicode sequences
-            (
-                "/\\u007e\\u0065",
-                PointerError::from(StringError {
-                    kind: StringErrorKind::UnknownEscapedCharacter { byte: b'\\' },
-                    pos: 7,
-                }),
-            ),
-            (
-                "/foo/+1",
-                PointerError {
-                    kind: PointerErrorKind::InvalidIndex {
-                        message: "index can not be prefixed with a sign",
-                    },
-                    pos: 5,
-                },
-            ),
-            (
-                "/foo/01",
-                PointerError {
-                    kind: PointerErrorKind::InvalidIndex {
-                        message: "leading zeros are not allowed",
-                    },
-                    pos: 5,
-                },
-            ),
-            (
-                "/foo/+",
-                PointerError {
-                    kind: PointerErrorKind::InvalidIndex {
-                        message: "invalid array index",
-                    },
-                    pos: 5,
-                },
-            ),
-        ]
-    }
 
     // path, source, result
     fn valid_pointer_paths() -> Vec<(&'static str, Value, Option<Value>)> {
@@ -1737,30 +1628,8 @@ mod tests {
         ]
     }
 
-    // maybe instead of expected/actual change it to left/right?
     #[test]
-    fn test_valid_pointer_paths() {
-        for (path, source, expected) in valid_pointer_paths() {
-            let actual = source.pointer(path);
-            assert_eq!(actual, Ok(expected.as_ref()));
-        }
-    }
-
-    #[test]
-    fn test_invalid_pointer_paths() {
-        let val = json!({ "foo": [1] });
-
-        for (path, err) in invalid_pointer_paths() {
-            // problem: if the call to pointer() returned Ok() the test passes but that is not what we want
-            // if let Err(e) = val.pointer(path) {
-            //     assert_eq!(e, err);
-            // }
-            let result = val.pointer(path);
-            assert_eq!(result, Err(err), "invalid path: {path}");
-        }
-    }
-    #[test]
-    fn test_value_comparison() {
+    fn test_comparisons() {
         for (lhs, rhs, order) in comparisons() {
             assert_eq!(
                 lhs.partial_cmp(&rhs),
@@ -1772,7 +1641,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_valid_pointer_paths() {
+        for (path, source, result) in valid_pointer_paths() {
+            assert_eq!(source.pointer(path), Ok(result.as_ref()));
+        }
+    }
+
     // jpath
+    #[test]
+    fn test_root() {
+        let root = json!({
+            "x": 1,
+            "y": 2
+        });
+
+        let res = vec![Node {
+            path: String::from("$"),
+            value: &root,
+        }];
+
+        assert_eq!(res, root.select("$").unwrap());
+    }
+
     #[test]
     fn test_valid_names() {
         for (path_expr, root, nodelist) in valid_names() {
@@ -1977,17 +1868,18 @@ mod tests {
     }
 
     #[test]
-    fn test_npaths_edge_cases() {
+    fn test_npaths() {
         let path_expr = "$.*";
         let root = json!(
             {
                 "\\": 0,
                 "\n": 1,
-                "\u{001F}": 2
+                "\u{001F}": 2,
+                "": 3
             }
         );
         let nodelist = root.select_as_npaths(path_expr).unwrap();
-        let expected_paths = vec!["$['\\\\']", "$['\\n']", "$['\\u001f']"];
+        let expected_paths = vec!["$['\\\\']", "$['\\n']", "$['\\u001f']", "$['']"];
 
         assert_eq!(expected_paths.len(), nodelist.len());
         for (i, path) in expected_paths.into_iter().enumerate() {
