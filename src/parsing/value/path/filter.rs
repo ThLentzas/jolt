@@ -1,6 +1,6 @@
 use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
 use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
-use crate::parsing::value::path::{EvalContext, Segment, SegmentKind};
+use crate::parsing::value::path::{EvalContext, Segment};
 use crate::parsing::value::Value;
 use std::borrow::Cow;
 
@@ -28,11 +28,15 @@ pub(crate) enum LogicalExpr {
 }
 
 impl LogicalExpr {
-    // short circuiting and well-typedness of functions
+    // short-circuiting and well-typedness of functions
     // because the type checking happens during parsing, we will never encounter a case where we
     // might have an invalid function(Arity/Type mismatch) that we will miss because the lhs evaluated
-    // to true/false and we returned without evaluating the rhs
-    pub(super) fn evaluate<'v>(&self, context: &mut EvalContext<'v>, current: &'v Value) -> bool {
+    // to true/false, and we returned without evaluating the rhs
+    //
+    // lifetimes: context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function;
+    pub(super) fn evaluate<'r>(&self, context: &mut EvalContext<'r>, current: &'r Value) -> bool {
         match self {
             LogicalExpr::Comparison(expr) => expr.evaluate(context, current),
             LogicalExpr::Test(expr) => expr.evaluate(context, current),
@@ -57,7 +61,10 @@ pub(crate) struct ComparisonExpr {
 }
 
 impl ComparisonExpr {
-    fn evaluate<'v>(&self, context: &mut EvalContext<'v>, current: &'v Value) -> bool {
+    // lifetimes: context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function;
+    fn evaluate<'r>(&self, context: &mut EvalContext<'r>, current: &'r Value) -> bool {
         let lhs = self.lhs.to_operand(context, current);
         let rhs = self.rhs.to_operand(context, current);
 
@@ -85,7 +92,10 @@ pub(crate) enum TestExpr {
 }
 
 impl TestExpr {
-    fn evaluate<'v>(&self, context: &mut EvalContext<'v>, current: &'v Value) -> bool {
+    // lifetimes: context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function
+    fn evaluate<'r>(&self, context: &mut EvalContext<'r>, current: &'r Value) -> bool {
         match self {
             TestExpr::EmbeddedQuery(q) => {
                 let nodelist = q.evaluate(context, current);
@@ -109,20 +119,47 @@ pub(super) enum Comparable {
 }
 
 // operand is what we get after evaluating a Comparable
-enum Operand<'a> {
-    Value(Cow<'a, Value>),
+enum Operand<'r> {
+    Value(Cow<'r, Value>),
     Empty,
     Invalid,
 }
 
 impl Comparable {
-    fn to_operand<'op, 'v>(
+
+    // lifetimes: we have 2 lifetimes to consider. 'r: values that are returned by evaluating
+    // embedded queries, those are guaranteed to have the 'r lifetime since they are references to
+    // values that in live in root. Values that are returned from evaluating a function can be either
+    // owned like in the case of length() or borrowed like in the case of value(); for owned data
+    // we have no lifetime conflicts and for borrowed we return a value that lives in root so it
+    // gets the 'r lifetime.
+    //
+    // the problem is in this case: Comparable::Literal(t) => Operand::Value(Cow::Borrowed(t))
+    // This is the case where either lhs or rhs was a literal. During parsing we wrapped the literal
+    // in a Value() so we can then use the comparison operators. The Comparable::Literal(t) has the
+    // lifetime of self not of 'r, it does not live in root which is shorter than 'r.
+    //
+    // fn to_operand(&self, context: &EvalContext<'r>, ...) -> Operand<'r>
+    // we can't enforce Operand to hold references with 'r lifetime.
+    // t has lifetime of &self, not 'r and &self might be shorter than 'r
+    //
+    // To fix it we introduce the 'op lifetime and in the contract we specify that 'r lives at least
+    // as 'op. It works in both cases, for Comparable::Literal(t) => Operand::Value(Cow::Borrowed(t))
+    // which basically is Cow::Borrowed(&self.literal), the reference has the self life('op) so
+    // Operand<'op> is satisfied. For the 'r cases because we guarantee that 'r will live at least
+    // as 'op the compiler is satisfied; t still has the same lifetime as self, but now we are sure
+    // that we won't have a case where 1 lifetime is shorter than the other
+    //
+    // context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function
+    fn to_operand<'op, 'r>(
         &'op self,
-        context: &mut EvalContext<'v>,
-        current: &'v Value,
+        context: &mut EvalContext<'r>,
+        current: &'r Value,
     ) -> Operand<'op>
     where
-        'v: 'op,
+        'r: 'op,
     {
         match self {
             Comparable::EmbeddedQuery(q) => {
@@ -193,8 +230,6 @@ pub(crate) struct EmbeddedQuery {
 }
 
 impl EmbeddedQuery {
-    // we want the refs to live as long as the root(they 'live in root')
-    //
     // as we iterate the values of map/array if the query type is relative the current value will
     // be the root of the query. For absolute paths we have a reference to the root, we will evaluate
     // once and cache it after.
@@ -216,18 +251,25 @@ impl EmbeddedQuery {
     //  have the same segments. The id approach will create 2 different queries so when we do the
     //  lookup the 2nd time we encounter the same segments we will have a cache miss because there
     //  will be 2 different eq ids.
-    fn evaluate<'v>(&self, context: &mut EvalContext<'v>, current: &'v Value) -> Vec<&'v Value> {
+    //
+    // lifetimes: context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function. We don't return a reference but an owned
+    // type that holds references; elision rules are applied the same and if we were explicit with
+    // lifetimes it would tie the lifetime of references to self which is not what we want; embedded
+    // queries always return references to values that live in root so they must have the 'r lifetime
+    fn evaluate<'r>(&self, context: &mut EvalContext<'r>, current: &'r Value) -> Vec<&'r Value> {
         let start = if self.query_type == EmbeddedQueryType::Relative {
             current
         } else {
             context.root
         };
         // we can hard-code () as Trace because we don't care about the paths for embedded queries
-        let mut reader: Vec<PathNode<'v, ()>> = vec![PathNode {
+        let mut reader: Vec<PathNode<'r, ()>> = vec![PathNode {
             val: start,
             trace: (),
         }];
-        let mut writer: Vec<PathNode<'v, ()>> = Vec::new();
+        let mut writer: Vec<PathNode<'r, ()>> = Vec::new();
 
         if self.query_type == EmbeddedQueryType::Absolute {
             if let Some(values) = context.cache.get(&self.id) {
@@ -241,22 +283,16 @@ impl EmbeddedQuery {
         values
     }
 
-    fn run<'v>(
+    // lifetimes: look at evaluate() above and segment.apply(), is a combination of both
+    fn run<'r>(
         &self,
-        context: &mut EvalContext<'v>,
-        reader: &mut Vec<PathNode<'v, ()>>,
-        writer: &mut Vec<PathNode<'v, ()>>,
-    ) -> Vec<&'v Value> {
-        for seg in self.segments.iter() {
+        context: &mut EvalContext<'r>,
+        reader: &mut Vec<PathNode<'r, ()>>,
+        writer: &mut Vec<PathNode<'r, ()>>,
+    ) -> Vec<&'r Value> {
+        for segment in self.segments.iter() {
             writer.clear();
-            match seg.kind {
-                SegmentKind::Child => {
-                    super::apply_child_seg::<NoOpTracker>(context, reader, writer, seg);
-                }
-                SegmentKind::Descendant => {
-                    super::apply_descendant_seg::<NoOpTracker>(context, reader, writer, seg);
-                }
-            }
+            segment.apply::<NoOpTracker>(context, reader, writer);
             std::mem::swap(reader, writer);
         }
         // the final nodelist is in reader after the last swap
@@ -270,10 +306,7 @@ impl EmbeddedQuery {
 }
 
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
-// toDo: explain the lifetimes in each case
-// toDo: "'a is okay if you only have one named lifetime, but yeah if there's more than that, give them names"
-// toDo: remove all lifetimes and see what happens/ add a comment
-// toDo: maybe rename every lifetime that refers to a value in root as r?
 // toDo: is it possible to use the arena approach for the logical expressions
 // toDo: review anchors
-// toDo: review the comments
+// toDo: try to rewrite precedence with prat parsing
+// toDo: impl the index trait for Value

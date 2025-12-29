@@ -16,18 +16,6 @@ pub(super) mod filter;
 pub(crate) mod tracker;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct Segment {
-    kind: SegmentKind,
-    selectors: Vec<Selector>,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
-enum SegmentKind {
-    Child,
-    Descendant,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
 enum Selector {
     Name(String),
     WildCard,
@@ -37,6 +25,18 @@ enum Selector {
     Filter(LogicalExpr),
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
+enum SegmentKind {
+    Child,
+    Descendant,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct Segment {
+    kind: SegmentKind,
+    selectors: Vec<Selector>,
+}
+
 impl Segment {
     fn new(kind: SegmentKind) -> Self {
         Self {
@@ -44,6 +44,98 @@ impl Segment {
             selectors: Vec::new(),
         }
     }
+
+    fn apply<'r, T: Tracker<'r>>(
+        &self,
+        context: &mut EvalContext<'r>,
+        reader: &Vec<PathNode<'r, T::Trace>>,
+        writer: &mut Vec<PathNode<'r, T::Trace>>,
+    ) {
+        match self.kind {
+            SegmentKind::Child => self.apply_child::<T>(context, &reader, writer),
+            SegmentKind::Descendant => self.apply_desc::<T>(context, &reader, writer),
+        }
+    }
+
+    // child segments
+    //
+    //{
+    //   "users": [
+    //     {
+    //       "name": "Alice",
+    //       "age": 30,
+    //       "city": "NYC"
+    //     },
+    //     {
+    //       "name": "Bob",
+    //       "age": 25,
+    //       "city": "LA"
+    //     },
+    //     {
+    //       "name": "Charlie",
+    //       "age": 35,
+    //       "city": "Chicago"
+    //     }
+    //   ]
+    // }
+    //
+    // $.users[*]['name', 'city']
+    //
+    // 1. .users returns the array
+    // 2. [*] is called on the array, and it returns all the elements
+    // 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
+    // 2 name selectors.
+    // output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
+    // It is important to note that from the output we see that we applied all the selector for the 1st
+    // element we got back "Alice", "NYC" and so on
+    //
+    // applying each segment essentially increases the depth by 1 level
+    //
+    // lifetimes: context and path nodes hold references to values that live in root so they share
+    // the same lifetime; the lifetime of context, reader, writer as references is not tied to self,
+    // they're independent borrows passed into the function; for T read parse()
+    fn apply_child<'r, T: Tracker<'r>>(
+        &self,
+        context: &mut EvalContext<'r>,
+        reader: &Vec<PathNode<'r, T::Trace>>,
+        writer: &mut Vec<PathNode<'r, T::Trace>>,
+    ) {
+        if reader.is_empty() {
+            return;
+        }
+
+        for v in reader.iter() {
+            for selector in &self.selectors {
+                selector.apply::<T>(context, writer, v);
+            }
+        }
+    }
+
+    // read the comment above the test_desc_seg_and_multi_selector() method in value.rs
+    //
+    // it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
+    // not when recursion backtracks(postorder) we append them in the list
+    //
+    // lifetimes: context and path nodes hold references to values that live in root so they share
+    // the same lifetime; the lifetime of context, reader, writer as references is not tied to self,
+    // they're independent borrows passed into the function; for T read parse()
+    fn apply_desc<'r, T: Tracker<'r>>(
+        &self,
+        context: &mut EvalContext<'r>,
+        reader: &Vec<PathNode<'r, T::Trace>>,
+        writer: &mut Vec<PathNode<'r, T::Trace>>,
+    ) {
+        if reader.is_empty() {
+            return;
+        }
+
+        for v in reader.iter() {
+            for selector in &self.selectors {
+                dfs::<T>(context, v, writer, selector);
+            }
+        }
+    }
+
     fn is_singular(&self) -> bool {
         match self.kind {
             SegmentKind::Descendant => false,
@@ -60,6 +152,69 @@ impl Selector {
             Selector::Index(_) => true,
             Selector::Slice(_) => false,
             Selector::Filter(_) => false,
+        }
+    }
+
+    fn apply<'r, T: Tracker<'r>>(
+        &self,
+        context: &mut EvalContext<'r>,
+        writer: &mut Vec<PathNode<'r, T::Trace>>,
+        current: &PathNode<'r, T::Trace>,
+    ) {
+        match (current.val, self) {
+            (Value::Object(map), Selector::Name(name)) => {
+                if let Some((key, val)) = map.get_key_value(name) {
+                    let trace = T::descend(&current.trace, Step::Key(key));
+                    writer.push(PathNode { trace, val });
+                }
+            }
+            (Value::Object(map), Selector::WildCard) => {
+                for (key, val) in map.iter() {
+                    let trace = T::descend(&current.trace, Step::Key(key));
+                    writer.push(PathNode { trace, val });
+                }
+            }
+            (Value::Array(arr), Selector::WildCard) => {
+                for (i, val) in arr.iter().enumerate() {
+                    let trace = T::descend(&current.trace, Step::Index(i));
+                    writer.push(PathNode { trace, val });
+                }
+            }
+            (Value::Array(arr), Selector::Index(index)) => {
+                let n_idx = normalize_index(*index, arr.len() as i64);
+                if let Ok(i) = usize::try_from(n_idx) {
+                    if let Some(val) = arr.get(i) {
+                        let trace = T::descend(&current.trace, Step::Index(i));
+                        writer.push(PathNode { trace, val });
+                    }
+                }
+            }
+            (Value::Array(arr), Selector::Slice(slice)) => {
+                let range = Range::new(slice, arr.len() as i64);
+                for i in range {
+                    if let Some(val) = arr.get(i) {
+                        let trace = T::descend(&current.trace, Step::Index(i));
+                        writer.push(PathNode { trace, val });
+                    }
+                }
+            }
+            (Value::Object(map), Selector::Filter(expr)) => {
+                for (key, val) in map.iter() {
+                    if expr.evaluate(context, val) {
+                        let trace = T::descend(&current.trace, Step::Key(key));
+                        writer.push(PathNode { trace, val });
+                    }
+                }
+            }
+            (Value::Array(arr), Selector::Filter(expr)) => {
+                for (i, elem) in arr.iter().enumerate() {
+                    if expr.evaluate(context, elem) {
+                        let trace = T::descend(&current.trace, Step::Index(i));
+                        writer.push(PathNode { trace, val: elem });
+                    }
+                }
+            }
+            _ => (),
         }
     }
 }
@@ -244,8 +399,8 @@ impl<'a, 'r> Parser<'a, 'r> {
         self.parse_root()?;
 
         let root_trace = PathNode {
-            val: self.root,
             trace: T::root(),
+            val: self.root,
         };
         // reader and writer own the Nodes, we don't pass references to nodes. The nodes are
         // created locally, they do reference values from the root, but we can't pass references
@@ -256,15 +411,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         let mut context = EvalContext::new(self.root);
         while let Some(segment) = self.parse_seg()? {
             writer.clear();
-            match segment.kind {
-                // toDo: rewrite apply_seg() under impl Segment
-                SegmentKind::Child => {
-                    apply_child_seg::<T>(&mut context, &reader, &mut writer, &segment)
-                }
-                SegmentKind::Descendant => {
-                    apply_descendant_seg::<T>(&mut context, &reader, &mut writer, &segment)
-                }
-            }
+            segment.apply::<T>(&mut context, &reader, &mut writer);
             std::mem::swap(&mut reader, &mut writer);
         }
         // the final nodelist is in reader after the last swap
@@ -1226,89 +1373,17 @@ impl<'a, 'r> Parser<'a, 'r> {
     }
 }
 
-// toDo: the methods below should be apply() in selector/segment
-// child segments
-//
-//{
-//   "users": [
-//     {
-//       "name": "Alice",
-//       "age": 30,
-//       "city": "NYC"
-//     },
-//     {
-//       "name": "Bob",
-//       "age": 25,
-//       "city": "LA"
-//     },
-//     {
-//       "name": "Charlie",
-//       "age": 35,
-//       "city": "Chicago"
-//     }
-//   ]
-// }
-//
-// $.users[*]['name', 'city']
-//
-// 1. .users returns the array
-// 2. [*] is called on the array, and it returns all the elements
-// 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
-// 2 name selectors.
-// output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
-// It is important to note that from the output we see that we applied all the selector for the 1st
-// element we got back "Alice", "NYC" and so on
-//
-// applying each segment essentially increases the depth by 1 level
-fn apply_child_seg<'v, T: Tracker<'v>>(
-    context: &mut EvalContext<'v>,
-    reader: &Vec<PathNode<'v, T::Trace>>,
-    writer: &mut Vec<PathNode<'v, T::Trace>>,
-    segment: &Segment,
-) {
-    if reader.is_empty() {
-        return;
-    }
-
-    for v in reader.iter() {
-        for selector in &segment.selectors {
-            apply_selector::<T>(context, writer, selector, v);
-        }
-    }
-}
-
-// read the comment above the test_desc_seg_and_multi_selector() method in value.rs
-//
-// it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
-// not when recursion backtracks(postorder) we append them in the list
-fn apply_descendant_seg<'v, T: Tracker<'v>>(
-    context: &mut EvalContext<'v>,
-    reader: &Vec<PathNode<'v, T::Trace>>,
-    writer: &mut Vec<PathNode<'v, T::Trace>>,
-    segment: &Segment,
-) {
-    if reader.is_empty() {
-        return;
-    }
-
-    for v in reader.iter() {
-        for selector in &segment.selectors {
-            dfs::<T>(context, v, writer, selector);
-        }
-    }
-}
-
-fn dfs<'v, T: Tracker<'v>>(
-    context: &mut EvalContext<'v>,
-    current: &PathNode<'v, T::Trace>,
-    writer: &mut Vec<PathNode<'v, T::Trace>>,
+fn dfs<'r, T: Tracker<'r>>(
+    context: &mut EvalContext<'r>,
+    current: &PathNode<'r, T::Trace>,
+    writer: &mut Vec<PathNode<'r, T::Trace>>,
     selector: &Selector,
 ) {
     if !current.val.is_object() && !current.val.is_array() {
         return;
     }
 
-    apply_selector::<T>(context, writer, selector, current);
+    selector.apply::<T>(context, writer, current);
     match current.val {
         Value::Object(map) => {
             for (key, val) in map.iter() {
@@ -1325,84 +1400,6 @@ fn dfs<'v, T: Tracker<'v>>(
             }
         }
         _ => unreachable!("dfs() was called in a non container node"),
-    }
-}
-
-fn apply_selector<'v, T: Tracker<'v>>(
-    context: &mut EvalContext<'v>,
-    writer: &mut Vec<PathNode<'v, T::Trace>>,
-    selector: &Selector,
-    current: &PathNode<'v, T::Trace>,
-) {
-    match (current.val, selector) {
-        // when we check if the name exists the rfc forbids any normalization prior to comparison
-        // rfc forbids it, we MUST check the underlying Unicode scalar values that they are the exact same
-        (Value::Object(map), Selector::Name(name)) => {
-            // very important to borrow key from map and not from the selector. If we chose to go
-            // with the selector we would have lifetime problems that bubble up to parse() because
-            // segment is a short-lived value that gets dropped immediately after the call to
-            // apply it
-            if let Some((key, val)) = map.get_key_value(name) {
-                let trace = T::descend(&current.trace, Step::Key(key));
-                writer.push(PathNode { val, trace });
-            }
-        }
-        (Value::Object(map), Selector::WildCard) => {
-            for (key, val) in map.iter() {
-                let trace = T::descend(&current.trace, Step::Key(key));
-                writer.push(PathNode { val, trace });
-            }
-        }
-        (Value::Array(arr), Selector::WildCard) => {
-            for (i, val) in arr.iter().enumerate() {
-                let trace = T::descend(&current.trace, Step::Index(i));
-                writer.push(PathNode { val, trace });
-            }
-        }
-        (Value::Array(arr), Selector::Index(index)) => {
-            // if index is negative and its absolute value is greater than length, the n_idx can
-            // still be negative, and we can not call get() with anything other than usize
-            // len = 2, index = -4 => n_idx = -2
-            // toDo: add explanation why we can cast len to i64 without any loss
-            let n_idx = normalize_index(*index, arr.len() as i64);
-            if let Ok(i) = usize::try_from(n_idx) {
-                if let Some(val) = arr.get(i) {
-                    let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(PathNode { val, trace });
-                }
-            }
-        }
-        (Value::Array(arr), Selector::Slice(slice)) => {
-            let range = Range::new(slice, arr.len() as i64);
-
-            for i in range {
-                // toDo: we should break in None?
-                if let Some(val) = arr.get(i) {
-                    let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(PathNode { val, trace });
-                }
-            }
-        }
-        // the expression is evaluated for every value
-        // check the comment on the 4th to last entry in test_valid_selectors() in value.rs
-        (Value::Object(map), Selector::Filter(expr)) => {
-            for (key, val) in map.iter() {
-                if expr.evaluate(context, val) {
-                    let trace = T::descend(&current.trace, Step::Key(key));
-                    writer.push(PathNode { val, trace });
-                }
-            }
-        }
-        // the expression is evaluated for every element
-        (Value::Array(arr), Selector::Filter(expr)) => {
-            for (i, elem) in arr.iter().enumerate() {
-                if expr.evaluate(context, elem) {
-                    let trace = T::descend(&current.trace, Step::Index(i));
-                    writer.push(PathNode { val: elem, trace });
-                }
-            }
-        }
-        _ => (),
     }
 }
 
@@ -1599,7 +1596,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b']' },
                     pos: 4,
-                }
+                },
             ),
             // Missing closing ')'
             (
@@ -1608,7 +1605,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b']' },
                     pos: 7,
-                }
+                },
             ),
             (
                 "$[?@.a)]",
@@ -1616,7 +1613,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b')' },
                     pos: 6,
-                }
+                },
             ),
             // can't negate literals
             (
@@ -1625,7 +1622,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b'1' },
                     pos: 4,
-                }
+                },
             ),
             (
                 "$[?@.a == @.b == @.c]",
@@ -1633,7 +1630,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::UnexpectedCharacter { byte: b'=' },
                     pos: 14,
-                }
+                },
             ),
         ]
     }

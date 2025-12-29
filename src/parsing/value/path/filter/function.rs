@@ -44,8 +44,8 @@ pub(crate) enum FnExprArg {
     Literal(Value),
     EmbeddedQuery(EmbeddedQuery),
     FnExpr(Box<FnExpr>),
-    // note: as of the time of the implementation none of the rfc defined functions accepts as
-    // parameter type a logical expression
+    // as of the time of the implementation none of the rfc defined functions accepts as parameter
+    // type a logical expression
     LogicalExpr(LogicalExpr),
 }
 
@@ -70,15 +70,21 @@ pub(crate) struct FnExpr {
 }
 
 impl FnExpr {
-    // resolve_args can return references from both self (literals) and root (query results) all
-    // get the same lifetime. All hold references that live in the root so they must have the same
-    // lifetime
-    pub(super) fn evaluate<'v>(& self, context: &mut EvalContext<'v>, current: &'v Value) -> FnResult<'v> {
+    // lifetimes: context hold references to values that live in root so it shares the same lifetime
+    // as current which also lives in root; the lifetime of context, as reference is not tied to self,
+    // it is independent borrow passed into the function. Similarly to evaluate() in EmbeddedQuery
+    // we return a type that holds references. As described in the definition of FnResult the references
+    // refer to values that live in root and this is why they get the 'r lifetime
+    pub(super) fn evaluate<'r>(
+        &self,
+        context: &mut EvalContext<'r>,
+        current: &'r Value,
+    ) -> FnResult<'r> {
         // always safe to call unwrap; if we get None it means either we parsed the name incorrectly
         // or we didn't register our function
-        let f = registry().get(&self.name).unwrap();
-        let args = self.to_fn_args(f, context, current);
-        f.execute(&args)
+        let fun = registry().get(&self.name).unwrap();
+        let args = self.to_fn_args(fun, context, current);
+        fun.execute(&args)
     }
 
     // we never evaluate anything to determine type mismatch; for embedded queries we check if
@@ -96,7 +102,6 @@ impl FnExpr {
 
         for (i, arg) in self.args.iter().enumerate() {
             let expected_type = func.args()[i];
-
             let valid = match (arg, expected_type) {
                 (FnExprArg::Literal(_), FnType::ValueType) => true,
                 (FnExprArg::Literal(_), _) => false,
@@ -122,7 +127,6 @@ impl FnExpr {
                 // as of the time of this implementation no method accepts nothing as an argument type
                 _ => false,
             };
-
             if !valid {
                 return Err(FnExprError::TypeMismatch {
                     expected: expected_type,
@@ -134,14 +138,15 @@ impl FnExpr {
     }
 
     // maps FnExprArg to FnArg, evaluates queries and logical expressions, so that their return values
-    // to be used as FnArg
-    fn to_fn_args<'v>(
+    // will be used as FnArg
+    // lifetimes: read evaluate() above
+    fn to_fn_args<'r>(
         &self,
-        // this is the value of our map
+        // this is the value of our Registry map
         f: &dyn Function,
-        context: &mut EvalContext<'v>,
-        current: &'v Value,
-    ) -> Vec<FnArg<'v>> {
+        context: &mut EvalContext<'r>,
+        current: &'r Value,
+    ) -> Vec<FnArg<'r>> {
         let mut args = Vec::with_capacity(f.args().len());
 
         // the loop runs at most twice and clone() will be called twice in the worst case where we
@@ -176,30 +181,30 @@ pub enum FnType {
     Nothing,
 }
 
-// length, count and value return ValueType
+// length(), count() and value() return ValueType
 // search, match return Logical
 #[derive(Debug, PartialEq)]
-pub(super) enum FnResult<'a> {
-    // If the function just returns data from the input, borrow it. If it calculates new data, own it.
+pub(super) enum FnResult<'r> {
+    // if the function returns data from root, borrow it. If it calculates new data, own it.
     // length(), match(), search() and count() all create new data, but value() returns an existing
     // value that lives in root, so we would have to clone in this case. length() and count() return
     // ints which we will wrap to Number, match() and search() will return Logical and with Cow
     // we can return the reference to the value
-    Value(Cow<'a, Value>),
+    Value(Cow<'r, Value>),
     Logical(bool),
     Nothing,
 }
 
 // the resolved values that will be passed as parameters in a function
 #[derive(Debug, PartialEq)]
-enum FnArg<'a> {
-    Value(Cow<'a, Value>),
-    Nodelist(Vec<&'a Value>),
+enum FnArg<'r> {
+    Value(Cow<'r, Value>),
+    Nodelist(Vec<&'r Value>),
     Logical(bool),
     Nothing,
 }
 
-impl<'a> FnArg<'a> {
+impl<'r> FnArg<'r> {
     fn as_value(&self) -> Option<&Value> {
         match self {
             // Cow<Value> -> &Value
@@ -230,18 +235,18 @@ impl<'a> FnArg<'a> {
         }
     }
 
-    // from the 3rd elision rule, the outer reference's lifetime is the same as self but if we don't
-    // specify the inner we will get 'lifetime might not live long enough' when we try to use it
-    fn as_nodelist(&self) -> &Vec<&'a Value> {
-        match self {
-            FnArg::Nodelist(nodes) => nodes,
-            // there is a bug in our type_check() method
-            _ => unreachable!(
-                "received {:?}, expected {:?}",
-                self.to_fn_type(),
-                FnType::NodesType
-            ),
+    // lifetimes: the reference we return will have the lifetime of self but the values of vec are
+    // references to values that live in root so they get the 'r lifetime
+    fn as_nodelist(&self) -> &Vec<&'r Value> {
+        if let FnArg::Nodelist(nodes) = self {
+            return nodes;
         }
+        // there is a bug in our type_check() method
+        unreachable!(
+            "received {:?}, expected {:?}",
+            self.to_fn_type(),
+            FnType::NodesType
+        )
     }
 
     fn to_fn_type(&self) -> FnType {
@@ -342,20 +347,9 @@ trait Function: Send + Sync + 'static {
     // also work
     fn args(&self) -> &[FnType];
     fn return_type(&self) -> FnType;
-    // initially had this: fn execute(&self, args: &[FnArg]) -> FnResult;
-    // was getting this warning: hiding a lifetime that's elided elsewhere is confusing
-    //
-    // it is not an error; it is just that is unclear to the user that reads the code that FnResult
-    // holds a reference; we fix that by returning FnResult<'_>.
-    // The lifetime can be elided based on the 3rd elision rule:
-    //  "if there are multiple input lifetime parameters, but one of them is &self or
-    //  &mut self because this is a method, the lifetime of self is assigned to all output
-    //  lifetime parameters."
-    //
-    // This is not what we want, FnResult holds reference to values that exists in the root, we can't
-    // tie the lifetime of the values in FnResult with self, we need to tie together references
-    // inside FnArg and inside FnResult. Both live inside root
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a>;
+    // lifetimes: both FnArg and FnResult hold references to values that live in root so they have
+    // the same lifetimes
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r>;
 }
 
 struct LengthFn {}
@@ -373,7 +367,7 @@ impl Function for LengthFn {
         FnType::ValueType
     }
 
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
         if let Some(val) = args[0].as_value() {
             let len = match val {
                 Value::Object(map) => map.len(),
@@ -404,7 +398,7 @@ impl Function for CountFn {
         FnType::ValueType
     }
 
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
         FnResult::Value(Cow::Owned(Value::from(args[0].as_nodelist().len() as i64)))
     }
 }
@@ -429,7 +423,7 @@ impl Function for MatchFn {
     // by the parser's parse(); it returns an error, and we return false
     //
     // It is always safe to access the args by index because we have already done the arity match
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
         if let Some(val) = args[0].as_value() {
             let input = match val {
                 Value::String(s) => s,
@@ -470,7 +464,7 @@ impl Function for SearchFn {
     // by the parser's parse(); it returns an error, and we return false
     //
     // It is always safe to access the args by index because we have already done the arity match
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
         if let Some(val) = args[0].as_value() {
             let input = match val {
                 Value::String(s) => s,
@@ -508,7 +502,7 @@ impl Function for ValueFn {
 
     // If the argument contains a single node, the result is the value of the node.
     // If the argument is an empty nodelist or contains multiple nodes, the result is Nothing
-    fn execute<'a>(&self, args: &[FnArg<'a>]) -> FnResult<'a> {
+    fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
         let nodes = args[0].as_nodelist();
         if nodes.len() == 1 {
             FnResult::Value(Cow::Borrowed(nodes[0]))

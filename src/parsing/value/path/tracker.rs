@@ -2,22 +2,121 @@ use crate::parsing::value::Value;
 use std::rc::Rc;
 
 // It describes only the specific move we just made, where we stepped into.
-pub(crate) enum Step<'a> {
+// lifetimes: Step holds a reference to a key of an object that lives in root
+pub(crate) enum Step<'r> {
+    // Root as a step variant is just the 1st step we make when we start processing
     Root,
-    Key(&'a str),
+    Key(&'r str),
     Index(usize),
+}
+
+// lifetimes: read Step
+pub(crate) trait Tracker<'r> {
+    type Trace;
+
+    fn root() -> Self::Trace;
+    fn descend(parent: &Self::Trace, step: Step<'r>) -> Self::Trace;
+}
+
+pub(crate) struct NoOpTracker;
+
+impl Tracker<'_> for NoOpTracker {
+    type Trace = ();
+
+    fn root() -> Self::Trace {}
+    fn descend(_: &(), _: Step) -> () {} // this works as well {()} because it also returns ()
+}
+
+pub(crate) struct PathTracker;
+
+impl<'r> Tracker<'r> for PathTracker {
+    // We use Option because root has no parent path
+    type Trace = Option<Rc<PathTrace<'r>>>;
+
+    fn root() -> Self::Trace {
+        Some(Rc::new(PathTrace {
+            parent: None,
+            step: Step::Root,
+        }))
+    }
+
+    // This is how we keep track of the paths as we walk the AST
+    // The naive approach would be to hold a Vec<String>. Every current path is a full string. To
+    // extend the path, we must copy the old string and append the new segment
+    //
+    // {
+    //  "store":
+    //      {
+    //          "books": [ "A", "B" ]
+    //      }
+    // }
+    //
+    // Start with root: '$'
+    // Append 'store' -> allocate a new string and append
+    // Now for every element in books we need to append the index to the parent path
+    // For index 0 -> take the parent path, path: $['store']['books'] and append the index. We need
+    // to allocate a new String and then append [0], path for 'A': $['store']['books'][0]
+    // For index 1 -> take the parent path, path: $['store']['books'] and append the index. We need
+    // to allocate a new String and then append [1], path for 'B': $['store']['books'][1]
+    // If nesting increases, and we have more items we will die by a thousand allocations
+    //
+    // The problem with cloning and appending for each node in the list occurs because the path
+    // history forms a Tree, not a single straight line. If we had only singular selectors(name/index)
+    // and 1 selector per segment, $.store.info.name, we would never need Rc, we could just mutate
+    // a single buffer. We would have 1 parent -> 1 child
+    // Thins break when we longer have a one-to-one relationship but one to many where multiple children
+    // share the same parent. Like in the case above, calling a multi-selector like *, or slice on
+    // books would return all its children and those share the same parent.
+    //
+    // To solve the branching problem we are going to use the Breadcrumb pattern/ Structural sharing
+    // which allows us to share an unchanged data(parent) without copying them.
+    // As we walk the AST we create PathNodes, these what the reader/writer holds. A PathNode holds
+    // a PathTrace which is the path on how we got here, a pointer to the parent, the step we
+    // just made, and the value of the given path.
+    //
+    // When we apply a selector like '*' on the current node, we call descend by passing the trace
+    // of current, which is the path to the parent node, and the step we just made; descend() will
+    // create a trace for each child node by cloning the parent, for Rc this is just a pointer increment
+    // and appending the step. Now all the children share the same parent without copying any data.
+    //
+    // on how we create the npath for each PathNode read to_npath() below
+    fn descend(parent: &Self::Trace, step: Step<'r>) -> Self::Trace {
+        if let Some(p) = parent {
+            Some(Rc::new(PathTrace {
+                // idiomatic way according to the docs, don't use p.clone()
+                parent: Some(Rc::clone(p)),
+                step,
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 // it describes how we got where we are now, parent is the path up to now and step is where we just
 // stepped(the latest move), so we can trace the path back to root following the parent pointer each
 // time; current path = parent path + step
-pub(crate) struct PathTrace<'a> {
+//
+// It is a recursive type, and it compiles because similarly to LogicalExpr we wrap it in a smart pointer
+// Rc in this case(very similar to ConsList described in the docs)
+//
+// This is struct that we use as Trace in the PathTracker impl of the Tracker trait.
+//
+// lifetimes: read Step
+pub(crate) struct PathTrace<'r> {
     // pointer to the parent(the root to parent path)
-    parent: Option<Rc<PathTrace<'a>>>,
-    step: Step<'a>,
+    parent: Option<Rc<PathTrace<'r>>>,
+    step: Step<'r>,
 }
 
-impl<'a> PathTrace<'a> {
+impl<'r> PathTrace<'r> {
+    // At this point we are done processing the query, and we have the list of PathNodes that we
+    // will return to the user. These nodes are the leaves of the subtree we walked. Now we have to
+    // generate the npaths. Previously we walked the tree in a top-down approach now we are going
+    // to do it, bottom-up, leaf to root. We have seen this before in LCA on Leetcode, we set current
+    // to current's parent, and we keep track of the step we just made. When we reach the root
+    // the vec of steps holds the leaf to root path; we want root to leaf so we iterate steps in
+    // reverse order and build the npath
     pub(crate) fn to_npath(&self) -> String {
         let mut steps = Vec::new();
         let mut current = self;
@@ -57,74 +156,29 @@ impl<'a> PathTrace<'a> {
     }
 }
 
-pub(crate) trait Tracker<'a>: Clone {
-    type Trace: Clone;
-
-    fn root() -> Self::Trace;
-    // keys live as long as the root, since they exist in root
-    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace;
-}
-
-#[derive(Copy, Clone)]
-pub(crate) struct NoOpTracker;
-
-impl Tracker<'_> for NoOpTracker {
-    type Trace = ();
-
-    fn root() -> Self::Trace {}
-    fn descend(_: &(), _: Step) -> () {} // this works as well {()} because it also returns ()
-}
-
-#[derive(Copy, Clone)]
-pub(crate) struct PathTracker;
-
-impl<'a> Tracker<'a> for PathTracker {
-    // Trace needs to have at least the same visibility as PathTrace
-    // We use Option because root has no parent path
-    type Trace = Option<Rc<PathTrace<'a>>>;
-
-    fn root() -> Self::Trace {
-        Some(Rc::new(PathTrace {
-            parent: None,
-            step: Step::Root,
-        }))
-    }
-
-    fn descend(parent: &Self::Trace, step: Step<'a>) -> Self::Trace {
-        if let Some(p) = parent {
-            Some(Rc::new(PathTrace {
-                // idiomatic way according to the docs, don't use p.clone()
-                parent: Some(Rc::clone(p)),
-                step,
-            }))
-        } else {
-            None
-        }
-    }
-}
-
 // value and the root to value path
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct PathNode<'r, T> {
-    pub(crate) val: &'r Value,
     pub(crate) trace: T,
+    pub(crate) val: &'r Value,
 }
 
 // Consumes PathNode returns Node
-impl<'a> From<PathNode<'a, Option<Rc<PathTrace<'a>>>>> for Node<'a> {
-    fn from(cursor: PathNode<'a, Option<Rc<PathTrace<'a>>>>) -> Self {
+impl<'r> From<PathNode<'r, Option<Rc<PathTrace<'r>>>>> for Node<'r> {
+    fn from(cursor: PathNode<'r, Option<Rc<PathTrace<'r>>>>) -> Self {
         let path = cursor.trace.unwrap().to_npath();
         Node {
-            value: cursor.val,
+            val: cursor.val,
             path,
         }
     }
 }
 
 // what we return to the user
+// lifetimes: val references a Value that lives in root
 #[derive(Debug, PartialEq, Clone)]
-pub struct Node<'a> {
-    pub value: &'a Value,
+pub struct Node<'r> {
+    pub val: &'r Value,
     pub path: String,
 }
 
@@ -148,7 +202,7 @@ fn format_name(name: &str) -> String {
             '\n' => val.push_str("\\n"),
             '\r' => val.push_str("\\r"),
             '\t' => val.push_str("\\t"),
-            // 00 <= 1F
+            // [00,1F]
             c if c < '\u{0020}' => {
                 // always lowercase
                 val.push_str(&format!("\\u{:04x}", c as u32));

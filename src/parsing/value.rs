@@ -1658,7 +1658,7 @@ mod tests {
 
         let res = vec![Node {
             path: String::from("$"),
-            value: &root,
+            val: &root,
         }];
 
         assert_eq!(res, root.select("$").unwrap());
@@ -1837,27 +1837,27 @@ mod tests {
         let expected = vec![
             Node {
                 path: String::from("$['users'][1]['id']"),
-                value: &vals[0],
+                val: &vals[0],
             },
             Node {
                 path: String::from("$['users'][1]['name']"),
-                value: &vals[1],
+                val: &vals[1],
             },
             Node {
                 path: String::from("$['users'][3]['id']"),
-                value: &vals[2],
+                val: &vals[2],
             },
             Node {
                 path: String::from("$['users'][3]['name']"),
-                value: &vals[3],
+                val: &vals[3],
             },
             Node {
                 path: String::from("$['other']['mods'][1]['id']"),
-                value: &vals[4],
+                val: &vals[4],
             },
             Node {
                 path: String::from("$['other']['mods'][1]['name']"),
-                value: &vals[5],
+                val: &vals[5],
             },
         ];
 
