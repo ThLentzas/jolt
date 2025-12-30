@@ -229,7 +229,6 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
     }
 }
 
-// toDo: check just $ as query
 // returns a pointer path if npath is valid, None otherwise
 //
 // npath: $['store']['book'][0]['title']

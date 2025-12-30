@@ -13,7 +13,7 @@ use std::cmp;
 use std::collections::HashMap;
 
 pub(super) mod filter;
-pub(crate) mod tracker;
+pub(super) mod tracker;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Selector {

@@ -375,7 +375,14 @@ impl Function for LengthFn {
                 Value::String(s) => s.chars().count(),
                 _ => return FnResult::Nothing,
             };
-            FnResult::Value(Cow::Owned(Value::from(len as i64)))
+            // For the array case, Value::from() for usize calls Number::from() and passes usize as i64
+            // for u8 that is always in range
+            // for u64 in theory could overflow, but it is not possible based on the limitations that
+            // we have already set. The nodelist length represents elements in a JSON array that was
+            // parsed from a buffer. For the length to exceed i64::MAX, we'd need
+            // 9,223,372,036,854,775,807 elements. Even at 1 byte per element ([1,1,1,...]), that's ~9
+            // exabytes of JSON. The 4 MB buffer limit makes this impossible
+            FnResult::Value(Cow::Owned(Value::from(len)))
         } else {
             // we return nothing when the singular query returned empty list(returns at most 1)
             FnResult::Nothing
@@ -399,7 +406,14 @@ impl Function for CountFn {
     }
 
     fn execute<'r>(&self, args: &[FnArg<'r>]) -> FnResult<'r> {
-        FnResult::Value(Cow::Owned(Value::from(args[0].as_nodelist().len() as i64)))
+        // Value::from() for usize calls Number::from() and passes usize as i64
+        // for u8 that is always in range
+        // for u64 in theory could overflow, but it is not possible based on the limitations that
+        // we have already set. The nodelist length represents elements in a JSON array that was
+        // parsed from a buffer. For the length to exceed i64::MAX, we'd need
+        // 9,223,372,036,854,775,807 elements. Even at 1 byte per element ([1,1,1,...]), that's ~9
+        // exabytes of JSON. The 4 MB buffer limit makes this impossible
+        FnResult::Value(Cow::Owned(Value::from(args[0].as_nodelist().len())))
     }
 }
 

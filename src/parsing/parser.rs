@@ -2,9 +2,7 @@ use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
 use super::lexer::{Lexer, LexerToken, LexerTokenKind};
 use super::number::Number;
 use super::value::Value;
-use super::{
-    escapes, number, utf8, INPUT_BUFFER_LIMIT, NESTING_DEPTH_LIMIT, STRING_VALUE_LENGTH_LIMIT,
-};
+use super::{escapes, number, utf8};
 use indexmap::IndexMap;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
@@ -58,10 +56,10 @@ impl<'a> Parser<'a> {
                 pos: Some(self.buffer.len()),
             });
         }
-        if self.buffer.len() > INPUT_BUFFER_LIMIT {
+        if self.buffer.len() > super::INPUT_BUFFER_LIMIT {
             return Err(ParserError {
                 kind: ParserErrorKind::InputBufferLimitExceeded {
-                    len: INPUT_BUFFER_LIMIT,
+                    len: super::INPUT_BUFFER_LIMIT,
                 },
                 pos: None,
             });
@@ -130,10 +128,10 @@ impl<'a> Parser<'a> {
     // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
     // will be consumed by the caller (parse_value()) after this function returns.
     fn parse_object(&mut self, token: &LexerToken) -> Result<(), ParserError> {
-        if self.depth + 1 > NESTING_DEPTH_LIMIT {
+        if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
             return Err(ParserError {
                 kind: ParserErrorKind::NestingDepthLimitExceeded {
-                    depth: NESTING_DEPTH_LIMIT,
+                    depth: super::NESTING_DEPTH_LIMIT,
                 },
                 pos: None,
             });
@@ -282,10 +280,10 @@ impl<'a> Parser<'a> {
     // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
     // by the caller (parse_value()) after this function returns.
     fn parse_array(&mut self, token: &LexerToken) -> Result<(), ParserError> {
-        if self.depth + 1 > NESTING_DEPTH_LIMIT {
+        if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
             return Err(ParserError {
                 kind: ParserErrorKind::NestingDepthLimitExceeded {
-                    depth: NESTING_DEPTH_LIMIT,
+                    depth: super::NESTING_DEPTH_LIMIT,
                 },
                 pos: None,
             });
@@ -489,7 +487,8 @@ impl<'a> Parser<'a> {
         let mut val = String::with_capacity(token.offset - 2); // drop quotes
         let mut i = token.start_index + 1; // skip opening quote
 
-        while i < token.start_index + token.offset - 1 { // skip closing quote
+        while i < token.start_index + token.offset - 1 {
+            // skip closing quote
             let current = self.buffer[i];
             match current {
                 b'\\' => {
@@ -503,12 +502,12 @@ impl<'a> Parser<'a> {
                 _ => {
                     val.push(current as char);
                     i += 1;
-                },
+                }
             }
-            if val.len() > STRING_VALUE_LENGTH_LIMIT {
+            if val.len() > super::STRING_VALUE_LENGTH_LIMIT {
                 return Err(ParserError::from(StringError {
                     kind: StringErrorKind::StringValueLengthLimitExceed {
-                        len: STRING_VALUE_LENGTH_LIMIT,
+                        len: super::STRING_VALUE_LENGTH_LIMIT,
                     },
                     pos: token.start_index,
                 }));
@@ -530,6 +529,7 @@ fn expect(left: &LexerTokenKind, right: LexerTokenKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parsing;
     #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::num_bigint::BigInt;
     #[cfg(feature = "arbitrary_precision")]
@@ -799,7 +799,7 @@ mod tests {
     //  and might not have 4MBs of memory
     #[test]
     fn input_buffer_exceeds_size_limit() {
-        let buffer = vec![b'"'; INPUT_BUFFER_LIMIT + 1];
+        let buffer = vec![b'"'; parsing::INPUT_BUFFER_LIMIT + 1];
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
 
@@ -807,7 +807,7 @@ mod tests {
             result,
             Err(ParserError {
                 kind: ParserErrorKind::InputBufferLimitExceeded {
-                    len: INPUT_BUFFER_LIMIT
+                    len: parsing::INPUT_BUFFER_LIMIT
                 },
                 pos: None
             })
@@ -816,10 +816,10 @@ mod tests {
 
     #[test]
     fn string_value_exceeds_length_limit() {
-        let mut buffer = Vec::with_capacity(STRING_VALUE_LENGTH_LIMIT + 3);
+        let mut buffer = Vec::with_capacity(parsing::STRING_VALUE_LENGTH_LIMIT + 3);
 
         buffer.push(b'"');
-        buffer.extend(vec![b'a'; STRING_VALUE_LENGTH_LIMIT + 1]);
+        buffer.extend(vec![b'a'; parsing::STRING_VALUE_LENGTH_LIMIT + 1]);
         buffer.push(b'"');
 
         let mut parser = Parser::new(&buffer);
@@ -829,7 +829,7 @@ mod tests {
             result,
             Err(ParserError::from(StringError {
                 kind: StringErrorKind::StringValueLengthLimitExceed {
-                    len: STRING_VALUE_LENGTH_LIMIT
+                    len: parsing::STRING_VALUE_LENGTH_LIMIT
                 },
                 pos: 0
             }))
@@ -853,7 +853,7 @@ mod tests {
             result,
             Err(ParserError {
                 kind: ParserErrorKind::NestingDepthLimitExceeded {
-                    depth: NESTING_DEPTH_LIMIT
+                    depth: parsing::NESTING_DEPTH_LIMIT
                 },
                 pos: None
             })
@@ -878,7 +878,7 @@ mod tests {
             result,
             Err(ParserError {
                 kind: ParserErrorKind::NestingDepthLimitExceeded {
-                    depth: NESTING_DEPTH_LIMIT
+                    depth: parsing::NESTING_DEPTH_LIMIT
                 },
                 pos: None
             })

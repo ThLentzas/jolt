@@ -308,5 +308,6 @@ impl EmbeddedQuery {
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
 // toDo: is it possible to use the arena approach for the logical expressions
 // toDo: review anchors
-// toDo: try to rewrite precedence with prat parsing
 // toDo: impl the index trait for Value
+// toDo: check visibility
+

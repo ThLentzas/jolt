@@ -1,13 +1,11 @@
-use crate::parsing::error::{FileParseError, ParserError};
-use crate::parsing::value::Value;
 use std::fs;
 
 mod macros;
 mod parsing;
 
-// have a way for them to specify the case they want when they deserialize
-// maybe rename to nobu(trust) or vilya
-// check zero copy deserialization
+// Any type that appears in a public function signature must be accessible to users
+pub use parsing::error::{FileParseError, ParserError};
+pub use parsing::value::Value;
 
 pub fn from_bytes(buffer: &[u8]) -> Result<Value, ParserError> {
     parsing::parse(buffer)
@@ -25,3 +23,6 @@ pub fn from_file(path: &str) -> Result<Value, FileParseError> {
 
 // toDo: write a method validate(reader: Reader) that just scans the reader and doesn't create the ast
 // it just checks if it is valid json or not
+// toDo: add in the Readme that if the user tries to create a value on the fly by calling Value::from()
+// or directly by passing a string they can have unexpected behaviour since there is no validation
+// done. numbers out of range and invalid json strings can lead to such behavior

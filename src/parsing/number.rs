@@ -11,6 +11,8 @@ use std::{error, fmt};
 // [-9007199254740991, 9007199254740991]
 // both bounds have same absolute value
 const INT_LIMIT: &[u8] = b"9007199254740991";
+const INT_MAX: i64 = 9007199254740991;
+const INT_MIN: i64 = -9007199254740991;
 
 // https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
 // much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
@@ -198,6 +200,10 @@ impl PartialOrd for Number {
 
 impl From<i64> for Number {
     fn from(val: i64) -> Self {
+        let mut val = val;
+        if val.abs() > INT_MAX {
+            val = if val > 0 { INT_MAX } else { INT_MIN };
+        }
         Number {
             kind: NumberKind::I64(val),
         }
@@ -409,8 +415,8 @@ pub(super) struct HexError {
 
 // toDo: add the range as field
 #[derive(Debug, PartialEq)]
-pub(crate) struct OutOfRangeError {
-    pub(crate) pos: usize,
+pub struct OutOfRangeError {
+    pub pos: usize,
 }
 
 impl fmt::Display for OutOfRangeError {
@@ -421,12 +427,12 @@ impl fmt::Display for OutOfRangeError {
 
 #[derive(Debug, PartialEq)]
 pub struct NumericError {
-    pub(super) kind: NumericErrorKind,
-    pub(super) pos: usize,
+    pub kind: NumericErrorKind,
+    pub pos: usize,
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum NumericErrorKind {
+pub enum NumericErrorKind {
     LeadingZeros,
     InvalidSign { message: &'static str },
     InvalidScientific { message: &'static str },

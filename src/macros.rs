@@ -79,6 +79,7 @@ macro_rules! json {
     (false) => { $crate::parsing::Value::Boolean(false) };
     ([ $($elem:tt),+ $(,)? ]) => { $crate::parsing::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
+        use indexmap::IndexMap;
         let mut map = IndexMap::new();
         $(map.insert($key.to_string(), json!($val));)+
         $crate::parsing::Value::Object(map)

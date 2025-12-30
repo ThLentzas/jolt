@@ -1,16 +1,19 @@
 use crate::parsing::number::Number;
-use crate::parsing::value::error::{PathError, PointerError};
-use crate::parsing::value::path::tracker::{NoOpTracker, Node, PathTracker};
+use crate::parsing::value::error::PointerError;
+use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
 use crate::parsing::value::path::Parser;
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap;
-// toDo: consider moving to a linked hash map because deletions are slow
 use std::cmp::{Ordering, PartialEq};
 use std::hash::{Hash, Hasher};
 
 mod error;
 mod path;
-mod pointer;
+pub mod pointer;
+mod from;
+
+pub use crate::parsing::value::error::PathError;
+pub use crate::parsing::value::path::tracker::Node;
 
 // Clone is needed for Cow
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -27,20 +30,6 @@ pub enum Value {
 // https://docs.rs/ryu/latest/ryu/
 // https://docs.rs/itoa/latest/itoa/
 
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            // https://github.com/indexmap-rs/indexmap/issues/288
-            Value::Object(map) => map.as_slice().hash(state),
-            Value::Array(arr) => arr.hash(state),
-            Value::Number(n) => n.hash(state),
-            Value::String(s) => s.hash(state),
-            Value::Boolean(b) => b.hash(state),
-            Value::Null => {}
-        }
-    }
-}
 
 impl Value {
     pub fn is_object(&self) -> bool {
@@ -280,6 +269,21 @@ impl Value {
     }
 }
 
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            // https://github.com/indexmap-rs/indexmap/issues/288
+            Value::Object(map) => map.as_slice().hash(state),
+            Value::Array(arr) => arr.hash(state),
+            Value::Number(n) => n.hash(state),
+            Value::String(s) => s.hash(state),
+            Value::Boolean(b) => b.hash(state),
+            Value::Null => {}
+        }
+    }
+}
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
@@ -314,76 +318,6 @@ impl PartialOrd for Value {
             // mismatch
             _ => None,
         }
-    }
-}
-
-// In Rust, we are allowed to:
-//  -implement our trait for any type
-//  -implement any trait for our type
-//
-// We are not allowed to implement a trait for a type if neither the trait nor the type is defined
-// in the current crate(our project). We can't not implement Display for u32.
-// It is called the Orphan Rule: https://ianbull.com/notes/rusts-orphan-rule/
-//
-// used by the json!()
-// toDo: if this part of the public api can someone call .from() and pass an invalid json string?
-impl From<&str> for Value {
-    fn from(val: &str) -> Self {
-        Value::String(val.to_string())
-    }
-}
-
-impl From<u8> for Value {
-    fn from(val: u8) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<i8> for Value {
-    fn from(val: i8) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<u16> for Value {
-    fn from(val: u16) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<i16> for Value {
-    fn from(val: i16) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<u32> for Value {
-    fn from(val: u32) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<i32> for Value {
-    fn from(val: i32) -> Self {
-        Value::Number(Number::from(val as i64))
-    }
-}
-
-impl From<i64> for Value {
-    fn from(val: i64) -> Self {
-        Value::Number(Number::from(val))
-    }
-}
-
-impl From<f32> for Value {
-    fn from(val: f32) -> Self {
-        Value::Number(Number::from(val as f64))
-    }
-}
-
-impl From<f64> for Value {
-    fn from(val: f64) -> Self {
-        Value::Number(Number::from(val))
     }
 }
 

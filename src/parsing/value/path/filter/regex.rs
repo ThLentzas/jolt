@@ -110,6 +110,11 @@ impl From<Escape> for ExprItem {
     }
 }
 
+enum Escape {
+    Literal(char),
+    Property(Property),
+}
+
 // major, minor
 #[derive(Debug, PartialEq)]
 enum GeneralCategory {
@@ -156,11 +161,6 @@ enum GeneralCategory {
 pub(super) struct Property {
     category: GeneralCategory,
     negated: bool,
-}
-
-enum Escape {
-    Literal(char),
-    Property(Property),
 }
 
 impl Property {
