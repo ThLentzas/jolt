@@ -1,4 +1,4 @@
-use crate::parsing::error::{KeywordError, KeywordErrorKind};
+use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError, StringErrorKind};
 use crate::parsing::{error::ParserError, parser::Parser, value::Value};
 
 pub(super) mod error;
@@ -57,4 +57,45 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
             break;
         }
     }
+}
+
+fn to_jstr(text: &str) -> Result<String, StringError> {
+    let buffer = text.as_bytes();
+    let mut val = String::new();
+    let mut pos = 0;
+
+    while pos < buffer.len() {
+        let current = buffer[pos];
+        match current {
+            c if c.is_ascii_control() => {
+                return Err(StringError {
+                    kind: StringErrorKind::InvalidControlCharacter { byte: current },
+                    pos,
+                });
+            }
+            c if !c.is_ascii() => {
+                val.push(utf8::read_utf8_char(buffer, pos));
+                pos += utf8::utf8_char_width(current);
+            }
+            b'\\' => {
+                escapes::check_escape_character(buffer, pos)?;
+                val.push(escapes::map_escape_character(buffer, pos));
+                pos += escapes::len(buffer, pos);
+            }
+            _ => {
+                val.push(current as char);
+                pos += 1;
+            }
+        }
+
+        if val.len() > STRING_VALUE_LENGTH_LIMIT {
+            return Err(StringError {
+                kind: StringErrorKind::StringValueLengthLimitExceed {
+                    len: STRING_VALUE_LENGTH_LIMIT,
+                },
+                pos,
+            });
+        }
+    }
+    Ok(val)
 }

@@ -771,7 +771,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             (b'-', Some(n)) if !n.is_ascii_digit() || *n == b'0' => {
                 return Err(PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "minus sign must be followed by a non-zero digit",
+                        message: String::from("minus sign must be followed by a non-zero digit"),
                     },
                     pos: self.pos,
                 });
@@ -786,7 +786,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             (b'0', Some(n)) if n.is_ascii_digit() => {
                 return Err(PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "leading zeros are not allowed",
+                        message: String::from("leading zeros are not allowed"),
                     },
                     pos: self.pos,
                 });
@@ -1542,7 +1542,7 @@ mod tests {
                 "$[-a]",
                 PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "minus sign must be followed by a non-zero digit",
+                        message: String::from("minus sign must be followed by a non-zero digit"),
                     },
                     pos: 2,
                 },
@@ -1551,7 +1551,7 @@ mod tests {
                 "$[-01]",
                 PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "minus sign must be followed by a non-zero digit",
+                        message: String::from("minus sign must be followed by a non-zero digit"),
                     },
                     pos: 2,
                 },
@@ -1560,7 +1560,7 @@ mod tests {
                 "$[02]",
                 PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "leading zeros are not allowed",
+                        message: String::from("leading zeros are not allowed"),
                     },
                     pos: 2,
                 },
@@ -1569,16 +1569,16 @@ mod tests {
                 "$[-9223372036854775809]",
                 PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "number out of range",
+                        message: String::from("overflow, index exceeds: -9007199254740991"),
                     },
-                    pos: 3,
+                    pos: 2,
                 },
             ),
             (
                 "$[9223372036854775808]",
                 PathError {
                     kind: PathErrorKind::InvalidIndex {
-                        message: "number out of range",
+                        message: String::from("overflow, index exceeds: 9007199254740991"),
                     },
                     pos: 2,
                 },

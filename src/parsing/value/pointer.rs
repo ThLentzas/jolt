@@ -386,7 +386,6 @@ mod test {
     use crate::macros::json;
     use crate::parsing::error::{StringError, StringErrorKind};
     use crate::parsing::value::error::{PointerError, PointerErrorKind};
-    use crate::parsing::value::IndexMap;
 
     fn invalid_paths() -> Vec<(&'static str, PointerError)> {
         vec![

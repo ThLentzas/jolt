@@ -189,7 +189,8 @@ pub(super) enum FnResult<'r> {
     // length(), match(), search() and count() all create new data, but value() returns an existing
     // value that lives in root, so we would have to clone in this case. length() and count() return
     // ints which we will wrap to Number, match() and search() will return Logical and with Cow
-    // we can return the reference to the value
+    // we can return the reference to the value; if we didn't use Cow we would have to clone the
+    // reference which is not what we want
     Value(Cow<'r, Value>),
     Logical(bool),
     Nothing,

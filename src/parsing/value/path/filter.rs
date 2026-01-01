@@ -7,6 +7,7 @@ use std::borrow::Cow;
 pub(crate) mod function;
 mod nfa;
 mod regex;
+mod table;
 
 // https://docs.rs/recursion/latest/recursion/
 //
@@ -306,7 +307,6 @@ impl EmbeddedQuery {
 }
 
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
-// toDo: is it possible to use the arena approach for the logical expressions
 // toDo: review anchors
 // toDo: impl the index trait for Value
 // toDo: check visibility

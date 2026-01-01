@@ -1,24 +1,33 @@
+use crate::parsing::error::StringError;
 use crate::parsing::number::Number;
-use crate::Value;
+use crate::{parsing, Value};
+use indexmap::IndexMap;
 
-// In Rust, we are allowed to:
-//  -implement our trait for any type
-//  -implement any trait for our type
-//
-// We are not allowed to implement a trait for a type if neither the trait nor the type is defined
-// in the current crate(our project). We can't not implement Display for u32.
-// It is called the Orphan Rule: https://ianbull.com/notes/rusts-orphan-rule/
-//
-// used by the json!()
 impl From<&str> for Value {
+    // if the input value is an invalid json string we return Value::Null
+    // we can't just use the input, we have to handle invalid strings like the cases where we have
+    // raw control characters
     fn from(val: &str) -> Self {
-        Value::String(val.to_string())
+        parsing::to_jstr(&val)
+            .map(Value::String)
+            .unwrap_or(Value::Null)
     }
 }
 
 impl From<usize> for Value {
     fn from(val: usize) -> Self {
         Value::Number(Number::from(val as i64))
+    }
+}
+
+impl From<IndexMap<String, Value>> for Value {
+    fn from(val: IndexMap<String, Value>) -> Self {
+        val.into_iter()
+            .map(|(key, value)| parsing::to_jstr(&key).map(|k| (k, value)))
+            // .collect::<Result<IndexMap<_, _>, _>>() this would also work
+            .collect::<Result<IndexMap<String, Value>, StringError>>()
+            .map(Value::Object)
+            .unwrap_or(Value::Null)
     }
 }
 

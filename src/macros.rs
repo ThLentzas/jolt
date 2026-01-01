@@ -90,68 +90,51 @@ macro_rules! json {
 
 // https://www.youtube.com/watch?v=q6paRBbLgNw around 47:00
 //
-// we could also implement atoi for every numeric type but this way it is more efficient
-//
-// why we need signed/unsigned?
-// at some point in our code we do Ok(sign * num) which is invalid for unsigned numbers if sing is -1
-// rust has no way to know that this would never be the case when atoi() is called for unsigned
-//
-// look at Atoi trait in number.rs
-// if we didn't go the macro route we would have to implement atoi for every numeric type
+// we could also implement atoi for every numeric type but this way is more efficient
 macro_rules! impl_atoi {
-    ($t: ty, signed) => {
+    ($t: ty) => {
         impl crate::parsing::number::Atoi for $t {
             fn atoi(
                 buffer: &[u8],
                 pos: &mut usize,
             ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
+                use crate::parsing::number::OutOfRangeError;
+                use crate::parsing::number::NumericBounds;
                 let mut num: $t = 0;
-                let sign = if buffer[*pos] == b'-' {
+                let start = *pos;
+                let neg = if buffer[*pos] == b'-' {
                     *pos += 1;
-                    -1
+                    true
                 } else {
-                    1
+                    false
                 };
 
-                let start = *pos;
-                let mut current = buffer[*pos];
-                while *pos < buffer.len() && current.is_ascii_digit() {
-                    if num > <$t>::MAX / 10
-                        || (num == <$t>::MAX / 10 && current > (<$t>::MAX % 10) as u8)
-                    {
-                        return Err(crate::parsing::number::OutOfRangeError { pos: start });
+                while *pos < buffer.len() {
+                    let current = buffer[*pos];
+                    if !current.is_ascii_digit() {
+                        break;
                     }
-                    num = num * 10 + (current - 0x30) as $t;
+                    let digit = (current - 0x30) as $t;
+                    if neg {
+                        num = num
+                            .checked_mul(10)
+                            .and_then(|n| n.checked_sub(digit))
+                            .filter(|&n| n >= <$t as NumericBounds>::MIN)
+                            .ok_or_else(|| OutOfRangeError {
+                                pos: start,
+                                bound: <$t as NumericBounds>::MIN.to_string(),
+                            })?;
+                    } else {
+                        num = num
+                            .checked_mul(10)
+                            .and_then(|n| n.checked_add(digit))
+                            .filter(|&n| n <= <$t as NumericBounds>::MAX)
+                            .ok_or_else(|| OutOfRangeError {
+                                pos: start,
+                                bound: <$t as NumericBounds>::MAX.to_string(),
+                            })?;
+                    }
                     *pos += 1;
-                    if *pos < buffer.len() {
-                        current = buffer[*pos];
-                    }
-                }
-                Ok(sign * num)
-            }
-        }
-    };
-    ($t: ty, unsigned) => {
-        impl crate::parsing::number::Atoi for $t {
-            fn atoi(
-                buffer: &[u8],
-                pos: &mut usize,
-            ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
-                let mut num: $t = 0;
-                let start = *pos;
-                let mut current = buffer[*pos];
-
-                while *pos < buffer.len() && current.is_ascii_digit() {
-                    if num > <$t>::MAX / 10
-                        || (num == <$t>::MAX / 10 && current > (<$t>::MAX % 10) as u8)
-                    {
-                        return Err(crate::parsing::number::OutOfRangeError { pos: start });
-                    }
-                    num = num * 10 + (current - 0x30) as $t;
-                    *pos += 1;
-                    if *pos < buffer.len() {
-                        current = buffer[*pos];
-                    }
                 }
                 Ok(num)
             }
@@ -159,8 +142,8 @@ macro_rules! impl_atoi {
     };
 }
 
-impl_atoi!(i64, signed);
-impl_atoi!(u8, unsigned);
+impl_atoi!(i64);
+impl_atoi!(u8);
 
 // not part of the public api, only for internal usage, no #[macro_export]
 pub(crate) use impl_atoi;

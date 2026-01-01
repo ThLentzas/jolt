@@ -66,7 +66,7 @@ pub enum PathErrorKind {
     UnexpectedEndOf,
     MalformedString(StringError),
     UnexpectedCharacter { byte: u8 },
-    InvalidIndex { message: &'static str },
+    InvalidIndex { message: String },
     Numeric(NumericError),
     FnExpr(FnExprError),
 }
@@ -156,7 +156,7 @@ impl From<OutOfRangeError> for PathError {
     fn from(err: OutOfRangeError) -> Self {
         PathError {
             kind: PathErrorKind::InvalidIndex {
-                message: "number out of range",
+                message: format!("overflow, index exceeds: {}", err.bound)
             },
             pos: err.pos,
         }

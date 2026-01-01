@@ -8,11 +8,11 @@ use std::{error, fmt};
 
 // https://www.rfc-editor.org/rfc/rfc7493#section-2.2
 // [-(2^53)+1, (2^53)-1]
-// [-9007199254740991, 9007199254740991]
+// [-9_007_199_254_740_991, 9_007_199_254_740_991]
 // both bounds have same absolute value
 const INT_LIMIT: &[u8] = b"9007199254740991";
-const INT_MAX: i64 = 9007199254740991;
-const INT_MIN: i64 = -9007199254740991;
+const INT_MAX: i64 = 9_007_199_254_740_991;
+const INT_MIN: i64 = -9_007_199_254_740_991;
 
 // https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
 // much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
@@ -86,6 +86,7 @@ enum NumberKind {
 impl Eq for NumberKind {}
 
 impl Hash for NumberKind {
+    // toDo: explain
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
 
@@ -199,6 +200,11 @@ impl PartialOrd for Number {
 }
 
 impl From<i64> for Number {
+    // the user can try to create a Value with a number that exceeds our INT_LIMIT. If such values
+    // is provided we set it to INT_LIMIT because from() should not panic!/return an Error
+    // Value::Number(Number { kind: ...} ) this is also not possible because kind is private
+    //
+    // the goal is to not have values that are in an invalid state
     fn from(val: i64) -> Self {
         let mut val = val;
         if val.abs() > INT_MAX {
@@ -325,9 +331,12 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     }
 
     let slice = &buffer[start..*pos];
-    if !cfg!(feature = "arbitrary_precision") && is_out_of_range(slice, state) {
+    if !cfg!(feature = "arbitrary_precision") && is_out_of_range(slice, &state) {
         return Err(NumericError {
-            kind: NumericErrorKind::OutOfRange(OutOfRangeError { pos: start }),
+            kind: NumericErrorKind::OutOfRange(OutOfRangeError {
+                pos: start,
+                bound: bound(&state),
+            }),
             pos: start,
         });
     };
@@ -413,16 +422,39 @@ pub(super) struct HexError {
     pub(super) pos: usize,
 }
 
-// toDo: add the range as field
 #[derive(Debug, PartialEq)]
 pub struct OutOfRangeError {
     pub pos: usize,
+    pub bound: String,
 }
 
 impl fmt::Display for OutOfRangeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        write!(
+            f,
+            "overflow at index {}: number exceeds {}",
+            self.pos, self.bound
+        )
     }
+}
+
+// We need this trait for our atoi! macro. When we are parsing index selectors that need to be in
+// INT_LIMIT range we can't just call <$t>::MIN/MAX for i64, we need to pass our INT_LIMIT. When it
+// is called to parse quantifiers u8::MIN/MAX is fine but for i64 it would be out of the expected
+// range
+pub(crate) trait NumericBounds {
+    const MIN: Self;
+    const MAX: Self;
+}
+
+impl NumericBounds for u8 {
+    const MIN: u8 = u8::MIN;
+    const MAX: u8 = u8::MAX;
+}
+
+impl NumericBounds for i64 {
+    const MIN: i64 = -9_007_199_254_740_991;
+    const MAX: i64 = 9_007_199_254_740_991;
 }
 
 #[derive(Debug, PartialEq)]
@@ -469,12 +501,27 @@ impl fmt::Display for NumericError {
 impl error::Error for OutOfRangeError {}
 impl error::Error for NumericError {}
 
-fn is_out_of_range(buffer: &[u8], state: NumberState) -> bool {
+fn is_out_of_range(buffer: &[u8], state: &NumberState) -> bool {
     if state.decimal_point || state.scientific_notation {
         is_out_of_range_f64(buffer)
     } else {
         let digits = if state.negative { &buffer[1..] } else { buffer };
         is_out_of_range_i64(digits)
+    }
+}
+
+fn bound(state: &NumberState) -> String {
+    if state.decimal_point || state.scientific_notation {
+        return if state.negative {
+            f64::MIN.to_string()
+        } else {
+            f64::MAX.to_string()
+        };
+    }
+    if state.negative {
+        INT_MIN.to_string()
+    } else {
+        INT_MAX.to_string()
     }
 }
 
@@ -839,7 +886,7 @@ mod tests {
     #[test]
     fn test_out_of_range() {
         for (buffer, state) in out_of_range() {
-            assert!(is_out_of_range(buffer, state));
+            assert!(is_out_of_range(buffer, &state));
         }
     }
 

@@ -250,10 +250,10 @@ impl Value {
         let paths = query
             .parse::<PathTracker>()?
             .into_iter()
-            // toDo: add a comment on why this unwrap is safe
+            // it is safe to call unwrap because every node has a trace apart from root
+            // but when we reach the root we are done iterating so we never call unwarp on None
             .map(|pn| pn.trace.unwrap().to_npath())
             .collect();
-
         Ok(paths)
     }
 
@@ -264,7 +264,6 @@ impl Value {
             .into_iter()
             .map(|pn| pn.val)
             .collect();
-
         Ok(values)
     }
 }
@@ -301,15 +300,15 @@ impl PartialOrd for Value {
             (Value::Null, Value::Null) => Some(Ordering::Equal),
             // Objects and arrays do not offer < comparison
             // note that <= or >= will still evaluate to true according to the rfc
-            (Value::Object(map_1), Value::Object(map_2)) => {
-                if map_1 == map_2 {
+            (Value::Object(map1), Value::Object(map2)) => {
+                if map1 == map2 {
                     Some(Ordering::Equal)
                 } else {
                     None
                 }
             }
-            (Value::Array(vec_1), Value::Array(vec_2)) => {
-                if vec_1 == vec_2 {
+            (Value::Array(vec1), Value::Array(vec2)) => {
+                if vec1 == vec2 {
                     Some(Ordering::Equal)
                 } else {
                     None
