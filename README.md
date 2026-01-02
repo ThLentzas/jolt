@@ -4,11 +4,15 @@ A library that provides JSON support
 
 ### Overview
 
+---
+
 - **Parsing**: Parse JSON data using `from_slice()`, `from_str()` and `from_file()`.
 - **Reading**: Extract values using [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) or query with [JSONPath ](https://www.rfc-editor.org/rfc/rfc9535).
 - **Writing**: Modify with [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902).
 
 ### Installation
+
+---
 
 Add this to your `Cargo.toml`:
 
@@ -18,6 +22,8 @@ jolt = "0.1.0"
 ```
 
 ### Parsing
+
+---
 
 `from_slice()` and `from_file()` perform strict utf-8 validation according to the spec. Any invalid utf-8 sequence will
 result in a `ParserError` and it will not be replaced by the replacement character `�`.
@@ -36,6 +42,8 @@ enum Value {
 ```
 
 ### Reading
+
+---
 
 There are 3 ways you can extract a value from a JSON document:
 
@@ -64,7 +72,6 @@ There are 3 ways you can extract a value from a JSON document:
     - an array of values: `select_as_values()`
     - an array of normalized paths, where a normalized path is a unique representation of the location of a node in a value that uniquely identifies the node in the value: `select_as_npaths()`
     - both: `select()`
-
     ```rust
     use jolt::parsing::Value;
     
@@ -123,6 +130,8 @@ There are 3 ways you can extract a value from a JSON document:
     }
     ```
 ### Implementation Limits
+
+---
 
 Jolt enforces limits to prevent resource exhaustion:
 
