@@ -129,9 +129,7 @@ There are 3 ways you can extract a value from a JSON document:
         assert_eq!(*score, Value::from(87));
     }
     ```
-### Implementation Limits
-
-___
+# Implementation Limits
 
 Jolt enforces limits to prevent resource exhaustion:
 
