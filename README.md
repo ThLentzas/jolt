@@ -124,8 +124,8 @@ Jolt enforces limits to prevent resource exhaustion:
 - **Byte Buffer**: `4 MB` maximum. Larger buffers are rejected before parsing.
 - **String length**: `8,192` characters per string value.
 - **Nesting depth**: `128` levels of nested objects/arrays.
-- **Integers**: `[−(2⁵³)+1, (2⁵³)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable range.
-- **Floats**: IEEE 754 double-precision range `(±1.8 * 10³⁰⁸)`.
+- **Integers**: `[−(2^53)+1, (2^53)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable range.
+- **Floats**: IEEE 754 double-precision range.
 
 By default, integers are stored as `i64` and floats as `f64`. If you need to work with numbers beyond these ranges, large integers, high-precision decimals, or exact decimal arithmetic enable the `arbitrary_precision` feature.
 ### License
