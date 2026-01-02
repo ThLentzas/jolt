@@ -97,7 +97,7 @@ There are 3 ways you can extract a value from a JSON document:
     - `~40%` smaller than a binary-search-based approach `~280 KB`
     - significantly smaller than a naive vector-based approach `~3.04 MB` for 1,114,112 entries 
   
-3. `get()`: A method on `Value` for direct access to container elements. Works with both objects and arrays through an interface, pass a string key for objects or an integer index for arrays. Returns `Option<&Value>`, allowing safe access without panicking.
+3. `get()`: A method on `Value` for direct access to container elements. Works with both objects and arrays through an interface, pass a string key for objects or an integer index for arrays. Returns `Option<&Value>`, allowing safe access without panicking.  
     ```rust
     use jolt::parsing::Value;
     
