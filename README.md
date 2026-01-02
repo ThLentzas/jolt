@@ -60,7 +60,7 @@ There are 3 ways you can extract a value from a JSON document:
     - an array of values: `select_as_values()`
     - an array of normalized paths, where a normalized path is a unique representation of the location of a node in a value that uniquely identifies the node in the value: `select_as_npaths()`
     - both: `select()`
-      <br>
+    <br>
     ```rust
     use jolt::parsing::Value;
     
