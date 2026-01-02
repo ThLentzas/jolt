@@ -131,7 +131,7 @@ There are 3 ways you can extract a value from a JSON document:
     ```
 ### Implementation Limits
 
----
+___
 
 Jolt enforces limits to prevent resource exhaustion:
 
