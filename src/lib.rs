@@ -7,7 +7,7 @@ mod parsing;
 pub use parsing::error::{FileParseError, ParserError};
 pub use parsing::value::Value;
 
-pub fn from_bytes(buffer: &[u8]) -> Result<Value, ParserError> {
+pub fn from_slice(buffer: &[u8]) -> Result<Value, ParserError> {
     parsing::parse(buffer)
 }
 
@@ -20,9 +20,3 @@ pub fn from_file(path: &str) -> Result<Value, FileParseError> {
     let buffer = fs::read(path).map_err(|e| FileParseError::IoError(e))?;
     parsing::parse(&buffer).map_err(|e| FileParseError::ParserError(e))
 }
-
-// toDo: write a method validate(reader: Reader) that just scans the reader and doesn't create the ast
-// it just checks if it is valid json or not
-// toDo: add in the Readme that if the user tries to create a value on the fly by calling Value::from()
-// or directly by passing a string they can have unexpected behaviour since there is no validation
-// done. numbers out of range and invalid json strings can lead to such behavior

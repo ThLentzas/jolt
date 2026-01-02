@@ -308,6 +308,4 @@ impl EmbeddedQuery {
 
 // toDo: consider setting a limit on the path characters? also what happens if we recurse infinitely?
 // toDo: review anchors
-// toDo: impl the index trait for Value
-// toDo: check visibility
 

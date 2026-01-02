@@ -30,7 +30,6 @@ pub enum Value {
 // https://docs.rs/ryu/latest/ryu/
 // https://docs.rs/itoa/latest/itoa/
 
-
 impl Value {
     pub fn is_object(&self) -> bool {
         matches!(self, Value::Object(_))
@@ -131,6 +130,13 @@ impl Value {
             Value::Null => Some(()),
             _ => None,
         }
+    }
+    
+    pub fn get<I: Index>(&self, index: I) -> Option<&Value> {
+        index.index_into(self)
+    }
+    pub fn get_mut<I: IndexMut>(&mut self, index: I) -> Option<&mut Value> {
+        index.index_into(self)
     }
 
     // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value is an object
@@ -315,6 +321,54 @@ impl PartialOrd for Value {
                 }
             }
             // mismatch
+            _ => None,
+        }
+    }
+}
+
+// implementing the std::ops::Index won't work as expected because index() always returns &Value,
+// map["key"] on a missing entry should return None, arr[index] for out bounds should also return
+// None, but we always need to return &Value. We could return Null but then the user won't know if
+// Value::Null was the actual value that was found or a None case
+pub trait Index {
+    fn index_into<'r>(&self, value: &'r Value) -> Option<&'r Value>;
+}
+
+impl Index for usize {
+    fn index_into<'r>(&self, value: &'r Value) -> Option<&'r Value> {
+        match value {
+            Value::Array(arr) => arr.get(*self),
+            _ => None,
+        }
+    }
+}
+
+impl Index for &str {
+    fn index_into<'r>(&self, value: &'r Value) -> Option<&'r Value> {
+        match value {
+            Value::Object(map) => map.get(*self),
+            _ => None,
+        }
+    }
+}
+
+pub trait IndexMut {
+    fn index_into<'r>(&self, value: &'r mut Value) -> Option<&'r mut Value>;
+}
+
+impl IndexMut for usize {
+    fn index_into<'r>(&self, value: &'r mut Value) -> Option<&'r mut Value> {
+        match value {
+            Value::Array(arr) => arr.get_mut(*self),
+            _ => None,
+        }
+    }
+}
+
+impl IndexMut for &str {
+    fn index_into<'r>(&self, value: &'r mut Value) -> Option<&'r mut Value> {
+        match value {
+            Value::Object(map) => map.get_mut(*self),
             _ => None,
         }
     }

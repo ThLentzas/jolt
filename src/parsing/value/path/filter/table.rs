@@ -1,6 +1,8 @@
 use crate::parsing::value::path::filter::regex::GeneralCategory;
 
 // https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedGeneralCategory.txt
+//
+// AUTOMATICALLY GENERATED DO NOT EDIT!
 const STAGE1: &[u16; 4352] = &[
     0, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840, 4096,
     4352, 4608, 4864, 5120, 4352, 5376, 5632, 5888, 6144, 6400, 6656, 6912, 7168, 7424, 7680, 7936,

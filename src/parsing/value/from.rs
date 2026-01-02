@@ -1,16 +1,12 @@
-use crate::parsing::error::StringError;
 use crate::parsing::number::Number;
-use crate::{parsing, Value};
+use crate::Value;
 use indexmap::IndexMap;
 
 impl From<&str> for Value {
-    // if the input value is an invalid json string we return Value::Null
-    // we can't just use the input, we have to handle invalid strings like the cases where we have
-    // raw control characters
+    // the difference between this method and jolt::from_str() is that Value::from() always creates
+    // Value::String() variant while from_str() can create any Value
     fn from(val: &str) -> Self {
-        parsing::to_jstr(&val)
-            .map(Value::String)
-            .unwrap_or(Value::Null)
+        Value::String(val.to_owned())
     }
 }
 
@@ -21,13 +17,8 @@ impl From<usize> for Value {
 }
 
 impl From<IndexMap<String, Value>> for Value {
-    fn from(val: IndexMap<String, Value>) -> Self {
-        val.into_iter()
-            .map(|(key, value)| parsing::to_jstr(&key).map(|k| (k, value)))
-            // .collect::<Result<IndexMap<_, _>, _>>() this would also work
-            .collect::<Result<IndexMap<String, Value>, StringError>>()
-            .map(Value::Object)
-            .unwrap_or(Value::Null)
+    fn from(map: IndexMap<String, Value>) -> Self {
+        Value::Object(map)
     }
 }
 
