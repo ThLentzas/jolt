@@ -47,7 +47,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // toDo: advantages of peek/advance and recursive descendant parser, peek is just look ahead without consuming
     pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
         // [](empty input buffer) is invalid, JsonText = ws value ws, a value is mandatory
         if self.buffer.is_empty() {

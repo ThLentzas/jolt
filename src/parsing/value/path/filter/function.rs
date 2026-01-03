@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 // It can be done with LazyLock too
 // https://users.rust-lang.org/t/whats-the-difference-between-std-lazylock-oncelock/116603/2
 //
-// we want one instance of our registry, populate it once and then reuse itl; by making it static
+// we want one instance of our registry, populate it once and then reuse it; by making it static
 // it will have the lifetime of our program, therefore anything we store in the registry must also
 // be able to live for the lifetime of our program.
 //

@@ -140,14 +140,14 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
 
         match (current, next) {
-            // sign into eof
+            // '-' into eof
             (b'-', None) => {
                 return Err(ParserError {
                     kind: ParserErrorKind::UnexpectedEof,
                     pos: Some(self.pos),
                 });
             }
-            // +9
+            // +a
             (b'+', Some(n)) if !n.is_ascii_digit() => {
                 return Err(ParserError {
                     kind: ParserErrorKind::UnexpectedCharacter { byte: current },
@@ -190,7 +190,7 @@ impl<'a> Lexer<'a> {
             match current {
                 // raw control characters are not allowed
                 // [34, 10, 34] is invalid - the control character is passed as raw byte, and it is unescaped
-                // but [34, 92, 110, 34] should be considered valid as a new line character
+                // but [34, 92, 110, 34] is valid as a new line character
                 c if c.is_ascii_control() => {
                     return Err(StringError {
                         kind: StringErrorKind::InvalidControlCharacter { byte: current },
