@@ -162,3 +162,7 @@ impl From<OutOfRangeError> for PathError {
         }
     }
 }
+
+struct PatchError {
+
+}

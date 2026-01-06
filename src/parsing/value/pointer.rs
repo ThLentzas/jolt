@@ -47,7 +47,7 @@ impl<'a> Pointer<'a> {
     //  delimiter. We never rescan or reprocess characters, each character in the input is examined
     //  exactly once. We handle cases like "~01" where "~0" becomes '~' and then "~1" becomes "/", "~01"
     //  is just "~1"
-    pub(super) fn gen_ref_token(&mut self) -> Result<Option<RefToken>, StringError> {
+    pub(super) fn next(&mut self) -> Result<Option<RefToken>, StringError> {
         let len = self.buffer.len();
         if self.pos >= len {
             return Ok(None);

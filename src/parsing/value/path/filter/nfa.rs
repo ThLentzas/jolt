@@ -1,5 +1,7 @@
 use crate::parsing::value::path::filter::regex::{CharClass, Regex};
 
+// paper: https://swtch.com/~rsc/regexp/regexp1.html
+// https://swtch.com/~rsc/regexp/regexp3.html
 enum State {
     // from the paper we can see that single characters have 1 danging arrow in their fragment
     // and Split has 2

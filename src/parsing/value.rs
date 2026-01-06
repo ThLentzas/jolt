@@ -11,6 +11,7 @@ mod error;
 mod path;
 pub mod pointer;
 mod from;
+mod patch;
 
 pub use crate::parsing::value::error::PathError;
 pub use crate::parsing::value::path::tracker::Node;
@@ -181,7 +182,7 @@ impl Value {
         loop {
             // We never check if number of tokens exceed the NestingDepthLimit because even if they did
             // we would get no match at NestingDepthLimit + 1 and we would return None
-            match ptr.gen_ref_token()? {
+            match ptr.next()? {
                 Some(token) => match current {
                     Value::Object(map) => match map.get(&token.val) {
                         Some(val) => current = val,
@@ -216,7 +217,7 @@ impl Value {
 
         let mut current = self;
         loop {
-            match ptr.gen_ref_token()? {
+            match ptr.next()? {
                 Some(token) => match current {
                     Value::Object(map) => match map.get_mut(&token.val) {
                         Some(val) => current = val,

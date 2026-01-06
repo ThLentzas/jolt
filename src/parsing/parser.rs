@@ -179,7 +179,8 @@ impl<'a> Parser<'a> {
                     if names.contains(name) {
                         return Err(ParserError {
                             kind: ParserErrorKind::DuplicateName {
-                                name: String::from_utf8(Vec::from(name)).unwrap(),
+                                // SAFETY: lexer already validated the sequence
+                                name: unsafe { String::from_utf8_unchecked(Vec::from(name)) },
                             },
                             pos: Some(next.start_index()),
                         });
