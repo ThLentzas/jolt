@@ -229,6 +229,56 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
     }
 }
 
+pub(super) fn check_array_index_strict(token: &RefToken) -> Result<usize, PointerError> {
+    let first = token.val.chars().nth(0);
+    let second = token.val.chars().nth(1);
+
+    match (first, second) {
+        (Some('+') | Some('-'), Some('0'..='9')) => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "index can not be prefixed with a sign",
+                },
+                pos: token.pos,
+            });
+        }
+        (Some('0'), Some('0'..='9')) => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "leading zeros are not allowed",
+                },
+                pos: token.pos,
+            });
+        }
+        (Some('-'), None) => return Err(PointerError {
+            kind: PointerErrorKind::InvalidIndex {
+                message: "invalid array index",
+            },
+            pos: token.pos,
+        }),
+        // if the token val does not start with a digit, it is invalid
+        (Some(d), _) if !d.is_ascii_digit() => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "invalid array index",
+                },
+                pos: token.pos,
+            });
+        }
+        _ => (),
+    }
+
+    match token.val.parse::<usize>() {
+        Ok(index) => Ok(index),
+        Err(_) => Err(PointerError {
+            kind: PointerErrorKind::InvalidIndex {
+                message: "invalid array index",
+            },
+            pos: token.pos,
+        }),
+    }
+}
+
 // returns a pointer path if npath is valid, None otherwise
 //
 // npath: $['store']['book'][0]['title']
@@ -367,6 +417,7 @@ fn parse_key(chars: &mut Peekable<Chars>) -> Option<String> {
     Some(key)
 }
 
+// this method is used only when converting an npath to ptr path
 // parse_index() reads as long as it encounters a digit; any syntax error is handled by to_ptr_path()
 // this is why we can modify path directly; we don't have to return an Option<String> we could also
 // return a String either would work

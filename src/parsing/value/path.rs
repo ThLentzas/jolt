@@ -1704,7 +1704,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         expected: FnType::ValueType,
-                        found: FnType::NodesType,
+                        got: FnType::NodesType,
                     }),
                     pos: 3,
                 },
@@ -1717,7 +1717,7 @@ mod tests {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         // 5 is FnExprArg::Literal, and we do the conversion to ValueType
                         expected: FnType::NodesType,
-                        found: FnType::ValueType,
+                        got: FnType::ValueType,
                     }),
                     pos: 3,
                 },
@@ -1729,7 +1729,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         expected: FnType::ValueType,
-                        found: FnType::NodesType,
+                        got: FnType::NodesType,
                     }),
                     pos: 3,
                 },
@@ -1741,7 +1741,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         expected: FnType::ValueType,
-                        found: FnType::Logical,
+                        got: FnType::Logical,
                     }),
                     pos: 3,
                 },
@@ -1753,7 +1753,7 @@ mod tests {
                 PathError {
                     kind: PathErrorKind::FnExpr(FnExprError::TypeMismatch {
                         expected: FnType::NodesType,
-                        found: FnType::Logical,
+                        got: FnType::Logical,
                     }),
                     pos: 3,
                 },

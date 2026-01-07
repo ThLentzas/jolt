@@ -3,6 +3,7 @@ use crate::parsing::number::NumericError;
 use crate::parsing::utf8::Utf8Error;
 use std::{error, fmt, io};
 
+// toDo: make a Lexer error
 #[derive(Debug, PartialEq)]
 pub enum StringErrorKind {
     UnexpectedEndOf,
@@ -104,7 +105,7 @@ impl From<EscapeError> for StringError {
 
 #[derive(Debug, PartialEq)]
 pub enum ParserErrorKind {
-    MalformedString(StringError),
+    MalformedString(StringErrorKind),
     UnexpectedEof,
     UnexpectedCharacter { byte: u8 },
     InvalidNumber(NumericError),
@@ -184,19 +185,10 @@ impl fmt::Display for ParserError {
 }
 
 impl From<StringError> for ParserError {
-    // we can not call, JsonError { kind: JsonErrorKind::MalformedString(err), err.pos }
-    // because err is already move to MalformedString, and we are trying to access pos via err which
-    // is no longer valid
-    // it is similar to
-    // let foo = Foo { bar: Bar };
-    // let x = foo;
-    // let y = foo.bar;
-    // we can no longer access bar via because foo is no longer valid
-    // http://doc.rust-lang.org/book/ch04-01-what-is-ownership.html above figure 4.4
     fn from(err: StringError) -> Self {
         let pos = err.pos;
         ParserError {
-            kind: ParserErrorKind::MalformedString(err),
+            kind: ParserErrorKind::MalformedString(err.kind),
             pos: Some(pos),
         }
     }

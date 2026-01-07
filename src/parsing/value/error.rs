@@ -1,14 +1,14 @@
-use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError};
+use crate::parsing::error::{KeywordError, KeywordErrorKind, ParserErrorKind, StringError};
 use crate::parsing::number::{NumericError, OutOfRangeError};
 use crate::parsing::value::path::filter::function::FnExprError;
 use std::error::Error;
 use std::fmt;
+use crate::ParserError;
 
 #[derive(Debug, PartialEq)]
 pub enum PointerErrorKind {
     InvalidPointerSyntax,
     MalformedString(StringError),
-    UnexpectedEof,
     InvalidIndex { message: &'static str },
 }
 
@@ -32,9 +32,6 @@ impl fmt::Display for PointerError {
                 )
             }
             PointerErrorKind::MalformedString(err) => write!(f, "{}", err),
-            PointerErrorKind::UnexpectedEof => {
-                write!(f, "unexpected end of input at index {}", self.pos)
-            }
             PointerErrorKind::InvalidIndex { message } => {
                 write!(f, "{} at index {}", message, self.pos)
             }
@@ -163,6 +160,43 @@ impl From<OutOfRangeError> for PathError {
     }
 }
 
-struct PatchError {
+// toDo: review which errors need their own pos or they can just delegate 
+pub struct PatchError {
+    pub kind: PatchErrorKind,
+    pub pos: Option<usize>
+}
 
+pub enum PatchErrorKind {
+    ParserError(ParserErrorKind),
+    PointerError(PointerError),
+    UnexpectedValue { expected: &'static str },
+    OpError(OpError),
+    IndexOutOfBounds,
+    InvalidIndex { message: &'static str },
+    PathNotFound { depth: usize }
+}
+
+pub enum OpError {
+    MissingMember(&'static str),
+    UnexpectedValue { expected: &'static str },
+    NotEqual
+}
+
+impl From<ParserError> for PatchError {
+    fn from(err: ParserError) -> Self {
+        PatchError {
+            kind: PatchErrorKind::ParserError(err.kind),
+            pos: err.pos,
+        }
+    }
+}
+
+impl From<PointerError> for PatchError {
+    fn from(err: PointerError) -> Self {
+        let pos = err.pos;
+        PatchError {
+            kind: PatchErrorKind::PointerError(err),
+            pos: Some(pos),
+        }
+    }
 }

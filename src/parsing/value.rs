@@ -1,17 +1,17 @@
 use crate::parsing::number::Number;
-use crate::parsing::value::error::PointerError;
-use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
+use crate::parsing::value::error::{PatchError, PointerError};
 use crate::parsing::value::path::Parser;
+use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap;
 use std::cmp::{Ordering, PartialEq};
 use std::hash::{Hash, Hasher};
 
 mod error;
-mod path;
-pub mod pointer;
 mod from;
 mod patch;
+mod path;
+pub mod pointer;
 
 pub use crate::parsing::value::error::PathError;
 pub use crate::parsing::value::path::tracker::Node;
@@ -132,7 +132,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     pub fn get<I: Index>(&self, index: I) -> Option<&Value> {
         index.index_into(self)
     }
@@ -179,23 +179,22 @@ impl Value {
         // can do better by generating a token at a time, check against the current value and only
         // if we find a value, we keep going.
         let mut current = self;
-        loop {
+        while let Some(token) = ptr.next()? {
             // We never check if number of tokens exceed the NestingDepthLimit because even if they did
             // we would get no match at NestingDepthLimit + 1 and we would return None
-            match ptr.next()? {
-                Some(token) => match current {
-                    Value::Object(map) => match map.get(&token.val) {
-                        Some(val) => current = val,
-                        None => return Ok(None),
-                    },
-                    Value::Array(values) => match pointer::check_array_index(&token)? {
-                        Some(index) if index >= values.len() => return Ok(None),
-                        Some(index) => current = &values[index],
-                        _ => return Ok(None),
-                    },
+            match current {
+                Value::Object(map) => match map.get(&token.val) {
+                    Some(val) => current = val,
+                    None => return Ok(None),
+                },
+                // we can not check the value earlier to see if it is valid numeric index because
+                // we don't know if it will be called in an Object or an Array
+                Value::Array(values) => match pointer::check_array_index(&token)? {
+                    Some(index) if index >= values.len() => return Ok(None),
+                    Some(index) => current = &values[index],
                     _ => return Ok(None),
                 },
-                None => break,
+                _ => return Ok(None),
             }
         }
         Ok(Some(current))
@@ -216,21 +215,24 @@ impl Value {
         ptr.check_start()?;
 
         let mut current = self;
-        loop {
-            match ptr.next()? {
-                Some(token) => match current {
-                    Value::Object(map) => match map.get_mut(&token.val) {
-                        Some(val) => current = val,
-                        None => return Ok(None),
-                    },
-                    Value::Array(values) => match pointer::check_array_index(&token)? {
-                        Some(i) if i >= values.len() => return Ok(None),
-                        Some(i) => current = &mut values[i],
-                        _ => return Ok(None),
-                    },
+        while let Some(token) = ptr.next()? {
+            // We never check if number of tokens exceed the NestingDepthLimit because even if they did
+            // we would get no match at NestingDepthLimit + 1 and we would return None
+            match current {
+                Value::Object(map) => {
+                    let Some(val) = map.get_mut(&token.val) else {
+                        return Ok(None);
+                    };
+                    current = val;
+                }
+                // we can not check the value earlier to see if it is valid numeric index because
+                // we don't know if it will be called in an Object or an Array
+                Value::Array(arr) => match pointer::check_array_index(&token)? {
+                    Some(index) if index >= arr.len() => return Ok(None),
+                    Some(index) => current = &mut arr[index],
                     _ => return Ok(None),
                 },
-                None => break,
+                _ => return Ok(None),
             }
         }
         Ok(Some(current))
@@ -272,6 +274,27 @@ impl Value {
             .map(|pn| pn.val)
             .collect();
         Ok(values)
+    }
+
+    pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
+        let ops = patch::parse(input.as_bytes())?;
+        for op in ops {
+            op.apply(self)?;
+        }
+        Ok(())
+    }
+        
+    // this method rolls back the changes if one operation resulted into an error
+    pub fn try_modify(&mut self, input: &str) -> Result<(), PatchError> {
+        let copy = self.clone();
+        let ops = patch::parse(input.as_bytes())?;
+        for op in ops {
+            if let Err(err) = op.apply(self) {
+                *self = copy;
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 }
 

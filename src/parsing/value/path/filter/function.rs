@@ -130,7 +130,7 @@ impl FnExpr {
             if !valid {
                 return Err(FnExprError::TypeMismatch {
                     expected: expected_type,
-                    found: arg.to_fn_type(),
+                    got: arg.to_fn_type(),
                 });
             }
         }
@@ -531,7 +531,7 @@ impl Function for ValueFn {
 pub enum FnExprError {
     // the number of arguments that the function has
     ArityMismatch { expected: usize, got: usize },
-    TypeMismatch { expected: FnType, found: FnType },
+    TypeMismatch { expected: FnType, got: FnType },
 }
 
 impl Error for FnExprError {}
@@ -546,8 +546,8 @@ impl fmt::Display for FnExprError {
                     expected, got
                 )
             }
-            FnExprError::TypeMismatch { expected, found } => {
-                write!(f, "expected {:?}, found {:?}", expected, found)
+            FnExprError::TypeMismatch { expected, got } => {
+                write!(f, "expected {:?}, found {:?}", expected, got)
             }
         }
     }
