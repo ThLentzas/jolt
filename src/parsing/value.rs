@@ -278,20 +278,20 @@ impl Value {
 
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
-        for op in ops {
-            op.apply(self)?;
+        for (i, op) in ops.into_iter().enumerate() {
+            op.apply(self).map_err(|err| PatchError::OpError(err, i))?;
         }
         Ok(())
     }
-        
-    // this method rolls back the changes if one operation resulted into an error
+
+    // this method rolls back the changes if one operation resulted in an error
     pub fn try_modify(&mut self, input: &str) -> Result<(), PatchError> {
         let copy = self.clone();
         let ops = patch::parse(input.as_bytes())?;
-        for op in ops {
+        for (i, op) in ops.into_iter().enumerate() {
             if let Err(err) = op.apply(self) {
                 *self = copy;
-                return Err(err);
+                return Err(PatchError::OpError(err, i));
             }
         }
         Ok(())

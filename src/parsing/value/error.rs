@@ -160,43 +160,32 @@ impl From<OutOfRangeError> for PathError {
     }
 }
 
-// toDo: review which errors need their own pos or they can just delegate 
-pub struct PatchError {
-    pub kind: PatchErrorKind,
-    pub pos: Option<usize>
-}
 
-pub enum PatchErrorKind {
-    ParserError(ParserErrorKind),
-    PointerError(PointerError),
+pub enum PatchError {
+    ParserError(ParserError),
     UnexpectedValue { expected: &'static str },
-    OpError(OpError),
-    IndexOutOfBounds,
-    InvalidIndex { message: &'static str },
-    PathNotFound { depth: usize }
+    // usize is the index of the operation within the array
+    OpError(OpError, usize),
 }
 
 pub enum OpError {
-    MissingMember(&'static str),
+    MissingMember { member: &'static str },
+    PointerError(PointerError),
     UnexpectedValue { expected: &'static str },
+    PathNotFound { path: String, depth: usize },
+    IndexOutOfBounds { path: String, depth: usize, index: usize, len: usize },
+    InvalidRootOp { op: &'static str },
     NotEqual
 }
 
 impl From<ParserError> for PatchError {
     fn from(err: ParserError) -> Self {
-        PatchError {
-            kind: PatchErrorKind::ParserError(err.kind),
-            pos: err.pos,
-        }
+        PatchError::ParserError(err)
     }
 }
 
-impl From<PointerError> for PatchError {
+impl From<PointerError> for OpError {
     fn from(err: PointerError) -> Self {
-        let pos = err.pos;
-        PatchError {
-            kind: PatchErrorKind::PointerError(err),
-            pos: Some(pos),
-        }
+        OpError::PointerError(err)
     }
 }
