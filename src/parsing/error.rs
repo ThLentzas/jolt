@@ -1,11 +1,11 @@
 use crate::parsing::escapes::{EscapeError, EscapeErrorKind};
-use crate::parsing::number::NumericError;
+use crate::parsing::number::{NumericError, NumericErrorKind};
 use crate::parsing::utf8::Utf8Error;
 use std::{error, fmt, io};
 
-// toDo: make a Lexer error
 #[derive(Debug, PartialEq)]
-pub enum StringErrorKind {
+pub enum
+StringErrorKind {
     UnexpectedEndOf,
     InvalidByteSequence { len: u8 },
     InvalidSurrogate,
@@ -14,7 +14,39 @@ pub enum StringErrorKind {
     // incomplete sequence is just unexpectedEoF
     InvalidUnicodeSequence { digit: u8 },
     InvalidControlCharacter { byte: u8 },
-    StringValueLengthLimitExceed { len: usize },
+    LengthLimitExceeded { len: usize },
+}
+
+impl fmt::Display for StringErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StringErrorKind::UnexpectedEndOf => {
+                write!(f, "unexpected end of input, unterminated string")
+            }
+            StringErrorKind::InvalidByteSequence { len } => {
+                write!(f, "invalid {} byte utf-8 sequence", len)
+            }
+            StringErrorKind::InvalidSurrogate => {
+                write!(f, "invalid surrogate pair")
+            }
+            StringErrorKind::UnknownEscapedCharacter { byte } => {
+                if byte.is_ascii_graphic() {
+                    write!(f, "unknown escape character '{}'", *byte as char)
+                } else {
+                    write!(f, "unknown escape character (0x{:02X})", byte)
+                }
+            }
+            StringErrorKind::InvalidUnicodeSequence { digit } => {
+                write!(f, "invalid hex digit '{}'", digit)
+            }
+            StringErrorKind::InvalidControlCharacter { byte } => {
+                write!(f, "invalid control character (0x{:02X})", byte)
+            }
+            StringErrorKind::LengthLimitExceeded { len } => {
+                write!(f, "string value exceeded limit of  {} characters", len)
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,45 +59,7 @@ impl error::Error for StringError {}
 
 impl fmt::Display for StringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            StringErrorKind::UnexpectedEndOf => {
-                write!(f, "unexpected end of input, unterminated string")
-            }
-            StringErrorKind::InvalidByteSequence { len } => {
-                write!(
-                    f,
-                    "invalid {} byte utf-8 sequence from index {}",
-                    len, self.pos
-                )
-            }
-            StringErrorKind::InvalidSurrogate => {
-                write!(f, "invalid surrogate pair at index {}", self.pos)
-            }
-            StringErrorKind::UnknownEscapedCharacter { byte } => {
-                if byte.is_ascii_graphic() {
-                    write!(f, "unknown escape character {} at index {}", byte, self.pos)
-                } else {
-                    write!(
-                        f,
-                        "unknown escape character (0x{:02X}) at index {}",
-                        byte, self.pos
-                    )
-                }
-            }
-            StringErrorKind::InvalidUnicodeSequence { digit } => {
-                write!(f, "invalid hex digit '{}' at index {}", digit, self.pos)
-            }
-            StringErrorKind::InvalidControlCharacter { byte } => {
-                write!(
-                    f,
-                    "invalid control character (0x{:02X}) at index {}",
-                    byte, self.pos
-                )
-            }
-            StringErrorKind::StringValueLengthLimitExceed { len } => {
-                write!(f, "string value exceeded limit of {} bytes", len)
-            }
-        }
+        write!(f, "{} at index {}", self.kind, self.pos)
     }
 }
 
@@ -104,116 +98,138 @@ impl From<EscapeError> for StringError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum ParserErrorKind {
-    MalformedString(StringError),
+pub enum LexErrorKind {
+    MalformedString(StringErrorKind),
     UnexpectedEof,
     UnexpectedCharacter { byte: u8 },
-    InvalidNumber(NumericError),
+    Numeric(NumericErrorKind),
+}
+
+impl fmt::Display for LexErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LexErrorKind::MalformedString(err) => write!(f, "{}", err),
+            LexErrorKind::UnexpectedEof => write!(f, "unexpected end of input"),
+            LexErrorKind::UnexpectedCharacter { byte } => {
+                if byte.is_ascii_graphic() {
+                    write!(f, "unexpected character '{}'", *byte as char)
+                } else {
+                    write!(f, "unexpected character (0x{:02X})", byte)
+                }
+            }
+            LexErrorKind::Numeric(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub pos: usize
+}
+
+impl error::Error for LexError {}
+
+impl fmt::Display for LexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at index {}", self.kind, self.pos)
+    }
+}
+
+impl From<StringError> for LexError {
+    fn from(err: StringError) -> Self {
+        LexError {
+            kind: LexErrorKind::MalformedString(err.kind),
+            pos: err.pos,
+        }
+    }
+}
+
+impl From<KeywordError> for LexError {
+    fn from(err: KeywordError) -> Self {
+        match err.kind {
+            KeywordErrorKind::UnexpectedCharacter { byte } => LexError {
+                kind: LexErrorKind::UnexpectedCharacter { byte },
+                pos: err.pos,
+            },
+            KeywordErrorKind::UnexpectedEndOf => LexError {
+                kind: LexErrorKind::UnexpectedEof,
+                pos: err.pos,
+            },
+        }
+    }
+}
+
+impl From<NumericError> for LexError {
+    fn from(err: NumericError) -> Self {
+        LexError {
+            kind: LexErrorKind::Numeric(err.kind),
+            pos: err.pos,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ParseErrorKind {
+    Lexical(LexErrorKind),
+    UnexpectedEof,
     DuplicateName { name: String },
     UnexpectedToken { expected: Option<&'static str> },
     NestingDepthLimitExceeded { depth: u16 },
     InputBufferLimitExceeded { len: usize },
+    StringLengthLimitExceeded { len: usize }
+}
+
+impl fmt::Display for ParseErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseErrorKind::Lexical(err) => write!(f, "{}", err),
+            ParseErrorKind::UnexpectedEof => {
+                write!(f, "unexpected end of input")
+            }
+            ParseErrorKind::DuplicateName { name } => {
+                write!(f, "duplicate object name '{}'", name)
+            }
+            ParseErrorKind::UnexpectedToken { expected } => match expected {
+                Some(token) => write!(f, "unexpected token, expected {}", token),
+                None => write!(f, "unexpected token"),
+            },
+            ParseErrorKind::NestingDepthLimitExceeded { depth } => {
+                write!(f, "nesting depth exceeded limit of {}", depth)
+            }
+            ParseErrorKind::InputBufferLimitExceeded { len } => {
+                write!(f, "input size exceeded limit of {} bytes", len)
+            }
+            ParseErrorKind::StringLengthLimitExceeded { len } => {
+                write!(f, "string value exceeded limit of  {} characters", len)
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
-pub struct ParserError {
-    pub kind: ParserErrorKind,
-    pub pos: Option<usize>, // For NestingDepthLimitExceeded, InputBufferLimitExceeded position is pointless
+pub struct ParseError {
+    pub kind: ParseErrorKind,
+    pub pos: usize
 }
 
-impl error::Error for ParserError {}
+impl error::Error for ParseError {}
 
-impl fmt::Display for ParserError {
+impl fmt::Display for ParseError {
     // macros like write!, println! and so on do autoderef
     // we access kind via a reference to self and because match takes ownership and kind holds
     // variants of String that do not implement copy we pass a reference to it instead; similar to
     // self.kind in Number for the partial_cmp() imp
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            // this delegates to the Display of StringError
-            ParserErrorKind::MalformedString(err) => write!(f, "{} ", err),
-            ParserErrorKind::UnexpectedEof => {
-                write!(f, "unexpected end of input at index {}", self.pos.unwrap())
-            }
-            ParserErrorKind::UnexpectedCharacter { byte } => {
-                match byte {
-                    // can be a byte from a utf8 sequence or a character with no text representation
-                    b if b.is_ascii_graphic() => {
-                        write!(
-                            f,
-                            "unexpected character {} at index {}",
-                            *b as char,
-                            self.pos.unwrap()
-                        )
-                    }
-                    _ => write!(
-                        f,
-                        "unexpected character (0x{:02X}) at index {}",
-                        byte,
-                        self.pos.unwrap()
-                    ),
-                }
-            }
-            ParserErrorKind::InvalidNumber(err) => write!(f, "{}", err),
-            ParserErrorKind::DuplicateName { name } => {
-                write!(
-                    f,
-                    "duplicate object name {} at index {}",
-                    name,
-                    self.pos.unwrap()
-                )
-            }
-            ParserErrorKind::UnexpectedToken { expected } => match expected {
-                Some(token) => {
-                    write!(
-                        f,
-                        "unexpected token at index {}. Expected {}",
-                        self.pos.unwrap(),
-                        token
-                    )
-                }
-                None => write!(f, "unexpected token at index {}", self.pos.unwrap()),
-            },
-            ParserErrorKind::NestingDepthLimitExceeded { depth } => {
-                write!(f, "nesting depth exceeded limit of {}", depth)
-            }
-            ParserErrorKind::InputBufferLimitExceeded { len } => {
-                write!(f, "input size exceeded limit of {} bytes", len)
-            }
-        }
+        write!(f, "{} at index {}", self.kind, self.pos)
     }
 }
 
-impl From<StringError> for ParserError {
-    // we can not call, JsonError { kind: JsonErrorKind::MalformedString(err), err.pos }
-    // because err is already move to MalformedString, and we are trying to access pos via err which
-    // is no longer valid
-    // it is similar to
-    // let foo = Foo { bar: Bar };
-    // let x = foo;
-    // let y = foo.bar;
-    // we can no longer access bar via because foo is no longer valid
-    // http://doc.rust-lang.org/book/ch04-01-what-is-ownership.html above figure 4.4
-    fn from(err: StringError) -> Self {
-        let pos = err.pos;
-        ParserError {
-            kind: ParserErrorKind::MalformedString(err),
-            pos: Some(pos),
-        }
-    }
-}
-
-impl From<KeywordError> for ParserError {
-    fn from(err: KeywordError) -> Self {
-        match err.kind {
-            KeywordErrorKind::UnexpectedCharacter { byte } => ParserError {
-                kind: ParserErrorKind::UnexpectedCharacter { byte },
-                pos: Some(err.pos),
-            },
-            KeywordErrorKind::UnexpectedEndOf => ParserError {
-                kind: ParserErrorKind::UnexpectedEof,
-                pos: Some(err.pos),
-            },
+impl From<LexError> for ParseError {
+    fn from(err: LexError) -> Self {
+        ParseError {
+            kind: ParseErrorKind::Lexical(err.kind),
+            pos: err.pos
         }
     }
 }
@@ -221,7 +237,7 @@ impl From<KeywordError> for ParserError {
 #[derive(Debug)]
 pub enum FileParseError {
     IoError(io::Error),
-    ParserError(ParserError),
+    ParserError(ParseError),
 }
 
 impl error::Error for FileParseError {}
@@ -229,7 +245,6 @@ impl error::Error for FileParseError {}
 impl fmt::Display for FileParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // delegate
             FileParseError::IoError(err) => write!(f, "{} ", err),
             FileParseError::ParserError(err) => write!(f, "{} ", err),
         }

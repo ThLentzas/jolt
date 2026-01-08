@@ -8,7 +8,7 @@ use crate::parsing::value::path::filter::{
 };
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
 use crate::parsing::value::Value;
-use crate::parsing::{self, escapes, utf8, STRING_VALUE_LENGTH_LIMIT};
+use crate::parsing::{self, escapes, utf8, STRING_LENGTH_LIMIT};
 use std::cmp;
 use std::collections::HashMap;
 
@@ -659,10 +659,10 @@ impl<'a, 'r> Parser<'a, 'r> {
                 }
             }
             // prevent resource exhaustion
-            if name.len() > STRING_VALUE_LENGTH_LIMIT {
+            if name.len() > STRING_LENGTH_LIMIT {
                 return Err(StringError {
-                    kind: StringErrorKind::StringValueLengthLimitExceed {
-                        len: STRING_VALUE_LENGTH_LIMIT,
+                    kind: StringErrorKind::LengthLimitExceeded {
+                        len: STRING_LENGTH_LIMIT,
                     },
                     pos: self.pos,
                 });
@@ -1335,10 +1335,9 @@ impl<'a, 'r> Parser<'a, 'r> {
                 // a PathError, so I thought to do it via map_err(). The body of the closure would
                 // be the body of the from() impl.
                 number::read(self.buffer, &mut self.pos).map_err(|err| {
-                    let pos = err.pos;
                     PathError {
-                        kind: PathErrorKind::Numeric(err),
-                        pos,
+                        kind: PathErrorKind::Numeric(err.kind),
+                        pos: err.pos,
                     }
                 })?;
                 Ok(Value::Number(number::parse(&self.buffer[start..self.pos])))

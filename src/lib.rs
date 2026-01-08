@@ -4,14 +4,14 @@ mod macros;
 mod parsing;
 
 // Any type that appears in a public function signature must be accessible to users
-pub use parsing::error::{FileParseError, ParserError};
+pub use parsing::error::{FileParseError, ParseError};
 pub use parsing::value::Value;
 
-pub fn from_slice(buffer: &[u8]) -> Result<Value, ParserError> {
+pub fn from_slice(buffer: &[u8]) -> Result<Value, ParseError> {
     parsing::parse(buffer)
 }
 
-pub fn from_str(text: &str) -> Result<Value, ParserError> {
+pub fn from_str(text: &str) -> Result<Value, ParseError> {
     parsing::parse(text.as_bytes())
 }
 

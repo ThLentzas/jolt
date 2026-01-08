@@ -280,7 +280,7 @@ impl Value {
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
         for (i, op) in ops.into_iter().enumerate() {
-            op.apply(self).map_err(|err| PatchError::OpError(err, i))?;
+            op.apply(self).map_err(|err| PatchError::InvalidOp(err, i))?;
         }
         Ok(())
     }
@@ -292,7 +292,7 @@ impl Value {
         for (i, op) in ops.into_iter().enumerate() {
             if let Err(err) = op.apply(self) {
                 *self = copy;
-                return Err(PatchError::OpError(err, i));
+                return Err(PatchError::InvalidOp(err, i));
             }
         }
         Ok(())

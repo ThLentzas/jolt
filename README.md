@@ -104,8 +104,7 @@ There are 3 ways you can extract a value from a JSON document:
     - `Regex`: Jolt includes a built-in [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) engine for pattern matching
       in filter expressions. The engine uses Thompson's NFA construction, guaranteeing `O(m * n)` time complexity where
       `m` is the pattern length and `n` is the input length. Unicode character properties (e.g., `\p{L}` for letters)
-      are supported via a two-stage lookup table for `O(1)` category retrieval.  
-      This approach generates a binary of approximately `170 KB`, which is `~40%` smaller than a binary-search-based
+      are supported via a two-stage lookup table for `O(1)` category retrieval.This approach generates a binary of approximately `170 KB`, which is `~40%` smaller than a binary-search-based
       approach `~280 KB` and significantly smaller than a naive vector-based approach `~3.04 MB` for 1,114,112 entries
 
 3. `get()`: A method on `Value` for direct access to container elements. Works with both objects and arrays through an

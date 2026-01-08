@@ -121,8 +121,8 @@ macro_rules! impl_atoi {
                             .and_then(|n| n.checked_sub(digit))
                             .filter(|&n| n >= <$t as NumericBounds>::MIN)
                             .ok_or_else(|| OutOfRangeError {
-                                pos: start,
                                 bound: <$t as NumericBounds>::MIN.to_string(),
+                                pos: start
                             })?;
                     } else {
                         num = num
@@ -130,8 +130,8 @@ macro_rules! impl_atoi {
                             .and_then(|n| n.checked_add(digit))
                             .filter(|&n| n <= <$t as NumericBounds>::MAX)
                             .ok_or_else(|| OutOfRangeError {
-                                pos: start,
                                 bound: <$t as NumericBounds>::MAX.to_string(),
+                                pos: start
                             })?;
                     }
                     *pos += 1;

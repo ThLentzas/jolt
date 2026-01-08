@@ -1,7 +1,7 @@
 #[cfg(feature = "arbitrary_precision")]
-use bigdecimal::num_bigint::BigInt;
-#[cfg(feature = "arbitrary_precision")]
 use bigdecimal::BigDecimal;
+#[cfg(feature = "arbitrary_precision")]
+use bigdecimal::num_bigint::BigInt;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::{error, fmt};
@@ -333,10 +333,9 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     let slice = &buffer[start..*pos];
     if !cfg!(feature = "arbitrary_precision") && is_out_of_range(slice, &state) {
         return Err(NumericError {
-            kind: NumericErrorKind::OutOfRange(OutOfRangeError {
-                pos: start,
+            kind: NumericErrorKind::OutOfRange {
                 bound: bound(&state),
-            }),
+            },
             pos: start,
         });
     };
@@ -383,39 +382,6 @@ pub(crate) trait Atoi: Sized {
     fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
 }
 
-// Leetcode atoi baby let's go!!!!!!!!!!!
-//
-// this is different from reading a json number when calling next(); in that case, we didn't
-// care about the value of the number, we just needed the range of the number in the initial
-// buffer, also we didn't know what type of number we had(i64, f64 etc)
-// we could also try to create a string by keeping track of the starting position and then
-// call s.parse() but that way we would traverse the same buffer range twice, once to create the
-// string and once to parse the number
-//
-// this way we handle overflow cases and having the number value with a single pass
-// pub(super) fn atoi(buffer: &[u8], pos: &mut usize) -> Result<i64, OutOfRangeError> {
-//     let mut num: i64 = 0;
-//     let sign = if buffer[*pos] == b'-' {
-//         *pos += 1;
-//         -1
-//     } else {
-//         1
-//     };
-//
-//     let start = *pos;
-//     let mut current = buffer[*pos];
-//     while *pos < buffer.len() && current.is_ascii_digit() {
-//         if num > i64::MAX / 10 || (num == i64::MAX / 10 && current > (i64::MAX % 10) as u8) {
-//             return Err(OutOfRangeError { pos: start });
-//         }
-//         num = num * 10 + (current - 0x30) as i64;
-//         *pos += 1;
-//         if *pos < buffer.len() {
-//             current = buffer[*pos];
-//         }
-//     }
-//     Ok(sign * num)
-// }
 #[derive(Debug, PartialEq)]
 pub(super) struct HexError {
     pub(super) digit: u8,
@@ -424,9 +390,11 @@ pub(super) struct HexError {
 
 #[derive(Debug, PartialEq)]
 pub struct OutOfRangeError {
-    pub pos: usize,
     pub bound: String,
+    pub pos: usize,
 }
+
+impl error::Error for OutOfRangeError {}
 
 impl fmt::Display for OutOfRangeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -458,48 +426,50 @@ impl NumericBounds for i64 {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct NumericError {
-    pub kind: NumericErrorKind,
-    pub pos: usize,
-}
-
-#[derive(Debug, PartialEq)]
 pub enum NumericErrorKind {
     LeadingZeros,
     InvalidSign { message: &'static str },
     InvalidScientific { message: &'static str },
     InvalidDecimal { message: &'static str },
-    OutOfRange(OutOfRangeError),
+    // we call bound.to_string()
+    OutOfRange { bound: String },
 }
 
-impl fmt::Display for NumericError {
+impl fmt::Display for NumericErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
+        match self {
             NumericErrorKind::LeadingZeros => {
-                write!(
-                    f,
-                    "json specification prohibits numbers from being prefixed with a plus sign at index {} ",
-                    self.pos
-                )
+                write!(f, "leading zeros are not allowed")
             }
             NumericErrorKind::InvalidSign { message } => {
-                write!(f, "{} at index {}", message, self.pos)
+                write!(f, "{}", message)
             }
             NumericErrorKind::InvalidScientific { message } => {
-                write!(f, "{} at index {}", message, self.pos)
+                write!(f, "{}", message)
             }
             NumericErrorKind::InvalidDecimal { message } => {
-                write!(f, "{} at index {}", message, self.pos)
+                write!(f, "{}", message)
             }
-            NumericErrorKind::OutOfRange(err) => {
-                write!(f, "{} at index {}", err, self.pos)
+            NumericErrorKind::OutOfRange { bound } => {
+                write!(f, "number out of range: {}", bound)
             }
         }
     }
 }
 
-impl error::Error for OutOfRangeError {}
+#[derive(Debug, PartialEq)]
+pub struct NumericError {
+    pub kind: NumericErrorKind,
+    pub pos: usize,
+}
+
 impl error::Error for NumericError {}
+
+impl fmt::Display for NumericError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at index {}", self.kind, self.pos)
+    }
+}
 
 fn is_out_of_range(buffer: &[u8], state: &NumberState) -> bool {
     if state.decimal_point || state.scientific_notation {

@@ -142,7 +142,7 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Vec<Operation>, PatchError> {
         let Value::Object(map) = elem else {
             return Err(PatchError::UnexpectedValue { expected: "Object" });
         };
-        let op = into_op(map).map_err(|err| PatchError::OpError(err, i))?;
+        let op = into_op(map).map_err(|err| PatchError::InvalidOp(err, i))?;
         ops.push(op);
     }
     Ok(ops)
@@ -179,7 +179,7 @@ fn descend(path: String, root: &mut Value) -> Result<Location<'_>, OpError> {
     ptr.check_start()?;
     while let Some(token) = ptr
         .next()
-        .map_err(|err| OpError::PointerError(PointerError::from(err)))?
+        .map_err(|err| OpError::Pointer(PointerError::from(err)))?
     {
         tokens.push(token);
     }
@@ -451,11 +451,11 @@ mod tests {
         vec![
             (
                 r#"[{}]"#,
-                PatchError::OpError(OpError::MissingMember { member: "op" }, 0),
+                PatchError::InvalidOp(OpError::MissingMember { member: "op" }, 0),
             ),
             (
                 r#"[{"op": "foo"}]"#,
-                PatchError::OpError(
+                PatchError::InvalidOp(
                     OpError::UnexpectedValue {
                         field: "op",
                         expected: "valid op",
@@ -465,11 +465,11 @@ mod tests {
             ),
             (
                 r#"[{"op": "add"}]"#,
-                PatchError::OpError(OpError::MissingMember { member: "path" }, 0),
+                PatchError::InvalidOp(OpError::MissingMember { member: "path" }, 0),
             ),
             (
                 r#"[{"op": "add", "path": 3}]"#,
-                PatchError::OpError(
+                PatchError::InvalidOp(
                     OpError::UnexpectedValue {
                         field: "path",
                         expected: "string",
@@ -479,11 +479,11 @@ mod tests {
             ),
             (
                 r#"[{"op": "add", "path": "/foo/bar"}]"#,
-                PatchError::OpError(OpError::MissingMember { member: "value" }, 0),
+                PatchError::InvalidOp(OpError::MissingMember { member: "value" }, 0),
             ),
             (
                 r#"[{"op": "move", "path": "/foo/bar"}]"#,
-                PatchError::OpError(OpError::MissingMember { member: "from" }, 0),
+                PatchError::InvalidOp(OpError::MissingMember { member: "from" }, 0),
             ),
         ]
     }

@@ -1,4 +1,4 @@
-use super::error::{ParserError, ParserErrorKind, StringError, StringErrorKind};
+use super::error::{ParseError, ParseErrorKind, StringError, StringErrorKind};
 use super::lexer::{Lexer, LexerToken, LexerTokenKind};
 use super::number::Number;
 use super::value::Value;
@@ -47,20 +47,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse(&mut self) -> Result<Value, ParserError> {
+    pub(super) fn parse(&mut self) -> Result<Value, ParseError> {
         // [](empty input buffer) is invalid, JsonText = ws value ws, a value is mandatory
         if self.buffer.is_empty() {
-            return Err(ParserError {
-                kind: ParserErrorKind::UnexpectedEof,
-                pos: Some(self.buffer.len()),
+            return Err(ParseError {
+                kind: ParseErrorKind::UnexpectedEof,
+                pos: self.buffer.len(),
             });
         }
         if self.buffer.len() > super::INPUT_BUFFER_LIMIT {
-            return Err(ParserError {
-                kind: ParserErrorKind::InputBufferLimitExceeded {
+            return Err(ParseError {
+                kind: ParseErrorKind::InputBufferLimitExceeded {
                     len: super::INPUT_BUFFER_LIMIT,
                 },
-                pos: None,
+                pos: 0,
             });
         }
         // https://www.rfc-editor.org/rfc/rfc8259#section-8.1
@@ -75,9 +75,9 @@ impl<'a> Parser<'a> {
             // after successfully parsing a value we can't have leftover tokens
             // false5, "abc"123, {}  null,
             // note that this could return an error, {}001, -> leading zeros are not allowed
-            Some(token) => Err(ParserError {
-                kind: ParserErrorKind::UnexpectedToken { expected: None },
-                pos: Some(token.start_index()),
+            Some(token) => Err(ParseError {
+                kind: ParseErrorKind::UnexpectedToken { expected: None },
+                pos: token.start_index(),
             }),
             None => Ok(self.value()?),
         }
@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
     // Objects and arrays are parsed recursively: when a value is itself an object or array, we fully
     // parse that nested structure before continuing with sibling elements.(similar to recursive
     // descendant in path)
-    fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), ParserError> {
+    fn parse_value(&mut self, token: Option<&LexerToken>) -> Result<(), ParseError> {
         match token {
             Some(t) => match t.kind() {
                 LexerTokenKind::LCurlyBracket => self.parse_object(t)?,
@@ -97,18 +97,18 @@ impl<'a> Parser<'a> {
                 LexerTokenKind::Boolean => self.parse_boolean(t),
                 LexerTokenKind::Null => self.parse_null(t),
                 _ => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("json value"),
                         },
-                        pos: Some(t.start_index()),
+                        pos: t.start_index(),
                     });
                 }
             },
             None => {
-                return Err(ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(self.buffer.len() - 1),
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: self.buffer.len() - 1,
                 });
             }
         }
@@ -126,13 +126,14 @@ impl<'a> Parser<'a> {
     //
     // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
     // will be consumed by the caller (parse_value()) after this function returns.
-    fn parse_object(&mut self, token: &LexerToken) -> Result<(), ParserError> {
+    fn parse_object(&mut self, token: &LexerToken) -> Result<(), ParseError> {
         if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
-            return Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded {
+            return Err(ParseError {
+                kind: ParseErrorKind::NestingDepthLimitExceeded {
                     depth: super::NESTING_DEPTH_LIMIT,
                 },
-                pos: None,
+                // the position of the buffer
+                pos: self.lexer.pos,
             });
         }
         self.tokens.push(ParserToken {
@@ -143,7 +144,7 @@ impl<'a> Parser<'a> {
         // '{'
         self.consume(1);
         self.depth += 1;
-        let buffer_len = self.buffer.len();
+        let len = self.buffer.len();
         let mut names = HashSet::new();
 
         // We don't know how many tokens are part of the current object, the moment we encounter '}'
@@ -153,11 +154,11 @@ impl<'a> Parser<'a> {
                 // {"foo": "bar",}
                 Some(next) if expect(next.kind(), LexerTokenKind::RCurlyBracket) => {
                     if self.tokens.last().unwrap().kind == ParserTokenKind::ValueSeparator {
-                        return Err(ParserError {
-                            kind: ParserErrorKind::UnexpectedToken {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::UnexpectedToken {
                                 expected: Some("object name"),
                             },
-                            pos: Some(next.start_index()),
+                            pos: next.start_index(),
                         });
                     }
                     // {}
@@ -177,12 +178,12 @@ impl<'a> Parser<'a> {
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
                     if names.contains(name) {
-                        return Err(ParserError {
-                            kind: ParserErrorKind::DuplicateName {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::DuplicateName {
                                 // SAFETY: lexer already validated the sequence
                                 name: unsafe { String::from_utf8_unchecked(Vec::from(name)) },
                             },
-                            pos: Some(next.start_index()),
+                            pos: next.start_index(),
                         });
                     }
                     names.insert(name);
@@ -191,17 +192,17 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("object name"),
                         },
-                        pos: Some(next.start_index()),
+                        pos: next.start_index(),
                     });
                 }
                 None => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedEof,
-                        pos: Some(buffer_len - 1),
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedEof,
+                        pos: len - 1,
                     });
                 }
             }
@@ -217,17 +218,17 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("colon ':'"),
                         },
-                        pos: Some(next.start_index()),
+                        pos: next.start_index(),
                     });
                 }
                 None => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedEof,
-                        pos: Some(buffer_len - 1),
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedEof,
+                        pos: len - 1,
                     });
                 }
             }
@@ -254,17 +255,17 @@ impl<'a> Parser<'a> {
                 }
                 // mismatch
                 Some(next) => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("'}' or ','"),
                         },
-                        pos: Some(next.start_index()),
+                        pos: next.start_index(),
                     });
                 }
                 None => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedEof,
-                        pos: Some(buffer_len - 1),
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedEof,
+                        pos: len - 1,
                     });
                 }
             }
@@ -279,13 +280,14 @@ impl<'a> Parser<'a> {
     //
     // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
     // by the caller (parse_value()) after this function returns.
-    fn parse_array(&mut self, token: &LexerToken) -> Result<(), ParserError> {
+    fn parse_array(&mut self, token: &LexerToken) -> Result<(), ParseError> {
         if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
-            return Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded {
+            return Err(ParseError {
+                kind: ParseErrorKind::NestingDepthLimitExceeded {
                     depth: super::NESTING_DEPTH_LIMIT,
                 },
-                pos: None,
+                // the position of the buffer
+                pos: self.lexer.pos,
             });
         }
 
@@ -302,11 +304,11 @@ impl<'a> Parser<'a> {
                 // [1,2,]
                 Some(next) if expect(next.kind(), LexerTokenKind::RSquareBracket) => {
                     if self.tokens.last().unwrap().kind == ParserTokenKind::ValueSeparator {
-                        return Err(ParserError {
-                            kind: ParserErrorKind::UnexpectedToken {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::UnexpectedToken {
                                 expected: Some("json value"),
                             },
-                            pos: Some(next.start_index()),
+                            pos: next.start_index(),
                         });
                     }
                     // []
@@ -342,17 +344,17 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(next) => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedToken {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("',' or ']'"),
                         },
-                        pos: Some(next.start_index()),
+                        pos: next.start_index(),
                     });
                 }
                 None => {
-                    return Err(ParserError {
-                        kind: ParserErrorKind::UnexpectedEof,
-                        pos: Some(self.buffer.len() - 1),
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedEof,
+                        pos: self.buffer.len() - 1,
                     });
                 }
             }
@@ -392,7 +394,7 @@ impl<'a> Parser<'a> {
         });
     }
 
-    fn peek(&mut self) -> Result<Option<LexerToken>, ParserError> {
+    fn peek(&mut self) -> Result<Option<LexerToken>, ParseError> {
         Ok(self.lexer.next()?)
     }
 
@@ -406,7 +408,7 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos)
     }
 
-    fn value(&mut self) -> Result<Value, ParserError> {
+    fn value(&mut self) -> Result<Value, ParseError> {
         let token = &self.tokens[self.pos];
         let val = match token.kind {
             ParserTokenKind::ObjectStart => Value::Object(self.object_value()?),
@@ -426,7 +428,7 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
-    fn object_value(&mut self) -> Result<IndexMap<String, Value>, ParserError> {
+    fn object_value(&mut self) -> Result<IndexMap<String, Value>, ParseError> {
         let mut map = IndexMap::new();
         self.pos += 1; // move past '{'
 
@@ -455,7 +457,7 @@ impl<'a> Parser<'a> {
         Ok(map)
     }
 
-    fn array_value(&mut self) -> Result<Vec<Value>, ParserError> {
+    fn array_value(&mut self) -> Result<Vec<Value>, ParseError> {
         let mut values = Vec::new();
         self.pos += 1; // move past '['
 
@@ -482,7 +484,7 @@ impl<'a> Parser<'a> {
         number::parse(slice)
     }
 
-    fn string_value(&self) -> Result<String, ParserError> {
+    fn string_value(&self) -> Result<String, ParseError> {
         let token = &self.tokens[self.pos];
         let mut val = String::with_capacity(token.offset - 2); // drop quotes
         let mut i = token.start_index + 1; // skip opening quote
@@ -504,13 +506,13 @@ impl<'a> Parser<'a> {
                     i += 1;
                 }
             }
-            if val.len() > super::STRING_VALUE_LENGTH_LIMIT {
-                return Err(ParserError::from(StringError {
-                    kind: StringErrorKind::StringValueLengthLimitExceed {
-                        len: super::STRING_VALUE_LENGTH_LIMIT,
+            if val.len() > super::STRING_LENGTH_LIMIT {
+                return Err(ParseError {
+                    kind: ParseErrorKind::StringLengthLimitExceeded {
+                        len: super::STRING_LENGTH_LIMIT,
                     },
                     pos: token.start_index,
-                }));
+                });
             }
         }
         Ok(val)
@@ -531,118 +533,118 @@ mod tests {
     use super::*;
     use crate::parsing;
     #[cfg(feature = "arbitrary_precision")]
-    use bigdecimal::num_bigint::BigInt;
-    #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::BigDecimal;
+    #[cfg(feature = "arbitrary_precision")]
+    use bigdecimal::num_bigint::BigInt;
     #[cfg(feature = "arbitrary_precision")]
     use std::str::FromStr;
 
-    fn invalid_objects() -> Vec<(&'static [u8], ParserError)> {
+    fn invalid_objects() -> Vec<(&'static [u8], ParseError)> {
         vec![
             (
                 b"{",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(0),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 0,
                 },
             ),
             (
                 b"{ null : 1 }",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedToken {
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("object name"),
                     },
-                    pos: Some(2),
+                    pos: 2,
                 },
             ),
             (
                 b"{ \"foo\": 5,",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(10),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 10,
                 },
             ),
             (
                 b"{ \"foo\": 5",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(9),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 9,
                 },
             ),
             (
                 b"{ \"foo\"",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(6),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 6,
                 },
             ),
             (
                 b"{ \"foo\" 3",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedToken {
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("colon ':'"),
                     },
-                    pos: Some(8),
+                    pos: 8,
                 },
             ),
             (
                 b"{ \"foo\": \"value\" } 123",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedToken { expected: None },
-                    pos: Some(19),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken { expected: None },
+                    pos: 19,
                 },
             ),
             (
                 b"{ \"foo\": \"bar\", \"foo\": \"baz\"}",
-                ParserError {
-                    kind: ParserErrorKind::DuplicateName {
+                ParseError {
+                    kind: ParseErrorKind::DuplicateName {
                         name: String::from("foo"),
                     },
-                    pos: Some(16),
+                    pos: 16,
                 },
             ),
         ]
     }
 
-    fn invalid_arrays() -> Vec<(&'static [u8], ParserError)> {
+    fn invalid_arrays() -> Vec<(&'static [u8], ParseError)> {
         vec![
             (
                 b"[",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(0),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 0,
                 },
             ),
             (
                 b"[116, 943",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(8),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 8,
                 },
             ),
             (
                 b"[116, 943,",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedEof,
-                    pos: Some(9),
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: 9,
                 },
             ),
             (
                 b"[116 true]",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedToken {
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("',' or ']'"),
                     },
-                    pos: Some(5),
+                    pos: 5,
                 },
             ),
             (
                 b"[:]",
-                ParserError {
-                    kind: ParserErrorKind::UnexpectedToken {
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("json value"),
                     },
-                    pos: Some(1),
+                    pos: 1,
                 },
             ),
         ]
@@ -745,9 +747,9 @@ mod tests {
     fn empty_input() {
         let buffer = [];
         let mut parser = Parser::new(&buffer);
-        let error = ParserError {
-            kind: ParserErrorKind::UnexpectedEof,
-            pos: Some(0),
+        let error = ParseError {
+            kind: ParseErrorKind::UnexpectedEof,
+            pos: 0,
         };
         let result = parser.parse();
 
@@ -760,9 +762,9 @@ mod tests {
         let buffer: [u8; 4] = [9, 10, 13, 32];
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
-        let error = ParserError {
-            kind: ParserErrorKind::UnexpectedEof,
-            pos: Some(3),
+        let error = ParseError {
+            kind: ParseErrorKind::UnexpectedEof,
+            pos: 3,
         };
 
         assert_eq!(result, Err(error));
@@ -805,21 +807,21 @@ mod tests {
 
         assert_eq!(
             result,
-            Err(ParserError {
-                kind: ParserErrorKind::InputBufferLimitExceeded {
+            Err(ParseError {
+                kind: ParseErrorKind::InputBufferLimitExceeded {
                     len: parsing::INPUT_BUFFER_LIMIT
                 },
-                pos: None
+                pos: 0
             })
         );
     }
 
     #[test]
     fn string_value_exceeds_length_limit() {
-        let mut buffer = Vec::with_capacity(parsing::STRING_VALUE_LENGTH_LIMIT + 3);
+        let mut buffer = Vec::with_capacity(parsing::STRING_LENGTH_LIMIT + 3);
 
         buffer.push(b'"');
-        buffer.extend(vec![b'a'; parsing::STRING_VALUE_LENGTH_LIMIT + 1]);
+        buffer.extend(vec![b'a'; parsing::STRING_LENGTH_LIMIT + 1]);
         buffer.push(b'"');
 
         let mut parser = Parser::new(&buffer);
@@ -827,12 +829,12 @@ mod tests {
 
         assert_eq!(
             result,
-            Err(ParserError::from(StringError {
-                kind: StringErrorKind::StringValueLengthLimitExceed {
-                    len: parsing::STRING_VALUE_LENGTH_LIMIT
+            Err(ParseError {
+                kind: ParseErrorKind::StringLengthLimitExceeded {
+                    len: parsing::STRING_LENGTH_LIMIT
                 },
                 pos: 0
-            }))
+            })
         );
     }
 
@@ -851,11 +853,11 @@ mod tests {
 
         assert_eq!(
             result,
-            Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded {
+            Err(ParseError {
+                kind: ParseErrorKind::NestingDepthLimitExceeded {
                     depth: parsing::NESTING_DEPTH_LIMIT
                 },
-                pos: None
+                pos: parser.lexer.pos
             })
         );
     }
@@ -876,11 +878,11 @@ mod tests {
 
         assert_eq!(
             result,
-            Err(ParserError {
-                kind: ParserErrorKind::NestingDepthLimitExceeded {
+            Err(ParseError {
+                kind: ParseErrorKind::NestingDepthLimitExceeded {
                     depth: parsing::NESTING_DEPTH_LIMIT
                 },
-                pos: None
+                pos: parser.lexer.pos
             })
         );
     }
