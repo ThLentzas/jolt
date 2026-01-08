@@ -276,6 +276,7 @@ impl Value {
         Ok(values)
     }
 
+    // if an error occurs changes are maintained
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
         for (i, op) in ops.into_iter().enumerate() {
@@ -1896,5 +1897,36 @@ mod tests {
         for (i, path) in expected_paths.into_iter().enumerate() {
             assert_eq!(path, nodelist[i], "invalid path at index {i}");
         }
+    }
+
+    // patch
+    #[test]
+    fn test_modify() {
+        let mut root = json!({"foo": 1, "bar": 2, "buzz": 3});
+        let actual = json!({"foo": 100, "bar": 4, "buzz": 3});
+
+        // the first two operations modify the root, but the last one fails. Changes are maintained
+        let input = r#"[
+            {"op": "replace", "path": "/foo", "value": 100},
+            {"op": "add", "path": "/bar", "value": 4},
+            {"op": "remove", "path": "/:)"}
+        ]"#;
+        let _res = root.modify(input);
+        assert_eq!(root, actual);
+    }
+
+    #[test]
+    fn test_try_modify() {
+        let mut root = json!({"foo": 1, "bar": 2, "buzz": 3});
+        let actual = root.clone();
+
+        // the first two operations modify the root, but the last one fails. Changes are rolled back
+        let input = r#"[
+            {"op": "replace", "path": "/foo", "value": 100},
+            {"op": "add", "path": "/bar", "value": 4},
+            {"op": "remove", "path": "/:)"}
+        ]"#;
+        let _res = root.try_modify(input);
+        assert_eq!(root, actual);
     }
 }

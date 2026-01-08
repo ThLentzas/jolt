@@ -146,5 +146,4 @@ impl_atoi!(i64);
 impl_atoi!(u8);
 
 // not part of the public api, only for internal usage, no #[macro_export]
-pub(crate) use impl_atoi;
 pub(crate) use json;

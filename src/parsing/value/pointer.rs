@@ -11,6 +11,7 @@ use std::str::Chars;
 // we are building the token value based on the pointer path, but we will need to do replacements
 // (replacing ~0 and ~1), RefTokens must own their data rather than referencing slices of the
 // original pointer path.
+#[derive(Debug, PartialEq)]
 pub(super) struct RefToken {
     pub(super) val: String,
     pub(super) pos: usize,

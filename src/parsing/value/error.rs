@@ -1,4 +1,4 @@
-use crate::parsing::error::{KeywordError, KeywordErrorKind, ParserErrorKind, StringError};
+use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError};
 use crate::parsing::number::{NumericError, OutOfRangeError};
 use crate::parsing::value::path::filter::function::FnExprError;
 use std::error::Error;
@@ -160,7 +160,7 @@ impl From<OutOfRangeError> for PathError {
     }
 }
 
-
+#[derive(Debug, PartialEq)]
 pub enum PatchError {
     ParserError(ParserError),
     UnexpectedValue { expected: &'static str },
@@ -168,10 +168,11 @@ pub enum PatchError {
     OpError(OpError, usize),
 }
 
+#[derive(Debug, PartialEq)]
 pub enum OpError {
     MissingMember { member: &'static str },
     PointerError(PointerError),
-    UnexpectedValue { expected: &'static str },
+    UnexpectedValue { field: &'static str, expected: &'static str },
     PathNotFound { path: String, depth: usize },
     IndexOutOfBounds { path: String, depth: usize, index: usize, len: usize },
     InvalidRootOp { op: &'static str },
