@@ -80,6 +80,7 @@ macro_rules! json {
     ([ $($elem:tt),+ $(,)? ]) => { $crate::parsing::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
         use indexmap::IndexMap;
+        
         let mut map = IndexMap::new();
         $(map.insert($key.to_string(), json!($val));)+
         $crate::parsing::Value::Object(map)
@@ -100,6 +101,7 @@ macro_rules! impl_atoi {
             ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
                 use crate::parsing::number::OutOfRangeError;
                 use crate::parsing::number::NumericBounds;
+                
                 let mut num: $t = 0;
                 let start = *pos;
                 let neg = if buffer[*pos] == b'-' {

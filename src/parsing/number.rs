@@ -302,14 +302,11 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
         _ => (),
     }
 
-    // this is the case for single digit numbers, '3', where next is none, self.pos is at the digit
-    // itself, not in the 1st character after reading the number, we don't need to reset the position,
-    // later advance() is called self.pos moves correctly to the next character without skipping one
+    *pos += 1;
     if next.is_none() {
         return Ok(());
     }
 
-    *pos += 1;
     current = *next.unwrap();
     let mut state = NumberState {
         decimal_point: false,

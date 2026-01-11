@@ -2,7 +2,7 @@ use crate::parsing::error::{LexError, LexErrorKind, StringError, StringErrorKind
 use crate::parsing::{escapes, number, utf8};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub(super) enum LexerTokenKind {
+pub(super) enum TokenKind {
     LCurlyBracket,
     RCurlyBracket,
     LSquareBracket,
@@ -16,13 +16,13 @@ pub(super) enum LexerTokenKind {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub(super) struct LexerToken {
+pub(super) struct Token {
     start_index: usize,
     offset: usize,
-    kind: LexerTokenKind,
+    kind: TokenKind,
 }
 
-impl LexerToken {
+impl Token {
     pub(super) fn start_index(&self) -> usize {
         self.start_index
     }
@@ -31,7 +31,7 @@ impl LexerToken {
         self.offset
     }
 
-    pub(super) fn kind(&self) -> &LexerTokenKind {
+    pub(super) fn kind(&self) -> &TokenKind {
         &self.kind
     }
 }
@@ -46,11 +46,7 @@ impl<'a> Lexer<'a> {
         Self { buffer, pos: 0 }
     }
 
-    pub(super) fn advance(&mut self, n: usize) {
-        self.pos += n;
-    }
-
-    pub(super) fn next(&mut self) -> Result<Option<LexerToken>, LexError> {
+    pub(super) fn lex(&mut self) -> Result<Option<Token>, LexError> {
         super::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);
@@ -58,70 +54,94 @@ impl<'a> Lexer<'a> {
 
         let current = self.buffer[self.pos];
         match current {
-            b'{' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::LCurlyBracket,
-            })),
-            b'}' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::RCurlyBracket,
-            })),
-            b'[' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::LSquareBracket,
-            })),
-            b']' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::RSquareBracket,
-            })),
-            b':' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::Colon,
-            })),
-            b',' => Ok(Some(LexerToken {
-                start_index: self.pos,
-                offset: 1,
-                kind: LexerTokenKind::Comma,
-            })),
+            b'{' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::LCurlyBracket,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
+            b'}' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::RCurlyBracket,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
+            b'[' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::LSquareBracket,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
+            b']' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::RSquareBracket,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
+            b':' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::Colon,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
+            b',' => {
+                let token = Token {
+                    start_index: self.pos,
+                    offset: 1,
+                    kind: TokenKind::Comma,
+                };
+                self.advance_by(1);
+                Ok(Some(token))
+            },
             b'-' | b'+' | b'0'..=b'9' => {
                 let start = self.pos;
                 self.read_number()?;
-                Ok(Some(LexerToken {
+                Ok(Some(Token {
                     start_index: start,
-                    offset: self.pos - start + 1,
-                    kind: LexerTokenKind::Number,
+                    offset: self.pos - start,
+                    kind: TokenKind::Number,
                 }))
             }
             b'"' => {
                 let start = self.pos;
                 self.read_string()?;
-                Ok(Some(LexerToken {
+                Ok(Some(Token {
                     start_index: start,
-                    offset: self.pos - start + 1,
-                    kind: LexerTokenKind::String,
+                    offset: self.pos - start,
+                    kind: TokenKind::String,
                 }))
             }
             b't' | b'f' => {
                 let start = self.pos;
                 self.read_boolean()?;
-                Ok(Some(LexerToken {
+                Ok(Some(Token {
                     start_index: start,
-                    offset: self.pos - start + 1,
-                    kind: LexerTokenKind::Boolean,
+                    offset: self.pos - start,
+                    kind: TokenKind::Boolean,
                 }))
             }
             b'n' => {
                 let start = self.pos;
                 self.read_null()?;
-                Ok(Some(LexerToken {
+                Ok(Some(Token {
                     start_index: start,
-                    offset: self.pos - start + 1,
-                    kind: LexerTokenKind::Null,
+                    offset: self.pos - start,
+                    kind: TokenKind::Null,
                 }))
             }
             _ => Err(LexError {
@@ -131,13 +151,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // before we return we call backup(); self.pos is at the 1st character after a valid number
-    // and the control returns back to next(), back to peek() and eventually advance() is called
-    // which moves self.pos, and we skip that character if we don't move pos back
+    pub(super) fn advance_by(&mut self, n: usize) {
+        self.pos += n;
+    }
+
     fn read_number(&mut self) -> Result<(), LexError> {
         let current = self.buffer[self.pos];
         let next = self.buffer.get(self.pos + 1);
-        let start = self.pos;
 
         match (current, next) {
             // '-' into eof
@@ -162,12 +182,6 @@ impl<'a> Lexer<'a> {
             }
             _ => number::read(self.buffer, &mut self.pos)?,
         }
-
-        // 1 edge case to consider, single digit numbers, read the comment in number::read()
-        if self.pos != start {
-            self.backup();
-        }
-
         Ok(())
     }
 
@@ -205,16 +219,12 @@ impl<'a> Lexer<'a> {
                 pos: self.pos - 1,
             });
         }
-        // at this point we are at the closing '"', parser will call advance() via parse_value()
-        // skip it and move on to the next character
+        // consume closing '"'
+        self.advance_by(1);
         Ok(())
     }
 
     // an approach with starts_with() could work but in the case of mismatch we won't know the index
-    //
-    // before we return we call backup() self.pos is at the 1st character after a valid literal
-    // and the control returns back to next(), back to peek() and eventually advance() is called
-    // which moves self.pos, and we skip that character
     fn read_boolean(&mut self) -> Result<(), LexError> {
         let target = if self.buffer[self.pos] == b't' {
             "true".as_bytes()
@@ -222,18 +232,12 @@ impl<'a> Lexer<'a> {
             "false".as_bytes()
         };
         super::read_keyword(self.buffer, &mut self.pos, target)?;
-        self.backup();
         Ok(())
     }
 
     fn read_null(&mut self) -> Result<(), LexError> {
         super::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
-        self.backup();
         Ok(())
-    }
-
-    fn backup(&mut self) {
-        self.pos -= 1;
     }
 }
 
@@ -241,62 +245,62 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
 
-    fn valid_numbers() -> Vec<(&'static [u8], LexerToken)> {
+    fn valid_numbers() -> Vec<(&'static [u8], Token)> {
         vec![
             (
                 b"0",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 1,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"-0",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 2,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"123",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 3,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"-45",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 3,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"123.45",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 6,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"1e10",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 4,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
             (
                 b"-0.1e-2",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 7,
-                    kind: LexerTokenKind::Number,
+                    kind: TokenKind::Number,
                 },
             ),
         ]
@@ -329,47 +333,47 @@ mod tests {
         ]
     }
 
-    fn valid_strings() -> Vec<(&'static [u8], LexerToken)> {
+    fn valid_strings() -> Vec<(&'static [u8], Token)> {
         vec![
             (
                 b"\"abc\"",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 5,
-                    kind: LexerTokenKind::String,
+                    kind: TokenKind::String,
                 },
             ),
             (
                 b"\"A\\uD83D\\uDE00B\"",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 16,
-                    kind: LexerTokenKind::String,
+                    kind: TokenKind::String,
                 },
             ),
             (
                 b"\"b\\n\"",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 5,
-                    kind: LexerTokenKind::String,
+                    kind: TokenKind::String,
                 },
             ),
             (
                 b"\"\\u00E9\"",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 8,
-                    kind: LexerTokenKind::String,
+                    kind: TokenKind::String,
                 },
             ),
             // 2-byte sequence same as (b"\"\xC3\xA9\"", 0, 4)
             (
                 "\"é\"".as_bytes(),
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 4,
-                    kind: LexerTokenKind::String,
+                    kind: TokenKind::String,
                 },
             ),
         ]
@@ -451,30 +455,30 @@ mod tests {
         ]
     }
 
-    fn valid_literals() -> Vec<(&'static [u8], LexerToken)> {
+    fn valid_literals() -> Vec<(&'static [u8], Token)> {
         vec![
             (
                 b"false",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 5,
-                    kind: LexerTokenKind::Boolean,
+                    kind: TokenKind::Boolean,
                 },
             ),
             (
                 b"true",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 4,
-                    kind: LexerTokenKind::Boolean,
+                    kind: TokenKind::Boolean,
                 },
             ),
             (
                 b"null",
-                LexerToken {
+                Token {
                     start_index: 0,
                     offset: 4,
-                    kind: LexerTokenKind::Null,
+                    kind: TokenKind::Null,
                 },
             ),
         ]
@@ -504,7 +508,7 @@ mod tests {
     fn test_valid_numbers() {
         for (buffer, token) in valid_numbers() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.next().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -514,7 +518,7 @@ mod tests {
     fn test_invalid_numbers() {
         for (buffer, error) in invalid_signs() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.next();
+            let result = lexer.lex();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -524,7 +528,7 @@ mod tests {
     fn test_valid_strings() {
         for (buffer, token) in valid_strings() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.next().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -534,7 +538,7 @@ mod tests {
     fn test_invalid_strings() {
         for (buffer, error) in invalid_strings() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.next();
+            let result = lexer.lex();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -544,7 +548,7 @@ mod tests {
     fn test_valid_literals() {
         for (buffer, token) in valid_literals() {
             let mut lexer = Lexer::new(buffer);
-            let t = lexer.next().unwrap().unwrap();
+            let t = lexer.lex().unwrap().unwrap();
 
             assert_eq!(t, token);
         }
@@ -554,7 +558,7 @@ mod tests {
     fn test_invalid_literals() {
         for (buffer, error) in invalid_literals() {
             let mut lexer = Lexer::new(buffer);
-            let result = lexer.next();
+            let result = lexer.lex();
 
             assert_eq!(result, Err(error), "failed to tokenize: {buffer:?}");
         }
@@ -564,7 +568,7 @@ mod tests {
     fn test_unexpected_character() {
         // @
         let mut lexer = Lexer::new(&[64]);
-        let result = lexer.next();
+        let result = lexer.lex();
         let error = LexError {
             kind: LexErrorKind::UnexpectedCharacter { byte: b'@' },
             pos: 0,

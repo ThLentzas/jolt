@@ -8,7 +8,7 @@ use crate::parsing::value::path::filter::{
 };
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
 use crate::parsing::value::Value;
-use crate::parsing::{self, escapes, utf8, STRING_LENGTH_LIMIT};
+use crate::parsing::{self, escapes, utf8};
 use std::cmp;
 use std::collections::HashMap;
 
@@ -620,61 +620,87 @@ impl<'a, 'r> Parser<'a, 'r> {
     fn parse_name(&mut self) -> Result<String, StringError> {
         let quote = self.buffer[self.pos];
         let len = self.buffer.len();
-        let mut name = String::new();
         self.pos += 1; // skip opening quote(' or ")
 
-        while self.pos < len && self.buffer[self.pos] != quote {
-            let current = self.buffer[self.pos];
-            match current {
-                c if c.is_ascii_control() => {
+        let end = parsing::find(&self.buffer[self.pos..], quote)
+            .map(|i| self.pos + i)
+            .ok_or(StringError {
+                kind: StringErrorKind::UnexpectedEndOf,
+                pos: len - 1,
+            })?;
+
+        let slice = &self.buffer[self.pos..end];
+        // calls iter.any() internally
+        if !slice.contains(&b'\\') {
+            // SAFETY: buffer represents &str
+            let val = unsafe { String::from_utf8_unchecked(Vec::from(slice)) };
+            if val.len() > parsing::STRING_LENGTH_LIMIT {
+                return Err(StringError {
+                    kind: StringErrorKind::LengthLimitExceeded {
+                        len: parsing::STRING_LENGTH_LIMIT,
+                    },
+                    // at the index of opening quote
+                    pos: self.pos - 1,
+                });
+            }
+            self.pos = end + 1;
+            return Ok(val);
+        }
+
+        let mut name = String::with_capacity(slice.len());
+        let mut i = 0;
+
+        while i < slice.len() {
+            let j = i;
+            while i < slice.len() && slice[i] != b'\\' && slice[i].is_ascii() {
+                if slice[i].is_ascii_control() {
                     return Err(StringError {
-                        kind: StringErrorKind::InvalidControlCharacter { byte: current },
-                        pos: self.pos,
+                        kind: StringErrorKind::InvalidControlCharacter { byte: slice[i] },
+                        // convert back to buffer index for error
+                        pos: self.pos + i,
                     });
                 }
-                c if !c.is_ascii() => {
-                    name.push(utf8::read_utf8_char(self.buffer, self.pos));
-                    self.pos += utf8::utf8_char_width(current);
-                }
+                i += 1;
+            }
+            name.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+            if i >= slice.len() {
+                break;
+            }
+            match slice[i] {
                 b'\\' => {
-                    let next = self.buffer.get(self.pos + 1);
+                    let next = slice.get(i + 1);
                     match next {
                         // single quotes must be escaped within single-quoted strings.
                         // json path specific, not part of standard json escapes.
                         Some(b'\'') if quote == b'\'' => {
                             name.push('\'');
                             // prevents the escaped quote from being treated as a closing delimiter
-                            self.pos += 2;
+                            i += 2;
                         }
                         _ => {
-                            escapes::check_escape_character(self.buffer, self.pos)?;
-                            name.push(escapes::map_escape_character(self.buffer, self.pos));
-                            self.pos += escapes::len(self.buffer, self.pos);
+                            escapes::check_escape_character(slice, i)?;
+                            name.push(escapes::map_escape_character(slice, i));
+                            i += escapes::len(slice, i);
                         }
                     }
                 }
                 _ => {
-                    name.push(current as char);
-                    self.pos += 1;
+                    name.push(utf8::read_utf8_char(slice, i));
+                    i += utf8::utf8_char_width(slice[i]);
                 }
             }
-            // prevent resource exhaustion
-            if name.len() > STRING_LENGTH_LIMIT {
+
+            if name.len() > parsing::STRING_LENGTH_LIMIT {
                 return Err(StringError {
                     kind: StringErrorKind::LengthLimitExceeded {
-                        len: STRING_LENGTH_LIMIT,
+                        len: parsing::STRING_LENGTH_LIMIT,
                     },
-                    pos: self.pos,
+                    // at the index of opening quote
+                    pos: self.pos - 1,
                 });
             }
         }
-        if self.pos == len {
-            return Err(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: self.pos - 1,
-            });
-        }
-        self.pos += 1; // skip closing quote
+        self.pos = end + 1;
         Ok(name)
     }
 

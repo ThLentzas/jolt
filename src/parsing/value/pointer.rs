@@ -4,6 +4,7 @@ use crate::parsing::utf8;
 use crate::parsing::value::error::{PointerError, PointerErrorKind};
 use std::iter::Peekable;
 use std::str::Chars;
+use crate::parsing;
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
 // where the token started based on the underline buffer for better error messaging
@@ -48,68 +49,92 @@ impl<'a> Pointer<'a> {
     //  delimiter. We never rescan or reprocess characters, each character in the input is examined
     //  exactly once. We handle cases like "~01" where "~0" becomes '~' and then "~1" becomes "/", "~01"
     //  is just "~1"
+    //
+    // the logic is the same as in Parser::parse_string(). Don't try to push a character at a time
+    // Scan ahead to find '/' or the end of string. Based on the index returned by position we create
+    // the slice and we work with the slice, not the whole buffer. We don't use self.buffer and
+    // self.pos; we have 'i', an index that helps us traverse the slice. Scan ahead until we find
+    // an escape character or a utf-8 one.
     pub(super) fn next(&mut self) -> Result<Option<RefToken>, StringError> {
         let len = self.buffer.len();
         if self.pos >= len {
             return Ok(None);
         }
 
-        let mut token = String::new();
-        // similar validation to Json String, the only difference is that because pointer is &str,
-        // it is guaranteed that any utf8 byte sequence we encounter is always valid so we can skip
-        // that step https://doc.rust-lang.org/std/primitive.str.html
-        let mut current = self.buffer[self.pos];
-        let mut start = self.pos;
-        while self.pos < len && current != b'/' {
-            match current {
-                c if c.is_ascii_control() => {
+        // find next occurrence of '/' or the end of the input
+        let end = parsing::find(&self.buffer[self.pos..], b'/')
+            .map(|i| self.pos + i)
+            .unwrap_or(len);
+
+        let slice = &self.buffer[self.pos..end];
+        let start = if slice.is_empty() {
+            // usize::MAX is a placeholder value for empty tokens that don't have a starting index
+            // path: //foo/bar
+            usize::MAX
+        } else {
+            self.pos
+        };
+
+        // Fast path: we never encounter anything that needs to be mapped, write the whole slice
+        // at once
+        if !slice.iter().any(|&b| matches!(b, b'\\' | b'~')) {
+            // SAFETY: buffer represents &str
+            let val = unsafe { String::from_utf8_unchecked(Vec::from(slice)) };
+            if val.len() > parsing::STRING_LENGTH_LIMIT {
+                return Err(StringError {
+                    kind: StringErrorKind::LengthLimitExceeded {
+                        len: parsing::STRING_LENGTH_LIMIT,
+                    },
+                    // at the index of opening quote
+                    pos: self.pos - 1,
+                });
+            }
+            self.pos = end + 1;
+            return Ok(Some(RefToken { val, pos: start }));
+        }
+
+        let mut i = 0;
+        let mut val = String::with_capacity(slice.len());
+
+        while i < slice.len() {
+            let j = i;
+            while i < slice.len() && slice[i] != b'\\' && slice[i] != b'~' && slice[i].is_ascii() {
+                if slice[i].is_ascii_control() {
                     return Err(StringError {
-                        kind: StringErrorKind::InvalidControlCharacter { byte: current },
-                        pos: self.pos,
+                        kind: StringErrorKind::InvalidControlCharacter { byte: slice[i] },
+                        // convert back to buffer index for error
+                        pos: self.pos + i,
                     });
                 }
+                i += 1;
+            }
+
+            val.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+            if i >= slice.len() {
+                break;
+            }
+
+            match slice[i] {
                 b'\\' => {
-                    escapes::check_escape_character(self.buffer, self.pos)?;
-                    let ch = escapes::map_escape_character(self.buffer, self.pos);
-                    self.pos += escapes::len(self.buffer, self.pos) - 1;
+                    escapes::check_escape_character(slice, i)?;
+                    let ch = escapes::map_escape_character(slice, i);
+                    i += escapes::len(slice, i) - 1;
                     if ch == '~' {
                         // check the next character in the buffer after the Unicode sequence mapped to `~`
-                        token.push(self.map_pointer_escape()?);
+                        val.push(map_pointer_escape(slice, &mut i, self.pos)?);
                     }
                 }
-                b'~' => token.push(self.map_pointer_escape()?),
-                c if c.is_ascii() => token.push(c as char),
-                _ => {
-                    token.push(utf8::read_utf8_char(self.buffer, self.pos));
-                    // without - 1 we would move i to the next character after the sequence then i += 1;
-                    // gets executed, and we skip a character
-                    self.pos += utf8::utf8_char_width(current) - 1;
+                b'~' => val.push(map_pointer_escape(slice, &mut i, self.pos)?),
+                b => {
+                    val.push(utf8::read_utf8_char(slice, i));
+                    i += utf8::utf8_char_width(b)- 1;
                 }
             }
-            self.pos += 1;
-            if self.pos < len {
-                current = self.buffer[self.pos];
-            }
+            i += 1;
         }
-
-        // at this point we either traversed the entire buffer or we encounter '/'; if we encountered '/'
-        // we need to consider the edge case below and move pos to the 1st character past '/' for subsequent
-        // calls to start from the correct position
-        // empty strings are allowed as keys in objects("//foo/bar"); for an
-        // empty string there is no starting index so we set pos to usize:MAX
-        // if start and pos are the at the same index and the current char is '/' it means we
-        // encountered an empty string as key
-        if current == b'/' {
-            start = if start == self.pos { usize::MAX } else { start };
-            self.pos += 1;
-        }
-
-        // We never check if token exceeds the StringValueLengthLimit because even if it does, no key
-        // will ever map to that and we will return None
-        Ok(Some(RefToken {
-            val: token,
-            pos: start,
-        }))
+        // move past '/'
+        self.pos = end + 1;
+        Ok(Some(RefToken { val, pos: start }))
     }
 
     pub(super) fn check_start(&mut self) -> Result<(), PointerError> {
@@ -122,78 +147,81 @@ impl<'a> Pointer<'a> {
                 pos: 0,
             });
         }
-        self.pos += 1; // move past '/' or '\'
 
-        // was an escape sequence but didn't map to '/'
-        if self.buffer[0] == b'\\' {
-            if let Err(e) = escapes::check_escape_character(self.buffer, 0) {
-                return Err(PointerError::from(StringError::from(e)));
-            }
-            if escapes::map_escape_character(self.buffer, 0) != '/' {
-                return Err(PointerError {
-                    kind: PointerErrorKind::InvalidPointerSyntax,
-                    pos: 0,
-                });
-            }
-            self.pos += 5; // move past the sequence that mapped to '\'
+        if self.buffer[0] == b'/' {
+            self.pos += 1; // move past '/'
+            return Ok(());
         }
+
+        // was '\'
+        if let Err(e) = escapes::check_escape_character(self.buffer, 0) {
+            return Err(PointerError::from(StringError::from(e)));
+        }
+        if escapes::map_escape_character(self.buffer, self.pos) != '/' {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidPointerSyntax,
+                pos: 0,
+            });
+        }
+        self.pos += 6; // move past the sequence that mapped to '\'
+
         Ok(())
-    }
-
-    // When this method gets called buffer[pos] is at '~', we only need to check the next character
-    // This method is only used by our pointer, and we can mutate the pos index. In escapes and utf8,
-    // we don't mutate the index we just advance after the method returns accordingly
-    fn map_pointer_escape(&mut self) -> Result<char, EscapeError> {
-        // advance the pointer of the buffer to the next character
-        match self.buffer.get(self.pos + 1) {
-            Some(b'0') => {
-                self.pos += 1;
-                Ok('~')
-            }
-            Some(b'1') => {
-                self.pos += 1;
-                Ok('/')
-            }
-            Some(b'\\') => {
-                // an escape sequence that could map to '0' or '1'
-                escapes::check_escape_character(self.buffer, self.pos)?;
-                let ch = escapes::map_escape_character(self.buffer, self.pos + 1);
-                match ch {
-                    '0' => {
-                        self.pos += 6;
-                        Ok('~')
-                    }
-                    '1' => {
-                        self.pos += 6;
-                        Ok('/')
-                    }
-                    _ => Err(EscapeError {
-                        kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\' },
-                        pos: self.pos + 1,
-                    }),
-                }
-            }
-            // ~8
-            Some(b) => Err(EscapeError {
-                kind: EscapeErrorKind::UnknownEscapedCharacter { byte: *b },
-                pos: self.pos + 1,
-            }),
-            // ~ unpaired
-            None => Err(EscapeError {
-                kind: EscapeErrorKind::UnexpectedEof,
-                pos: self.pos,
-            }),
-        }
     }
 }
 
-// This method does not depend on the state of the pointer
-pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, PointerError> {
-    let first = token.val.chars().nth(0);
-    let second = token.val.chars().nth(1);
+// When this method gets called slice[i] is at '~', we only need to check the next character
+fn map_pointer_escape(slice: &[u8], i: &mut usize, pos: usize) -> Result<char, EscapeError> {
+    // advance the pointer of the buffer to the next character
+    match slice.get(*i + 1) {
+        Some(b'0') => {
+            *i += 1;
+            Ok('~')
+        }
+        Some(b'1') => {
+            *i += 1;
+            Ok('/')
+        }
+        Some(b'\\') => {
+            // an escape sequence that could map to '0' or '1'
+            escapes::check_escape_character(slice, *i + 1)?;
+            let ch = escapes::map_escape_character(slice, *i + 1);
+            match ch {
+                '0' => {
+                    *i += 6;
+                    Ok('~')
+                }
+                '1' => {
+                    *i += 6;
+                    Ok('/')
+                }
+                _ => Err(EscapeError {
+                    kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\' },
+                    pos: pos + *i + 1,
+                }),
+            }
+        }
+        // ~8
+        Some(b) => Err(EscapeError {
+            kind: EscapeErrorKind::UnknownEscapedCharacter { byte: *b },
+            pos: pos + *i + 1,
+        }),
+        // ~ unpaired
+        None => Err(EscapeError {
+            kind: EscapeErrorKind::UnexpectedEof,
+            pos: pos + *i,
+        }),
+    }
+}
 
-    match (first, second) {
-        (Some('+') | Some('-'), Some('0'..='9')) => {
+pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, PointerError> {
+    // empty token called on array is treated as None
+    if token.val.is_empty() {
+        return Ok(None);
+    }
+
+    let buffer = token.val.as_bytes();
+    match buffer {
+        [b'+' | b'-', b'0'..=b'9', ..] => {
             return Err(PointerError {
                 kind: PointerErrorKind::InvalidIndex {
                     message: "index can not be prefixed with a sign",
@@ -201,7 +229,7 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
                 pos: token.pos,
             });
         }
-        (Some('0'), Some('0'..='9')) => {
+        [b'0', b'0'..=b'9', ..] => {
             return Err(PointerError {
                 kind: PointerErrorKind::InvalidIndex {
                     message: "leading zeros are not allowed",
@@ -209,9 +237,7 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
                 pos: token.pos,
             });
         }
-        (Some('-'), None) => return Ok(None),
-        // if the token val does not start with a digit, it is invalid
-        (Some(d), _) if !d.is_ascii_digit() => {
+        [first, ..] if !first.is_ascii_digit() => {
             return Err(PointerError {
                 kind: PointerErrorKind::InvalidIndex {
                     message: "invalid array index",
@@ -251,12 +277,14 @@ pub(super) fn check_array_index_strict(token: &RefToken) -> Result<usize, Pointe
                 pos: token.pos,
             });
         }
-        (Some('-'), None) => return Err(PointerError {
-            kind: PointerErrorKind::InvalidIndex {
-                message: "invalid array index",
-            },
-            pos: token.pos,
-        }),
+        (Some('-'), None) => {
+            return Err(PointerError {
+                kind: PointerErrorKind::InvalidIndex {
+                    message: "invalid array index",
+                },
+                pos: token.pos,
+            });
+        }
         // if the token val does not start with a digit, it is invalid
         (Some(d), _) if !d.is_ascii_digit() => {
             return Err(PointerError {
