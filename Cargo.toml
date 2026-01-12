@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 indexmap = "2.12.1"
 bigdecimal = { version = "0.4.8", optional = true }
+memchr = "2.7.6"
 
 [features]
 arbitrary_precision = ["bigdecimal"]

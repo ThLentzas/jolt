@@ -3,6 +3,9 @@ use crate::parsing::utf8;
 use crate::parsing::value::path::filter::nfa::{Nfa, NfaBuilder};
 use crate::parsing::value::path::filter::table;
 
+const QUANTIFIER_LIMIT: u8 = 100;
+const MAX_NODES: u16 = 10_000;
+
 pub(super) fn full_match(input: &str, pattern: &str) -> bool {
     let mut parser = Parser::new(pattern.as_bytes());
     if let Err(_) = parser.parse() {
@@ -322,7 +325,7 @@ impl<'a> Parser<'a> {
 
     fn parse(&mut self) -> Result<(), RegexError> {
         if self.buffer.is_empty() {
-            self.push_node(Regex::Empty);
+            self.push_node(Regex::Empty)?;
             return Ok(());
         }
         self.parse_union()?;
@@ -338,7 +341,7 @@ impl<'a> Parser<'a> {
         while self.buffer.get(self.pos) == Some(&b'|') {
             self.consume(1);
             let rhs = self.parse_concat()?;
-            lhs = self.push_node(Regex::Union(lhs, rhs));
+            lhs = self.push_node(Regex::Union(lhs, rhs))?;
         }
         Ok(lhs)
     }
@@ -372,7 +375,7 @@ impl<'a> Parser<'a> {
                 Some(b'|') | Some(b')') | None => break,
                 _ => {
                     let rhs = self.parse_quantifier()?;
-                    lhs = self.push_node(Regex::Concat(lhs, rhs));
+                    lhs = self.push_node(Regex::Concat(lhs, rhs))?;
                 }
             }
         }
@@ -386,7 +389,7 @@ impl<'a> Parser<'a> {
             Some(b'*') => {
                 self.consume(1);
                 let node = Regex::Star(atom_idx);
-                Ok(self.push_node(node))
+                Ok(self.push_node(node)?)
             }
             // initially would map 'a+' to aa* and 'a?' to a|ε but it is not efficient when compiling
             // tried to keep as close to formal definition but would have performance issues when
@@ -410,11 +413,11 @@ impl<'a> Parser<'a> {
             // }
             Some(b'+') => {
                 self.consume(1);
-                Ok(self.push_node(Regex::Plus(atom_idx)))
+                Ok(self.push_node(Regex::Plus(atom_idx))?)
             }
             Some(b'?') => {
                 self.consume(1);
-                Ok(self.push_node(Regex::Question(atom_idx)))
+                Ok(self.push_node(Regex::Question(atom_idx))?)
             }
             Some(b'{') => {
                 self.consume(1);
@@ -458,7 +461,6 @@ impl<'a> Parser<'a> {
     //  "aaa" which is just connecting the indices of "aa" and 'a'
     //
     fn expand_bounded(&mut self, atom_idx: usize, min: u8, max: u8) -> Result<usize, RegexError> {
-        // toDo: set bounds around 100 for min/max to prevent resource exhaustion
         let mut tmp = Vec::new();
         for _ in 0..min {
             tmp.push(atom_idx);
@@ -468,7 +470,7 @@ impl<'a> Parser<'a> {
         // Case: a{0,4}, a?a?a?a?
         //  the mandatory part, min, is 0 in this case, which means delta is max.
         if delta > 0 {
-            let optional_idx = self.push_node(Regex::Question(atom_idx));
+            let optional_idx = self.push_node(Regex::Question(atom_idx))?;
 
             for _ in 0..delta {
                 tmp.push(optional_idx);
@@ -484,7 +486,7 @@ impl<'a> Parser<'a> {
             // because my loop condition was for j in 1..tmp.len() so i was looking at indices
             // we want the value at the given index; the most sane solution is to iterate over the
             // values instead
-            i = self.push_node(Regex::Concat(i, node));
+            i = self.push_node(Regex::Concat(i, node))?;
         }
         Ok(i)
     }
@@ -492,8 +494,7 @@ impl<'a> Parser<'a> {
     // a{2,} is nothing but a{2}a*
     // it means at least 2
     fn expand_unbounded(&mut self, atom_idx: usize, min: u8) -> Result<usize, RegexError> {
-        // toDo: set bounds for min/max to prevent resource exhaustion
-        let star_idx = self.push_node(Regex::Star(atom_idx));
+        let star_idx = self.push_node(Regex::Star(atom_idx))?;
         // Case: a{0,} is just a*
         if min == 0 {
             return Ok(star_idx);
@@ -501,14 +502,23 @@ impl<'a> Parser<'a> {
 
         let mut i = atom_idx;
         for _ in 1..min {
-            i = self.push_node(Regex::Concat(i, atom_idx));
+            i = self.push_node(Regex::Concat(i, atom_idx))?;
         }
 
-        Ok(self.push_node(Regex::Concat(i, star_idx)))
+        Ok(self.push_node(Regex::Concat(i, star_idx))?)
     }
 
     // parses a range quantifier
     // we return min, Optional<max>
+    //
+    // In order to prevent resource exhaustion we need to set a limit to the quantifier value.
+    // a{2, 20000},
+    // a{100},
+    // ((a{100}){100}){100} -> 1_000_000 nodes
+    //
+    // The max value we can have for a quantifier is 100, anything above results to an error.
+    // Cases like ((a{100}){100}){100} are handled by keep tracking of the number of nodes in the
+    // tree; when that number exceeds 10_000 we return an error. look at push_node()
     fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexError> {
         match self.buffer.get(self.pos) {
             Some(b) if !b.is_ascii_digit() => Err(RegexError {
@@ -517,7 +527,14 @@ impl<'a> Parser<'a> {
             }),
             Some(_) => {
                 // we can infer the type here, we don't need to be explicit and call u8::atoi()
+                let start = self.pos;
                 let min = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                if min > QUANTIFIER_LIMIT {
+                    return Err(RegexError {
+                        kind: RegexErrorKind::QuantifierLimitExceeded(QUANTIFIER_LIMIT),
+                        pos: start,
+                    });
+                }
                 match self.buffer.get(self.pos) {
                     Some(b',') => {
                         self.consume(1);
@@ -532,7 +549,16 @@ impl<'a> Parser<'a> {
                                 pos: self.pos,
                             }),
                             Some(_) => {
+                                let start = self.pos;
                                 let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                                if max > QUANTIFIER_LIMIT {
+                                    return Err(RegexError {
+                                        kind: RegexErrorKind::QuantifierLimitExceeded(
+                                            QUANTIFIER_LIMIT,
+                                        ),
+                                        pos: start,
+                                    });
+                                }
                                 match self.buffer.get(self.pos) {
                                     Some(b'}') => {
                                         self.consume(1);
@@ -628,7 +654,7 @@ impl<'a> Parser<'a> {
             Some(b'[') | Some(b'.') | Some(b'\\') => {
                 let class = self.parse_class()?;
                 let id = self.push_class(class);
-                Ok(self.push_node(Regex::Atom(id)))
+                Ok(self.push_node(Regex::Atom(id))?)
             }
             Some(b)
                 if matches!(
@@ -644,7 +670,7 @@ impl<'a> Parser<'a> {
             Some(_) => {
                 let char = self.parse_char();
                 let id = self.push_class(CharClass::Literal(char));
-                Ok(self.push_node(Regex::Atom(id)))
+                Ok(self.push_node(Regex::Atom(id))?)
             }
             None => Err(RegexError {
                 kind: RegexErrorKind::UnexpectedEof,
@@ -1006,9 +1032,27 @@ impl<'a> Parser<'a> {
         Ok(category)
     }
 
-    fn push_node(&mut self, node: Regex) -> usize {
+    // In order to prevent resource exhaustion, the maximum number of nodes in the AST is 10_000.
+    //
+    // expr: ab
+    //
+    // a: Regex::Atom(0) // 0 is the index of 'a' in classes
+    // b: Regex::Atom(1) // 1 is the index of 'b' in classes
+    // Concat(a, b):  Regex::Concat(0, 1) // 0 refers to nodes[0](Regex::Atom(0)), 1 refers to
+    // nodes[1](Regex::Atom(1))
+    //
+    //    ab
+    //  /    \
+    // a      b
+    fn push_node(&mut self, node: Regex) -> Result<usize, RegexError> {
+        if self.nodes.len() >= MAX_NODES as usize {
+            return Err(RegexError {
+                kind: RegexErrorKind::ComplexityLimitExceeded(MAX_NODES),
+                pos: self.pos,
+            });
+        }
         self.nodes.push(node);
-        self.nodes.len() - 1
+        Ok(self.nodes.len() - 1)
     }
 
     fn push_class(&mut self, class: CharClass) -> usize {
@@ -1054,6 +1098,8 @@ enum RegexErrorKind {
     InvalidCsRange,
     // parsing ints for range quantifiers
     OutOfRange,
+    QuantifierLimitExceeded(u8),
+    ComplexityLimitExceeded(u16),
     UnexpectedCharacter(u8),
     UnexpectedEof,
 }
@@ -1275,11 +1321,11 @@ mod test {
 
     fn valid_quantifiers() -> Vec<(&'static str, Vec<Regex>)> {
         vec![
-            // ("a*", vec![Regex::Atom(0), Regex::Star(0)]),
-            // // expands to aa*
-            // ("a+", vec![Regex::Atom(0), Regex::Plus(0)]),
-            // // expands to a|ε
-            // ("a?", vec![Regex::Atom(0), Regex::Question(0)]),
+            ("a*", vec![Regex::Atom(0), Regex::Star(0)]),
+            // expands to aa*
+            ("a+", vec![Regex::Atom(0), Regex::Plus(0)]),
+            // expands to a|ε
+            ("a?", vec![Regex::Atom(0), Regex::Question(0)]),
             (
                 "a{3,5}",
                 vec![
@@ -1297,59 +1343,59 @@ mod test {
                     Regex::Concat(4, 1),
                 ],
             ),
-        //     // a?a?a?a?
-        //     (
-        //         "a{0,4}",
-        //         vec![
-        //             // creates 'a' -> returns 0
-        //             Regex::Atom(0),
-        //             // creates a? -> returns 1
-        //             Regex::Question(0),
-        //             // creates a?a? -> returns 3
-        //             Regex::Concat(1, 1),
-        //             // creates a?a?a? -> returns 4
-        //             Regex::Concat(2, 1),
-        //             // creates a?a?a?a? -> returns 5
-        //             Regex::Concat(3, 1),
-        //         ],
-        //     ),
-        //     (
-        //         "a{3}",
-        //         vec![
-        //             // creates 'a' -> returns 0
-        //             Regex::Atom(0),
-        //             // creates aa -> returns 1
-        //             Regex::Concat(0, 0),
-        //             // creates aaa
-        //             Regex::Concat(1, 0),
-        //         ],
-        //     ),
-        //     // expands to aaaa*
-        //     (
-        //         "a{3,}",
-        //         vec![
-        //             // creates 'a' -> returns 0
-        //             Regex::Atom(0),
-        //             // creates a* -> returns 1
-        //             Regex::Star(0),
-        //             // creates aa -> returns 2
-        //             Regex::Concat(0, 0),
-        //             // creates aaa -> returns 3
-        //             Regex::Concat(2, 0),
-        //             // creates aaaa*
-        //             Regex::Concat(3, 1),
-        //         ],
-        //     ),
-        //     // is just a*
-        //     (
-        //         "a{0,}",
-        //         vec![
-        //             // creates 'a' -> returns 0
-        //             Regex::Atom(0),
-        //             // creates a* -> returns 1
-        //             Regex::Star(0),
-        //         ],
-        //     ),
+            //     // a?a?a?a?
+            //     (
+            //         "a{0,4}",
+            //         vec![
+            //             // creates 'a' -> returns 0
+            //             Regex::Atom(0),
+            //             // creates a? -> returns 1
+            //             Regex::Question(0),
+            //             // creates a?a? -> returns 3
+            //             Regex::Concat(1, 1),
+            //             // creates a?a?a? -> returns 4
+            //             Regex::Concat(2, 1),
+            //             // creates a?a?a?a? -> returns 5
+            //             Regex::Concat(3, 1),
+            //         ],
+            //     ),
+            //     (
+            //         "a{3}",
+            //         vec![
+            //             // creates 'a' -> returns 0
+            //             Regex::Atom(0),
+            //             // creates aa -> returns 1
+            //             Regex::Concat(0, 0),
+            //             // creates aaa
+            //             Regex::Concat(1, 0),
+            //         ],
+            //     ),
+            //     // expands to aaaa*
+            //     (
+            //         "a{3,}",
+            //         vec![
+            //             // creates 'a' -> returns 0
+            //             Regex::Atom(0),
+            //             // creates a* -> returns 1
+            //             Regex::Star(0),
+            //             // creates aa -> returns 2
+            //             Regex::Concat(0, 0),
+            //             // creates aaa -> returns 3
+            //             Regex::Concat(2, 0),
+            //             // creates aaaa*
+            //             Regex::Concat(3, 1),
+            //         ],
+            //     ),
+            //     // is just a*
+            //     (
+            //         "a{0,}",
+            //         vec![
+            //             // creates 'a' -> returns 0
+            //             Regex::Atom(0),
+            //             // creates a* -> returns 1
+            //             Regex::Star(0),
+            //         ],
+            //     ),
         ]
     }
 

@@ -36,6 +36,7 @@ impl Value {
     /// Returns true if `Value` is an `Object`, false otherwise.
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!({
     ///     "foo": "bar"
     /// });
@@ -49,6 +50,7 @@ impl Value {
     /// Returns true if `Value` is an `Array`, false otherwise.
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(["foo", "bar"]);
     ///
     /// assert!(val.is_array());
@@ -61,6 +63,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(3);
     ///
     /// assert!(val.is_number());
@@ -73,6 +76,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!("foo");
     ///
     /// assert!(val.is_string());
@@ -85,6 +89,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(false);
     ///
     /// assert!(val.is_bool());
@@ -97,6 +102,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(null);
     ///
     /// assert!(val.is_null());
@@ -109,6 +115,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -128,6 +135,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let mut val = json!({
     ///     "name": "Alice"
     /// });
@@ -147,6 +155,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(["foo", "bar"]);
     /// let arr = val.as_array().unwrap();
     ///
@@ -163,6 +172,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let mut val = json!(["foo"]);
     /// let arr = val.as_array_mut().unwrap();
     /// arr.push(json!("bar"));
@@ -180,6 +190,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(42);
     /// let num = val.as_number().unwrap();
     ///
@@ -197,6 +208,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!("foo");
     ///
     /// assert_eq!(val.as_str(), Some("foo"));
@@ -212,11 +224,12 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(true);
     ///
     /// assert_eq!(val.as_bool(), Some(true));
     /// ```
-    pub fn as_boolean(&self) -> Option<bool> {
+    pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Boolean(b) => Some(*b),
             _ => None,
@@ -227,9 +240,10 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!(null);
     ///
-    /// assert_eq!(val.as_bool(), Some());
+    /// assert_eq!(val.as_null(), Some(()));
     /// ```
     pub fn as_null(&self) -> Option<()> {
         match self {
@@ -244,6 +258,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let val = json!({
     ///     "name": "Alice",
     ///     "foo": ["bar", "baz"]
@@ -267,7 +282,8 @@ impl Value {
     ///
     /// # Examples
     /// ```
-    /// let val = json!({
+    /// # use jolt::json;
+    /// let mut val = json!({
     ///     "name": "Alice",
     ///     "foo": ["bar", "baz"]
     /// });
@@ -275,10 +291,11 @@ impl Value {
     ///
     /// assert_eq!(val.get("name"), Some(&json!("Bob")));
     ///
-    /// let v = val.get_mut("foo").unwrap();
-    /// v.as_array_mut().unwrap().push(json!(5))
+    /// let mut v = val.get_mut("foo").unwrap();
+    /// v.as_array_mut().unwrap().push(json!(5));
+    /// let arr = val.get("foo").unwrap().as_array().unwrap();
     ///
-    /// assert_eq!(v.get("foo").len(), 3);
+    /// assert_eq!(arr.len(), 3);
     /// ```
     pub fn get_mut<I: IndexMut>(&mut self, index: I) -> Option<&mut Value> {
         index.index_into(self)
@@ -289,6 +306,7 @@ impl Value {
     ///
     /// # Examples
     /// ```
+    /// # use jolt::json;
     /// let mut val = json!("foo");
     /// let v = val.take();
     ///
@@ -325,12 +343,13 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let root = json!({
     ///     "foo": ["bar", "baz"]
     /// });
-    /// let value = root.pointer("/foo/1").unwrap();
+    /// let val = root.pointer("/foo/1").unwrap();
     ///
-    /// assert_eq!(value, &json!("baz"));
+    /// assert_eq!(val, Some(&json!("baz")));
     /// ```
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
@@ -379,16 +398,17 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let mut root = json!({
     ///     "foo": ["bar", "baz"]
     /// });
-    /// let value = root.pointer_mut("/foo/1").unwrap();
+    /// let val = root.pointer_mut("/foo/1").unwrap();
     ///
-    /// assert_eq!(value, &json!("baz"));
+    /// assert_eq!(val, Some(&mut json!("baz")));
     ///
-    /// *value = json!("bar");
+    /// *val.unwrap() = json!("bar");
     ///
-    /// assert_eq!(root.pointer("/foo/1").unwrap(), &json!("bar"));
+    /// assert_eq!(root.pointer("/foo/1").unwrap(), Some(&json!("bar")));
     /// ```
     pub fn pointer_mut(&mut self, pointer: &str) -> Result<Option<&mut Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
@@ -440,13 +460,14 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
     /// });
     /// let nodelist = root.select("$.name").unwrap();
     ///
-    /// assert_eq!(nodelist[0].path, "$.name");
+    /// assert_eq!(nodelist[0].path, "$['name']"); // normalized
     /// assert_eq!(nodelist[0].val, &json!("Alice"));
     /// ```
     pub fn select(&self, query: &str) -> Result<Vec<Node<'_>>, PathError> {
@@ -465,13 +486,14 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
     /// });
-    /// let paths = root.select("$.name").unwrap();
+    /// let paths = root.select_as_npaths("$.name").unwrap();
     ///
-    /// assert_eq!(paths[0], "$.name");
+    /// assert_eq!(paths[0], "$['name']"); // normalized
     /// ```
     pub fn select_as_npaths(&self, path_expr: &str) -> Result<Vec<String>, PathError> {
         let mut query = Parser::new(path_expr.as_bytes(), self);
@@ -491,11 +513,12 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
     /// });
-    /// let values = root.select("$.name").unwrap();
+    /// let values = root.select_as_values("$.name").unwrap();
     ///
     /// assert_eq!(values[0], &json!("Alice"));
     /// ```
@@ -518,17 +541,18 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let mut root = json!({
     ///     "name": "Alice",
     ///     "age": 30
     ///     });
-    /// root.try_modify(r#"[
+    /// root.modify(r#"[
     ///     {"op": "replace", "path": "/name", "value": "Bob"},
     ///     {"op": "add", "path": "/city", "value": "NYC"}
     /// ]"#).unwrap();
     ///
-    /// assert_eq!(root.pointer("/name").unwrap(), &json!("Bob"));
-    /// assert_eq!(root.pointer("/city").unwrap(), &json!("NYC"));
+    /// assert_eq!(root.pointer("/name").unwrap(), Some(&json!("Bob")));
+    /// assert_eq!(root.pointer("/city").unwrap(), Some(&json!("NYC")));
     ///
     ///  // When any operation fails, previous changes are kept:
     ///
@@ -540,7 +564,7 @@ impl Value {
     ///     {"op": "replace", "path": "/invalid", "value": "fails"}
     /// ]"#);
     ///
-    /// assert_eq!(root.pointer("/age").unwrap(), &json!(30)); // first op succeeded
+    /// assert_eq!(root.pointer("/age").unwrap(), Some(&json!(30))); // first op succeeded
     /// ```
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
@@ -559,6 +583,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
+    /// # use jolt::json;
     /// let mut root = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -568,8 +593,8 @@ impl Value {
     ///     {"op": "add", "path": "/city", "value": "NYC"}
     /// ]"#).unwrap();
     ///
-    /// assert_eq!(root.pointer("/name").unwrap(), &json!("Bob"));
-    /// assert_eq!(root.pointer("/city").unwrap(), &json!("NYC"));
+    /// assert_eq!(root.pointer("/name").unwrap(), Some(&json!("Bob")));
+    /// assert_eq!(root.pointer("/city").unwrap(), Some(&json!("NYC")));
     ///
     /// // When any operation fails, all changes are rolled back:
     ///
@@ -700,24 +725,24 @@ impl IndexMut for &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::macros::json;
+    use crate::json;
 
     // path, source, result
     fn valid_pointer_paths() -> Vec<(&'static str, Value, Option<Value>)> {
         vec![
-            // (
-            //     "",
-            //     json!(
-            //         {
-            //             "foo": "bar"
-            //         }
-            //     ),
-            //     Some(json!(
-            //         {
-            //             "foo": "bar"
-            //         }
-            //     )),
-            // ),
+            (
+                "",
+                json!(
+                    {
+                        "foo": "bar"
+                    }
+                ),
+                Some(json!(
+                    {
+                        "foo": "bar"
+                    }
+                )),
+            ),
             (
                 "/foo/1",
                 json!(
@@ -727,98 +752,98 @@ mod tests {
                 ),
                 Some(json!(null)),
             ),
-            // (
-            //     "//1",
-            //     json!(
-            //         {
-            //             "": [false, null]
-            //         }
-            //     ),
-            //     Some(json!(null)),
-            // ),
-            // (
-            //     "/foo//0",
-            //     json!(
-            //     {
-            //         "foo": {
-            //             "": [true]
-            //         }
-            //     }),
-            //     Some(json!(true)),
-            // ),
-            // // Rust defaults integer literals to i32
-            // (
-            //     "/foo~1bar/baz",
-            //     json!(
-            //     {
-            //         "foo/bar": {
-            //             "baz":  50000
-            //         }
-            //     }),
-            //     Some(json!(50000)),
-            // ),
-            // (
-            //     "/foo~0bar/baz",
-            //     json!(
-            //     {
-            //         "foo~bar": {
-            //             "baz": ":)"
-            //         }
-            //     }),
-            //     Some(json!(":)")),
-            // ),
-            // (
-            //     "/foo~\\u0030bar/baz",
-            //     json!(
-            //     {
-            //         "foo~bar": {
-            //             "baz": ":)"
-            //         }
-            //     }),
-            //     Some(json!(":)")),
-            // ),
-            // (
-            //     "/foo\\u007e0bar/baz",
-            //     json!(
-            //     {
-            //         "foo~bar": {
-            //             "baz": ":)"
-            //         }
-            //     }),
-            //     Some(json!(":)")),
-            // ),
-            // (
-            //     "/foo\\u007e\\u0030bar/baz",
-            //     json!(
-            //     {
-            //         "foo~bar": {
-            //             "baz": ":)"
-            //         }
-            //     }),
-            //     Some(json!(":)")),
-            // ),
-            // // index out of bounds
-            // ("/2", json!([2]), None),
-            // // unparsable index starting with a digit leads to None
-            // ("/2e", json!([2]), None),
-            // // '-' as array index always returns none according to spec
-            // ("/-", json!([2, 3]), None),
-            // (
-            //     "/é",
-            //     json!(
-            //     {
-            //         "é": false
-            //     }),
-            //     Some(json!(false)),
-            // ),
-            // (
-            //     "/1",
-            //     json!(
-            //     {
-            //         "foo": "bar"
-            //     }),
-            //     None,
-            // ),
+            (
+                "//1",
+                json!(
+                    {
+                        "": [false, null]
+                    }
+                ),
+                Some(json!(null)),
+            ),
+            (
+                "/foo//0",
+                json!(
+                {
+                    "foo": {
+                        "": [true]
+                    }
+                }),
+                Some(json!(true)),
+            ),
+            // Rust defaults integer literals to i32
+            (
+                "/foo~1bar/baz",
+                json!(
+                {
+                    "foo/bar": {
+                        "baz":  50000
+                    }
+                }),
+                Some(json!(50000)),
+            ),
+            (
+                "/foo~0bar/baz",
+                json!(
+                {
+                    "foo~bar": {
+                        "baz": ":)"
+                    }
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo~\\u0030bar/baz",
+                json!(
+                {
+                    "foo~bar": {
+                        "baz": ":)"
+                    }
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo\\u007e0bar/baz",
+                json!(
+                {
+                    "foo~bar": {
+                        "baz": ":)"
+                    }
+                }),
+                Some(json!(":)")),
+            ),
+            (
+                "/foo\\u007e\\u0030bar/baz",
+                json!(
+                {
+                    "foo~bar": {
+                        "baz": ":)"
+                    }
+                }),
+                Some(json!(":)")),
+            ),
+            // index out of bounds
+            ("/2", json!([2]), None),
+            // unparsable index starting with a digit leads to None
+            ("/2e", json!([2]), None),
+            // '-' as array index always returns none according to spec
+            ("/-", json!([2, 3]), None),
+            (
+                "/é",
+                json!(
+                {
+                    "é": false
+                }),
+                Some(json!(false)),
+            ),
+            (
+                "/1",
+                json!(
+                {
+                    "foo": "bar"
+                }),
+                None,
+            ),
         ]
     }
 

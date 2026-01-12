@@ -443,7 +443,7 @@ fn to_kind(val: &str) -> Option<OpKind> {
 #[cfg(test)]
 mod tests {
     use crate::Value;
-    use crate::macros::json;
+    use crate::json;
     use crate::parsing::value::error::{OpError, PatchError};
     use crate::parsing::value::patch::Operation;
 

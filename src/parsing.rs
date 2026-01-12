@@ -1,5 +1,6 @@
 use crate::parsing::error::{KeywordError, KeywordErrorKind};
 use crate::parsing::{error::ParseError, parser::Parser, value::Value};
+use memchr;
 
 pub(super) mod error;
 mod escapes;
@@ -79,22 +80,37 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
 // an edge case in path when we have to scan for closing single quote '\''. If we used a function we
 // would miss it in a case where it is escaped, it won't match in matches and return its index in
 // the escape sequence. 'foo\'bar', find() should return 10 not 5
-//
-// can be optimized further with memchar2: https://docs.rs/memchr/latest/memchr/fn.memchr2.html
-fn find<P>(buffer: &[u8], delimiter: u8, p: P) -> Option<usize>
+fn find<P>(haystack: &[u8], needle: u8, predicate: P) -> Option<usize>
 where
     P: Fn(u8) -> bool,
 {
-    let mut i = 0;
-    let len = buffer.len();
-    while i < len {
-        match buffer[i] {
-            b'\\' if i + 1 < len && p(buffer[i + 1]) => {
-                // skip escape sequence, we don't care at this point if sequence is valid
-                i += 2;
+    let mut pos = 0;
+    let len = haystack.len();
+    while pos < len {
+        // be aware that memchr2 returns the position relative to the slice not the entire buffer
+        // so we need to adjust and get the absolute position when we index into the buffer
+        //
+        // if memchr2() returns the index of '\', we peek to determine what decision to make.
+        // Case 1: out of bounds -> incomplete sequence -> None
+        // Case 2: not a valid escape, just skip '\', if the needle is found later, our logic will
+        // return an UnknownCharacter for the invalid sequence rathen than Eof
+        // Case 3: valid escape, skip it
+        match memchr::memchr2(b'\\', needle, &haystack[pos..]) {
+            Some(p) if (haystack[pos + p]) == b'\\' => {
+                // incomplete escape
+                if pos + p + 1 >= len {
+                    return None;
+                }
+                // invalid escape
+                if !predicate(haystack[pos + p + 1]) {
+                    pos = p + 1;
+                } else {
+                    // valid escape, skip it
+                    pos = pos + p + 2;
+                }
             }
-            b if b == delimiter => return Some(i),
-            _ => i += 1,
+            Some(p) => return Some(pos + p),
+            None => break,
         }
     }
     None

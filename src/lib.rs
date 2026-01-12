@@ -16,6 +16,7 @@ pub fn from_str(text: &str) -> Result<Value, ParseError> {
 }
 
 // fs::read() pre-allocates the vector by calling with_capacity based on the size of the file
+// toDo: maybe remove this? review all comments check the std thing
 pub fn from_file(path: &str) -> Result<Value, FileParseError> {
     let buffer = fs::read(path).map_err(|e| FileParseError::IoError(e))?;
     parsing::parse(&buffer).map_err(|e| FileParseError::ParserError(e))

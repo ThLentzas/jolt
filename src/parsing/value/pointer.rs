@@ -237,6 +237,7 @@ pub(super) fn check_array_index(token: &RefToken) -> Result<Option<usize>, Point
                 pos: token.pos,
             });
         }
+        [b'-'] => return Ok(None),
         [first, ..] if !first.is_ascii_digit() => {
             return Err(PointerError {
                 kind: PointerErrorKind::InvalidIndex {
@@ -463,7 +464,7 @@ fn parse_index(chars: &mut Peekable<Chars>, path: &mut String) {
 
 #[cfg(test)]
 mod test {
-    use crate::macros::json;
+    use crate::json;
     use crate::parsing::error::{StringError, StringErrorKind};
     use crate::parsing::value::error::{PointerError, PointerErrorKind};
 

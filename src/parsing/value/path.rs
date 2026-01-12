@@ -1443,7 +1443,7 @@ pub(super) fn normalize_index(index: i64, len: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::macros::json;
+    use crate::json;
     use crate::parsing::value::IndexMap;
     use crate::parsing::value::path::filter::function::FnExprError;
     use crate::parsing::value::path::filter::function::FnType;

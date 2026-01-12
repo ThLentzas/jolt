@@ -49,9 +49,9 @@ There are 3 ways you can extract a value from a JSON document:
             }
         }"#;
     
-        let val = jolt::from_str(json).unwrap();
-        let book = val.pointer("/store/books/0");
-        assert_eq!(*book, Value::from("A"));
+        let val = jolt::from_str(json).unwrap()?;
+        let book = val.pointer("/store/books/0")?;
+        assert_eq!(*book.unwrap(), Value::from("A"));
     }
     ```
 
@@ -161,10 +161,21 @@ Jolt enforces limits to prevent resource exhaustion:
 - **Integers**: `[−(2^53)+1, (2^53)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable
   range.
 - **Floats**: IEEE 754 double-precision range.
+- **Regex**: To prevent resource exhaustion the max value of a quantifier is `100`,`a{100}`, and the total number of nodes in the AST to `10000`.  
+  For example, `ab` produces 3 nodes:
+```
+   Concat(Atom(a), Atom(b))
+        /         \
+     Atom(a)     Atom(b)
+```   
 
-By default, integers are stored as `i64` and floats as `f64`. If you need to work with numbers beyond these ranges,
-large integers, high-precision decimals, or exact decimal arithmetic enable the `arbitrary_precision` feature.
+### Arbitrary precision
 
-### License
+By default, integers are stored as `i64` and floats as `f64`. If you need to work with numbers beyond these ranges, large integers, high-precision decimals, or exact decimal arithmetic enable the `arbitrary_precision` feature:
+```toml
+[dependencies]
+jolt = { version = "0.1", features = ["arbitrary_precision"] }
+```
+#### License
 
 This project is licensed under the MIT License.

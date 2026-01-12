@@ -71,22 +71,23 @@
 // - tt version has the RAW TOKEN null
 //
 // also when we refer to our structs we need to provide the full path to it
+#[macro_export]
 macro_rules! json {
-    ([]) => { $crate::parsing::Value::Array(Vec::new()) };
-    ({}) => { $crate::parsing::Value::Object(IndexMap::new()) };
-    (null) => { $crate::parsing::Value::Null };
-    (true) => { $crate::parsing::Value::Boolean(true) };
-    (false) => { $crate::parsing::Value::Boolean(false) };
-    ([ $($elem:tt),+ $(,)? ]) => { $crate::parsing::Value::Array(vec![$(json!($elem)),+]) };
+    ([]) => { $crate::Value::Array(Vec::new()) };
+    ({}) => { $crate::Value::Object(IndexMap::new()) };
+    (null) => { $crate::Value::Null };
+    (true) => { $crate::Value::Boolean(true) };
+    (false) => { $crate::Value::Boolean(false) };
+    ([ $($elem:tt),+ $(,)? ]) => { $crate::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
         use indexmap::IndexMap;
         
         let mut map = IndexMap::new();
         $(map.insert($key.to_string(), json!($val));)+
-        $crate::parsing::Value::Object(map)
+        $crate::Value::Object(map)
     }};
      // can only be &str or some numeric type
-    ($other:expr) => { $crate::parsing::Value::from($other) };
+    ($other:expr) => { $crate::Value::from($other) };
 }
 
 // https://www.youtube.com/watch?v=q6paRBbLgNw around 47:00
@@ -146,6 +147,3 @@ macro_rules! impl_atoi {
 
 impl_atoi!(i64);
 impl_atoi!(u8);
-
-// not part of the public api, only for internal usage, no #[macro_export]
-pub(crate) use json;
