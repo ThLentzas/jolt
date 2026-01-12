@@ -1,5 +1,6 @@
 use crate::parsing::error::{StringError, StringErrorKind};
 use crate::parsing::number::{self, Atoi};
+use crate::parsing::value::Value;
 use crate::parsing::value::error::{PathError, PathErrorKind};
 use crate::parsing::value::path::filter::function::{FnExpr, FnExprArg};
 use crate::parsing::value::path::filter::{
@@ -7,7 +8,6 @@ use crate::parsing::value::path::filter::{
     TestExpr,
 };
 use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
-use crate::parsing::value::Value;
 use crate::parsing::{self, escapes, utf8};
 use std::cmp;
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ impl Segment {
     // $.users[*]['name', 'city']
     //
     // 1. .users returns the array
-    // 2. [*] is called on the array, and it returns all the elements
+    // 2. [*] returns all the elements
     // 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
     // 2 name selectors.
     // output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
@@ -622,12 +622,14 @@ impl<'a, 'r> Parser<'a, 'r> {
         let len = self.buffer.len();
         self.pos += 1; // skip opening quote(' or ")
 
-        let end = parsing::find(&self.buffer[self.pos..], quote)
-            .map(|i| self.pos + i)
-            .ok_or(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
-                pos: len - 1,
-            })?;
+        let end = parsing::find(&self.buffer[self.pos..], quote, |b| {
+            b == quote || escapes::is_escape(b)
+        })
+        .map(|i| self.pos + i)
+        .ok_or(StringError {
+            kind: StringErrorKind::UnexpectedEndOf,
+            pos: len - 1,
+        })?;
 
         let slice = &self.buffer[self.pos..end];
         // calls iter.any() internally
@@ -704,13 +706,25 @@ impl<'a, 'r> Parser<'a, 'r> {
         Ok(name)
     }
 
+    // we follow the same logic as the previous cases where we had to parse strings; don't do it 1
+    // by 1 calling push() each time, create a slice by tracking the starting position
     fn parse_name_shorthand(&mut self) -> Result<String, PathError> {
-        // term used by rfc; name_first, the 1st character of member_name_shorthand
-        // name_char is every other character; the only difference is that name_first can't be a digit
         let len = self.buffer.len();
-        let mut name = String::new();
-        let start = self.pos;
         let mut current = self.buffer[self.pos];
+        let start = self.pos;
+
+        if !is_valid_name_first(current) {
+            return Err(PathError {
+                kind: PathErrorKind::UnexpectedCharacter { byte: current },
+                pos: self.pos,
+            });
+        }
+
+        if current.is_ascii() {
+            self.pos += 1;
+        } else {
+            self.pos += utf8::utf8_char_width(current);
+        }
 
         // We stop when we encounter 1 of the following characters without necessarily having an
         // invalid name
@@ -726,46 +740,30 @@ impl<'a, 'r> Parser<'a, 'r> {
         //
         // if we have a case like "$.price< ", parsing will fail later when we attempt to parse the
         // next segment
-        while self.pos < len
-            && !matches!(
+        while self.pos < len {
+            current = self.buffer[self.pos];
+
+            if matches!(
                 current,
                 b'.' | b'[' | b'<' | b'>' | b'=' | b'&' | b'|' | b')' | b']' | b','
-            )
-            && !parsing::is_rfc_whitespace(current)
-        {
-            match current {
-                // Non ascii: valid in any position
-                c if !c.is_ascii() => {
-                    name.push(utf8::read_utf8_char(self.buffer, self.pos));
-                    self.pos += utf8::utf8_char_width(current) - 1;
-                }
-                // first character: must satisfy name-first rules (alpha or '_', no digits)
-                // Non ascii already handled above, so is_valid_name_first only checks ascii
-                c if start == self.pos => {
-                    if !is_valid_name_first(c) || c.is_ascii_digit() {
-                        return Err(PathError {
-                            kind: PathErrorKind::UnexpectedCharacter { byte: c },
-                            pos: self.pos,
-                        });
-                    }
-                    name.push(c as char);
-                }
-                // subsequent characters must satisfy name-char rules
-                c => {
-                    if !is_valid_name_char(c) {
-                        return Err(PathError {
-                            kind: PathErrorKind::UnexpectedCharacter { byte: c },
-                            pos: self.pos,
-                        });
-                    }
-                    name.push(c as char);
-                }
+            ) || parsing::is_rfc_whitespace(current)
+            {
+                break;
             }
-            self.pos += 1;
-            if self.pos < len {
-                current = self.buffer[self.pos];
+            if !is_valid_name_char(current) {
+                return Err(PathError {
+                    kind: PathErrorKind::UnexpectedCharacter { byte: current },
+                    pos: self.pos,
+                });
+            }
+            if current.is_ascii() {
+                self.pos += 1;
+            } else {
+                self.pos += utf8::utf8_char_width(current);
             }
         }
+        let name = unsafe { str::from_utf8_unchecked(&self.buffer[start..self.pos]) }.to_string();
+
         Ok(name)
     }
 
@@ -1360,11 +1358,9 @@ impl<'a, 'r> Parser<'a, 'r> {
                 // why not from? This the only case where we have to convert from a NumericError to
                 // a PathError, so I thought to do it via map_err(). The body of the closure would
                 // be the body of the from() impl.
-                number::read(self.buffer, &mut self.pos).map_err(|err| {
-                    PathError {
-                        kind: PathErrorKind::Numeric(err.kind),
-                        pos: err.pos,
-                    }
+                number::read(self.buffer, &mut self.pos).map_err(|err| PathError {
+                    kind: PathErrorKind::Numeric(err.kind),
+                    pos: err.pos,
                 })?;
                 Ok(Value::Number(number::parse(&self.buffer[start..self.pos])))
             }
@@ -1431,8 +1427,8 @@ fn dfs<'r, T: Tracker<'r>>(
 // !matches!(byte, 0x00..=0x1F | 0x20..=0x2F | 0x3A..=0x40 | 0x5C..=0x5E | 0x60 | 0x7B..=0x7E)
 // the above one would work as well, it covers all the cases mentioned in the not_allowed section
 // in the comment above
-fn is_valid_name_first(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
+fn is_valid_name_first(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_' || !b.is_ascii()
 }
 
 // name-char = name-first / DIGIT
@@ -1448,10 +1444,10 @@ pub(super) fn normalize_index(index: i64, len: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::macros::json;
+    use crate::parsing::value::IndexMap;
     use crate::parsing::value::path::filter::function::FnExprError;
     use crate::parsing::value::path::filter::function::FnType;
     use crate::parsing::value::path::tracker::NoOpTracker;
-    use crate::parsing::value::IndexMap;
 
     fn invalid_root() -> Vec<(&'static str, PathError)> {
         vec![

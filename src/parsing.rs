@@ -11,7 +11,7 @@ mod utf8;
 pub(super) mod value;
 
 //implementation limits: https://www.ibm.com/docs/en/datapower-gateway/10.6.0?topic=20-json-parser-limits
-const INPUT_BUFFER_LIMIT: usize = 5_242_880; // also mentioned as Document size, 5MB// also mentioned as Document size, 5MB
+const INPUT_BUFFER_LIMIT: usize = 5_242_880;
 // this is the length of the [u8] representation of the string after parsing
 // the input buffer can be longer than 8192 bytes because of escape,utf8 sequences
 // in the worst case, where we have only Unicode sequences, the length of the input buffer is roughly 49_000 bytes
@@ -70,11 +70,26 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
 //
 // the above code won't work for cases like "hello\"world" and /foo\/bar/baz where '"' and '/' are
 // escaped
-fn find(buffer: &[u8], delimiter: u8) -> Option<usize> {
+//
+// why the predicate?
+// 
+// if we are looking for 'a' and encounter it as \a my previous logic of randomly skipping everything 
+// after \ would incorrectly miss it, so we would either return None or not the leftmost occurrence
+// we need to know which characters to consider after '\' and they are not always the same; we have
+// an edge case in path when we have to scan for closing single quote '\''. If we used a function we
+// would miss it in a case where it is escaped, it won't match in matches and return its index in
+// the escape sequence. 'foo\'bar', find() should return 10 not 5
+//
+// can be optimized further with memchar2: https://docs.rs/memchr/latest/memchr/fn.memchr2.html
+fn find<P>(buffer: &[u8], delimiter: u8, p: P) -> Option<usize>
+where
+    P: Fn(u8) -> bool,
+{
     let mut i = 0;
-    while i < buffer.len() {
+    let len = buffer.len();
+    while i < len {
         match buffer[i] {
-            b'\\' => {
+            b'\\' if i + 1 < len && p(buffer[i + 1]) => {
                 // skip escape sequence, we don't care at this point if sequence is valid
                 i += 2;
             }

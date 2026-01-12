@@ -6,6 +6,7 @@ use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap;
 use std::cmp::{Ordering, PartialEq};
 use std::hash::{Hash, Hasher};
+use std::mem;
 
 mod error;
 mod from;
@@ -17,10 +18,10 @@ pub use crate::parsing::value::error::PathError;
 pub use crate::parsing::value::path::tracker::Node;
 
 // Clone is needed for Cow
+// Value is recursive type like LogicalExpression, but we don't need Box because both map and
+// vec store their data in the heap
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Value {
-    // Value is recursive type like LogicalExpression, but we don't need Box because both map and
-    // vec store their data in the heap
     Object(IndexMap<String, Value>),
     Array(Vec<Value>),
     Number(Number),
@@ -32,30 +33,90 @@ pub enum Value {
 // https://docs.rs/itoa/latest/itoa/
 
 impl Value {
+    /// Returns true if `Value` is an `Object`, false otherwise.
+    /// # Examples
+    /// ```
+    /// let val = json!({
+    ///     "foo": "bar"
+    /// });
+    ///
+    /// assert!(val.is_object());
+    /// ```
     pub fn is_object(&self) -> bool {
         matches!(self, Value::Object(_))
     }
 
+    /// Returns true if `Value` is an `Array`, false otherwise.
+    /// # Examples
+    /// ```
+    /// let val = json!(["foo", "bar"]);
+    ///
+    /// assert!(val.is_array());
+    /// ```
     pub fn is_array(&self) -> bool {
         matches!(self, Value::Array(_))
     }
 
+    /// Returns true if `Value` is a `Number`, false otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(3);
+    ///
+    /// assert!(val.is_number());
+    /// ```
     pub fn is_number(&self) -> bool {
         matches!(self, Value::Number(_))
     }
 
+    /// Returns true if `Value` is a `String`, false otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!("foo");
+    ///
+    /// assert!(val.is_string());
+    /// ```
     pub fn is_string(&self) -> bool {
         matches!(self, Value::String(_))
     }
 
+    /// Returns true if `Value` is a `Boolean`, false otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(false);
+    ///
+    /// assert!(val.is_bool());
+    /// ```
     pub fn is_bool(&self) -> bool {
         matches!(self, Value::Boolean(_))
     }
 
+    /// Returns true if `Value` is a `Null`, false otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(null);
+    ///
+    /// assert!(val.is_null());
+    /// ```
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
 
+    /// If `self` is `Object` returns a reference to the underlying map, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    /// });
+    /// let map = val.as_object().unwrap();
+    ///
+    /// assert_eq!(map.get("name"), Some(&json!("Alice")));
+    /// ```
     pub fn as_object(&self) -> Option<&IndexMap<String, Value>> {
         match self {
             Value::Object(map) => Some(map),
@@ -63,6 +124,18 @@ impl Value {
         }
     }
 
+    /// If `self` is `Object` returns a mutable reference to the underlying map, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let mut val = json!({
+    ///     "name": "Alice"
+    /// });
+    /// let map = val.as_object_mut().unwrap();
+    /// map.insert("age".to_string(), json!(30));
+    ///
+    /// assert_eq!(val, json!({"name": "Alice", "age": 30}));
+    /// ```
     pub fn as_object_mut(&mut self) -> Option<&mut IndexMap<String, Value>> {
         match self {
             Value::Object(map) => Some(map),
@@ -70,6 +143,15 @@ impl Value {
         }
     }
 
+    /// If `self` is an `Array` returns a reference to the underlying vector, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(["foo", "bar"]);
+    /// let arr = val.as_array().unwrap();
+    ///
+    /// assert_eq!(arr.len(), 2);
+    /// ```
     pub fn as_array(&self) -> Option<&Vec<Value>> {
         match self {
             Value::Array(vec) => Some(vec),
@@ -77,6 +159,16 @@ impl Value {
         }
     }
 
+    /// If `self` is `Array` returns a reference to the underlying vector, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let mut val = json!(["foo"]);
+    /// let arr = val.as_array_mut().unwrap();
+    /// arr.push(json!("bar"));
+    ///
+    /// assert_eq!(val, json!(["foo", "bar"]));
+    /// ```
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
         match self {
             Value::Array(vec) => Some(vec),
@@ -84,6 +176,16 @@ impl Value {
         }
     }
 
+    /// If `self` is `Number` returns a reference to it, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(42);
+    /// let num = val.as_number().unwrap();
+    ///
+    /// assert_eq!(num.as_i64(), Some(42));
+    /// ```
+    // can't have as_number_mut(), don't have any methods that modify Number
     pub fn as_number(&self) -> Option<&Number> {
         match self {
             Value::Number(num) => Some(num),
@@ -91,41 +193,44 @@ impl Value {
         }
     }
 
-    pub fn as_number_mut(&mut self) -> Option<&mut Number> {
-        match self {
-            Value::Number(num) => Some(num),
-            _ => None,
-        }
-    }
-
-    pub fn as_string(&self) -> Option<&String> {
-        match self {
-            Value::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_string_mut(&mut self) -> Option<&mut String> {
+    /// If `self` is `String` returns a reference to it, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!("foo");
+    ///
+    /// assert_eq!(val.as_str(), Some("foo"));
+    /// ```
+    pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_boolean(&self) -> Option<&bool> {
+    /// If `self` is `Boolean`, returns its value, None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(true);
+    ///
+    /// assert_eq!(val.as_bool(), Some(true));
+    /// ```
+    pub fn as_boolean(&self) -> Option<bool> {
         match self {
-            Value::Boolean(b) => Some(b),
+            Value::Boolean(b) => Some(*b),
             _ => None,
         }
     }
 
-    pub fn as_boolean_mut(&mut self) -> Option<&mut bool> {
-        match self {
-            Value::Boolean(b) => Some(b),
-            _ => None,
-        }
-    }
-
+    /// If `self` is `Null`, returns (), None otherwise.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!(null);
+    ///
+    /// assert_eq!(val.as_bool(), Some());
+    /// ```
     pub fn as_null(&self) -> Option<()> {
         match self {
             Value::Null => Some(()),
@@ -133,11 +238,65 @@ impl Value {
         }
     }
 
+    /// Index into an `Object` or `Array` using a key or an index.
+    ///
+    /// Returns None if the type doesn't match or the key/index doesn't exist.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!({
+    ///     "name": "Alice",
+    ///     "foo": ["bar", "baz"]
+    /// });
+    ///
+    /// assert_eq!(val.get("name"), Some(&json!("Alice")));
+    /// assert_eq!(val.get("age"), None);
+    ///
+    /// let val = val.get("foo").unwrap();
+    ///
+    /// assert_eq!(val.get(0), Some(&json!("bar")));
+    /// assert_eq!(val.get(5), None);
+    /// ```
     pub fn get<I: Index>(&self, index: I) -> Option<&Value> {
         index.index_into(self)
     }
+
+    /// Index mutably into an `Object` or `Array` using a key or an index.
+    ///
+    /// Returns None if the type doesn't match or the key/index doesn't exist.
+    ///
+    /// # Examples
+    /// ```
+    /// let val = json!({
+    ///     "name": "Alice",
+    ///     "foo": ["bar", "baz"]
+    /// });
+    /// *val.get_mut("name").unwrap() = json!("Bob");
+    ///
+    /// assert_eq!(val.get("name"), Some(&json!("Bob")));
+    ///
+    /// let v = val.get_mut("foo").unwrap();
+    /// v.as_array_mut().unwrap().push(json!(5))
+    ///
+    /// assert_eq!(v.get("foo").len(), 3);
+    /// ```
     pub fn get_mut<I: IndexMut>(&mut self, index: I) -> Option<&mut Value> {
         index.index_into(self)
+    }
+
+    // same as Option::take()
+    /// Takes the value, replacing it with `Null`.
+    ///
+    /// # Examples
+    /// ```
+    /// let mut val = json!("foo");
+    /// let v = val.take();
+    ///
+    /// assert_eq!(v, json!("foo"));
+    /// assert_eq!(val, json!(null));
+    /// ```
+    pub fn take(&mut self) -> Value {
+        mem::replace(self, Value::Null)
     }
 
     // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value is an object
@@ -160,6 +319,19 @@ impl Value {
     //      val = {"name": "Bob"}
     // "name" exists as key in val, update val with the value of the key
     //      val = "Bob"
+    //
+    /// Returns a reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let root = json!({
+    ///     "foo": ["bar", "baz"]
+    /// });
+    /// let value = root.pointer("/foo/1").unwrap();
+    ///
+    /// assert_eq!(value, &json!("baz"));
+    /// ```
     pub fn pointer(&self, pointer: &str) -> Result<Option<&Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -201,6 +373,23 @@ impl Value {
     }
 
     // look at pointer() above for any comments
+    //
+    /// Returns a mutable reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut root = json!({
+    ///     "foo": ["bar", "baz"]
+    /// });
+    /// let value = root.pointer_mut("/foo/1").unwrap();
+    ///
+    /// assert_eq!(value, &json!("baz"));
+    ///
+    /// *value = json!("bar");
+    ///
+    /// assert_eq!(root.pointer("/foo/1").unwrap(), &json!("bar"));
+    /// ```
     pub fn pointer_mut(&mut self, pointer: &str) -> Result<Option<&mut Value>, PointerError> {
         if !self.is_object() && !self.is_array() {
             return Ok(None);
@@ -244,8 +433,24 @@ impl Value {
     //
     // in all select() methods below we call into_iter() because we don't care about PathNode at all
     // we just want to consume it and do the mapping
-    pub fn select(&self, path_expr: &str) -> Result<Vec<Node<'_>>, PathError> {
-        let mut query = Parser::new(path_expr.as_bytes(), self);
+    //
+    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    ///
+    /// Returns a list where each node has a reference to a matched value and the root to value path. The path is normalized.
+    /// # Examples
+    ///
+    /// ```
+    /// let root = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    /// });
+    /// let nodelist = root.select("$.name").unwrap();
+    ///
+    /// assert_eq!(nodelist[0].path, "$.name");
+    /// assert_eq!(nodelist[0].val, &json!("Alice"));
+    /// ```
+    pub fn select(&self, query: &str) -> Result<Vec<Node<'_>>, PathError> {
+        let mut query = Parser::new(query.as_bytes(), self);
         let nodes = query
             .parse::<PathTracker>()?
             .into_iter()
@@ -254,6 +459,20 @@ impl Value {
         Ok(nodes)
     }
 
+    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    ///
+    /// Returns a list containing the normalized paths of the matched values.
+    /// # Examples
+    ///
+    /// ```
+    /// let root = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    /// });
+    /// let paths = root.select("$.name").unwrap();
+    ///
+    /// assert_eq!(paths[0], "$.name");
+    /// ```
     pub fn select_as_npaths(&self, path_expr: &str) -> Result<Vec<String>, PathError> {
         let mut query = Parser::new(path_expr.as_bytes(), self);
         let paths = query
@@ -266,6 +485,20 @@ impl Value {
         Ok(paths)
     }
 
+    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    ///
+    /// Returns a list of references to the matched values.
+    /// # Examples
+    ///
+    /// ```
+    /// let root = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    /// });
+    /// let values = root.select("$.name").unwrap();
+    ///
+    /// assert_eq!(values[0], &json!("Alice"));
+    /// ```
     pub fn select_as_values(&self, path_expr: &str) -> Result<Vec<&Value>, PathError> {
         let mut query = Parser::new(path_expr.as_bytes(), self);
         let values = query
@@ -277,15 +510,80 @@ impl Value {
     }
 
     // if an error occurs changes are maintained
+    //
+    /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document.
+    ///
+    /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut root = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    ///     });
+    /// root.try_modify(r#"[
+    ///     {"op": "replace", "path": "/name", "value": "Bob"},
+    ///     {"op": "add", "path": "/city", "value": "NYC"}
+    /// ]"#).unwrap();
+    ///
+    /// assert_eq!(root.pointer("/name").unwrap(), &json!("Bob"));
+    /// assert_eq!(root.pointer("/city").unwrap(), &json!("NYC"));
+    ///
+    ///  // When any operation fails, previous changes are kept:
+    ///
+    /// let mut root = json!({
+    ///     "name": "Alice"
+    ///  });
+    /// root.modify(r#"[
+    ///     {"op": "add", "path": "/age", "value": 30},
+    ///     {"op": "replace", "path": "/invalid", "value": "fails"}
+    /// ]"#);
+    ///
+    /// assert_eq!(root.pointer("/age").unwrap(), &json!(30)); // first op succeeded
+    /// ```
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
         for (i, op) in ops.into_iter().enumerate() {
-            op.apply(self).map_err(|err| PatchError::InvalidOp(err, i))?;
+            op.apply(self)
+                .map_err(|err| PatchError::InvalidOp(err, i))?;
         }
         Ok(())
     }
 
     // this method rolls back the changes if one operation resulted in an error
+    /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document atomically.
+    ///
+    /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut root = json!({
+    ///     "name": "Alice",
+    ///     "age": 30
+    ///     });
+    /// root.try_modify(r#"[
+    ///     {"op": "replace", "path": "/name", "value": "Bob"},
+    ///     {"op": "add", "path": "/city", "value": "NYC"}
+    /// ]"#).unwrap();
+    ///
+    /// assert_eq!(root.pointer("/name").unwrap(), &json!("Bob"));
+    /// assert_eq!(root.pointer("/city").unwrap(), &json!("NYC"));
+    ///
+    /// // When any operation fails, all changes are rolled back:
+    ///
+    /// let mut root = json!({
+    ///     "name": "Alice"
+    ///  });
+    /// let result = root.try_modify(r#"[
+    ///     {"op": "add", "path": "/age", "value": 30},
+    ///     {"op": "replace", "path": "/invalid", "value": "fails"}
+    /// ]"#);
+    ///
+    /// assert!(result.is_err());
+    /// assert_eq!(root, json!({"name": "Alice"})); // completely unchanged
+    /// ```
     pub fn try_modify(&mut self, input: &str) -> Result<(), PatchError> {
         let copy = self.clone();
         let ops = patch::parse(input.as_bytes())?;
@@ -301,7 +599,7 @@ impl Value {
 
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
+        mem::discriminant(self).hash(state);
         match self {
             // https://github.com/indexmap-rs/indexmap/issues/288
             Value::Object(map) => map.as_slice().hash(state),

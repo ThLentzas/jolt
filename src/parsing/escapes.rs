@@ -5,6 +5,10 @@ const ESCAPE_CHAR_LEN: u8 = 2;
 const UNICODE_SEQ_LEN: u8 = 6;
 const SURROGATE_PAIR_LEN: u8 = 12;
 
+pub(super) fn is_escape(b: u8) -> bool {
+    matches!(b, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u')
+}
+
 pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let len = buffer.len();
     let mut i = pos;

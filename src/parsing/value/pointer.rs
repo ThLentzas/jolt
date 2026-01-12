@@ -1,10 +1,10 @@
+use crate::parsing;
 use crate::parsing::error::{StringError, StringErrorKind};
 use crate::parsing::escapes::{self, EscapeError, EscapeErrorKind};
 use crate::parsing::utf8;
 use crate::parsing::value::error::{PointerError, PointerErrorKind};
 use std::iter::Peekable;
 use std::str::Chars;
-use crate::parsing;
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
 // where the token started based on the underline buffer for better error messaging
@@ -62,7 +62,7 @@ impl<'a> Pointer<'a> {
         }
 
         // find next occurrence of '/' or the end of the input
-        let end = parsing::find(&self.buffer[self.pos..], b'/')
+        let end = parsing::find(&self.buffer[self.pos..], b'/', |b| escapes::is_escape(b))
             .map(|i| self.pos + i)
             .unwrap_or(len);
 
@@ -127,7 +127,7 @@ impl<'a> Pointer<'a> {
                 b'~' => val.push(map_pointer_escape(slice, &mut i, self.pos)?),
                 b => {
                     val.push(utf8::read_utf8_char(slice, i));
-                    i += utf8::utf8_char_width(b)- 1;
+                    i += utf8::utf8_char_width(b) - 1;
                 }
             }
             i += 1;
