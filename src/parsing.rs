@@ -60,7 +60,7 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
     }
 }
 
-// finds the delimiter while considering escape sequences
+// finds the needle while considering escape sequences
 //
 // let end = self.buffer[self.pos..]
 //     .iter()

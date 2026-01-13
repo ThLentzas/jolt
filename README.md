@@ -4,7 +4,7 @@ A library that provides JSON support
 
 ## Overview
 
-- **Parsing**: Parse JSON data using `from_slice()`, `from_str()` and `from_file()`.
+- **Parsing**: Parse JSON data using `from_slice()` and `from_str()`.
 - **Reading**: Extract values using [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) or query
   with [JSONPath ](https://www.rfc-editor.org/rfc/rfc9535).
 - **Writing**: Modify with [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902).
@@ -16,10 +16,10 @@ jolt = "0.1.0"
 
 ## Parse
 
-`from_slice()` and `from_file()` perform strict utf-8 validation according to the spec. Any invalid utf-8 sequence will
+`from_slice()` performs strict utf-8 validation according to the spec. Any invalid utf-8 sequence will
 result in a `ParserError` and it will not be replaced by the replacement character `�`.
 
-If the parsing process is successful the method should return any of the following enum variants:
+If the parsing process is successful the result is the following enum:
 
 ```rust
 enum Value {
@@ -40,18 +40,18 @@ There are 3 ways you can extract a value from a JSON document:
    single value if found.
 
     ```rust
-    use jolt::parsing::Value;
+    use jolt::Value;
     
     fn example() {
-        let json = r#"{
-            "store": {
-                "books": ["A", "B", "C"]
-            }
-        }"#;
+       let text = json!({
+           "store": {
+               "books": ["A", "B", "C"]
+           }
+       });
     
-        let val = jolt::from_str(json).unwrap()?;
-        let book = val.pointer("/store/books/0")?;
-        assert_eq!(*book.unwrap(), Value::from("A"));
+       let val = jolt::from_str(text)?;
+       let book = val.pointer("/store/books/0")?;
+       assert_eq!(book.unwrap(), &json!("A"));
     }
     ```
 
@@ -68,33 +68,33 @@ There are 3 ways you can extract a value from a JSON document:
       <br>
 
     ```rust
-    use jolt::parsing::Value;
+    use jolt::Value;
     
     fn example() {
-        let root = jolt::from_str(r#"
+        let val = jolt::from_str(r#"
             {
                 "store": {
                     "books": [
-                        { "title": "Rust in Action", "price": 35 },
-                        { "title": "The Rust Book", "price": 0 },
-                        { "title": "Programming Rust", "price": 45 }
+                        { "title": "Rust in Action", "capacity": 35 },
+                        { "title": "The Rust Book", "capacity": 0 },
+                        { "title": "Programming Rust", "capacity": 45 }
                     ]
                 }
             }
         "#)?;
     
         // Select all book titles
-        let titles = data.select_as_values("$.store.books[*].title")?;
+        let titles = val.select_as_values("$.store.books[*].title")?;
         assert_eq!(titles.len(), 3);
     
         // Get normalized paths instead of values
         // ["$['store']['books'][0]['title']", "$['store']['books'][1]['title']", ...]
-        let paths = data.select_as_npaths("$.store.books[*].title")?;
+        let paths = val.select_as_npaths("$.store.books[*].title")?;
         assert_eq!(paths.len(), 3);
     
-        // Filter: books with price > 30
-        let expensive = data.select("$.store.books[?@.price > 30]")?;
-        assert_eq!(expensive.len(), 2);
+        // Filter: books with capacity > 30
+        let books = val.select("$.store.books[?@.capacity > 30]")?;
+        assert_eq!(books.len(), 2);
     }
     ```
    **Functions and Regular Expressions:**
@@ -111,19 +111,20 @@ There are 3 ways you can extract a value from a JSON document:
    interface, pass a string key for objects or an integer index for arrays. Returns `Option<&Value>`, allowing safe
    access without panicking.
     ```rust
-    use jolt::parsing::Value;
+    use jolt::Value;
     
     fn example() {
-        let data = jolt::from_str(r#"
+        let val = jolt::from_str(r#"
             {
                 "name": "Alice",
                 "scores": [95, 87, 92] 
             }
         "#)?;
     
-        let name = data.get("name").unwrap();
+        let name = val.get("name").unwrap();
         assert_eq!(*name, Value::from("Alice"));
-        let score = data.get("scores")
+   
+        let score = val.get("scores")
             .and_then(|s| s.get(1))
             .unwrap();
         assert_eq!(*score, Value::from(87));
@@ -139,15 +140,15 @@ accept a [JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) compliant s
 - `try_modify()`: If an operation fails, the changes are rolled back.
 
 ```rust
-use jolt::parsing::Value;
+use jolt::Value;
 
 fn example() {
-    let mut root = jolt::from_str(r#"{"name": "Alice", "age": 30}"#)?;
+   let mut val = jolt::from_str(r#"{"name": "Alice", "age": 30}"#)?;
 
-    root.modify(r#"[
+   val.modify(r#"[
         {"op": "replace", "path": "/age", "value": 31}
     ]"#)?;
-    assert_eq!(root, jolt::from_str(r#"{"name": "Alice", "age": 31}"#)?);
+   assert_eq!(val, jolt::from_str(r#"{"name": "Alice", "age": 31}"#)?);
 }
 ```
 
@@ -161,7 +162,7 @@ Jolt enforces limits to prevent resource exhaustion:
 - **Integers**: `[−(2^53)+1, (2^53)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable
   range.
 - **Floats**: IEEE 754 double-precision range.
-- **Regex**: To prevent resource exhaustion the max value of a quantifier is `100`,`a{100}`, and the total number of nodes in the AST to `10000`.  
+- **Regex**: The max value of a quantifier is `100`, `a{100}`, and the total number of nodes in the AST to `10000`.  
   For example, `ab` produces 3 nodes:
 ```
    Concat(Atom(a), Atom(b))
@@ -176,6 +177,24 @@ By default, integers are stored as `i64` and floats as `f64`. If you need to wor
 [dependencies]
 jolt = { version = "0.1", features = ["arbitrary_precision"] }
 ```
+
+### json! macro
+Constructs a `Value` from a literal.
+
+```rust
+let val = json!({
+   "Image": {
+      "Width": 800,
+      "Height": 600,
+      "Title": "View from 15th Floor"
+     } 
+ });
+ ```
+This macro is intended for quickly constructing test data. It does **not** perform any escape sequence handling. For example, `"ab\u0063"` will not be converted to `"abc"` as per the JSON grammar, and
+invalid escapes like `"ab\p"` will not produce an error.Invalid input creates a `Value` in an
+undefined state, which may cause unexpected behavior. For untrusted input, use `from_slice()`
+or `from_str()` instead. Use with your own discretion.
+
 #### License
 
 This project is licensed under the MIT License.

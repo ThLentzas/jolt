@@ -104,6 +104,10 @@ impl Hash for NumberKind {
     }
 }
 
+/// Represents a JSON number.
+///
+/// Integers are stored as `i64` and floats as `f64`. If the [`arbitrary_precision`](crate#arbitrary-precision) feature is enabled, methods such as
+/// `as_big_decimal()` and `as_big_int()` are available.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Number {
     kind: NumberKind,
@@ -112,6 +116,7 @@ pub struct Number {
 impl Number {
     // for i64, f64 self.kind will copy v because all those types implement Copy; BigDecimal/Int does
     // not, we can not move it out of a borrowed context so we have to clone it
+    /// If the `Number` is an integer returns its representation as i64, None otherwise
     pub fn as_i64(&self) -> Option<i64> {
         match self.kind {
             NumberKind::I64(v) => Some(v),
@@ -119,6 +124,7 @@ impl Number {
         }
     }
 
+    /// If the `Number` is a float returns its representation as f64, None otherwise
     pub fn as_f64(&self) -> Option<f64> {
         match self.kind {
             NumberKind::F64(v) => Some(v),

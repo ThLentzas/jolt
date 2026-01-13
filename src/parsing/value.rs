@@ -20,13 +20,57 @@ pub use crate::parsing::value::path::tracker::Node;
 // Clone is needed for Cow
 // Value is recursive type like LogicalExpression, but we don't need Box because both map and
 // vec store their data in the heap
+/// Represents a valid JSON value.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Value {
+    /// Represents a JSON object.
+    /// An IndexMap is used to preserve the insertion order.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!({"foo": "bar"})
+    /// ```
     Object(IndexMap<String, Value>),
+    /// Represents a JSON array.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!([1, 2, 3, 4])
+    /// ```
     Array(Vec<Value>),
+    /// Represents a JSON number.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!(10)
+    /// ```
     Number(Number),
+    /// Represents a JSON string.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!("foo")
+    /// ```
     String(String),
+    /// Represents a JSON bool.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!(true)
+    /// ```
     Boolean(bool),
+    /// Represents a JSON null.
+    ///
+    /// ```
+    /// # use jolt::json;
+    /// #
+    /// let val = json!(null)
+    /// ```
     Null,
 }
 // https://docs.rs/ryu/latest/ryu/
@@ -37,6 +81,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!({
     ///     "foo": "bar"
     /// });
@@ -51,6 +96,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(["foo", "bar"]);
     ///
     /// assert!(val.is_array());
@@ -64,6 +110,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(3);
     ///
     /// assert!(val.is_number());
@@ -77,6 +124,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!("foo");
     ///
     /// assert!(val.is_string());
@@ -90,6 +138,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(false);
     ///
     /// assert!(val.is_bool());
@@ -103,6 +152,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(null);
     ///
     /// assert!(val.is_null());
@@ -116,6 +166,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -136,6 +187,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut val = json!({
     ///     "name": "Alice"
     /// });
@@ -156,6 +208,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(["foo", "bar"]);
     /// let arr = val.as_array().unwrap();
     ///
@@ -173,6 +226,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut val = json!(["foo"]);
     /// let arr = val.as_array_mut().unwrap();
     /// arr.push(json!("bar"));
@@ -191,6 +245,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(42);
     /// let num = val.as_number().unwrap();
     ///
@@ -209,6 +264,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!("foo");
     ///
     /// assert_eq!(val.as_str(), Some("foo"));
@@ -225,6 +281,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(true);
     ///
     /// assert_eq!(val.as_bool(), Some(true));
@@ -241,6 +298,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!(null);
     ///
     /// assert_eq!(val.as_null(), Some(()));
@@ -259,6 +317,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let val = json!({
     ///     "name": "Alice",
     ///     "foo": ["bar", "baz"]
@@ -283,6 +342,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut val = json!({
     ///     "name": "Alice",
     ///     "foo": ["bar", "baz"]
@@ -307,6 +367,7 @@ impl Value {
     /// # Examples
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut val = json!("foo");
     /// let v = val.take();
     ///
@@ -344,6 +405,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let root = json!({
     ///     "foo": ["bar", "baz"]
     /// });
@@ -399,6 +461,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut root = json!({
     ///     "foo": ["bar", "baz"]
     /// });
@@ -461,6 +524,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -487,6 +551,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -514,6 +579,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let root = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -542,6 +608,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut root = json!({
     ///     "name": "Alice",
     ///     "age": 30
@@ -584,6 +651,7 @@ impl Value {
     ///
     /// ```
     /// # use jolt::json;
+    /// #
     /// let mut root = json!({
     ///     "name": "Alice",
     ///     "age": 30

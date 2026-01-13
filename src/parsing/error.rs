@@ -1,7 +1,7 @@
 use crate::parsing::escapes::{EscapeError, EscapeErrorKind};
 use crate::parsing::number::{NumericError, NumericErrorKind};
 use crate::parsing::utf8::Utf8Error;
-use std::{error, fmt, io};
+use std::{error, fmt};
 
 #[derive(Debug, PartialEq)]
 pub enum
@@ -234,24 +234,7 @@ impl From<LexError> for ParseError {
     }
 }
 
-#[derive(Debug)]
-pub enum FileParseError {
-    IoError(io::Error),
-    ParserError(ParseError),
-}
-
-impl error::Error for FileParseError {}
-
-impl fmt::Display for FileParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FileParseError::IoError(err) => write!(f, "{} ", err),
-            FileParseError::ParserError(err) => write!(f, "{} ", err),
-        }
-    }
-}
-
-// this error occurs when we try to parse true, false, null
+// this error occurs when we try to parse true, false, null or fn names
 // didn't think of a better name and needed to return an Err in read_boolean_or_null()
 // LiteralError does not make sense because all the possible values are literals(string literal,
 // number etc..)

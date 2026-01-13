@@ -71,6 +71,27 @@
 // - tt version has the RAW TOKEN null
 //
 // also when we refer to our structs we need to provide the full path to it
+/// Constructs a [Value](crate::Value) from a literal.
+///
+/// # Example
+///
+/// ```
+/// # use jolt::json;
+/// #
+/// let val = json!({
+///     "Image": {
+///         "Width": 800,
+///         "Height": 600,
+///         "Title": "View from 15th Floor"
+///     }
+/// });
+/// ```
+///
+/// This macro is intended for quickly constructing test data. It does **not** perform any escape
+/// sequence handling. For example, `"ab\u0063"` will not be converted to `"abc"`, and
+/// invalid escapes like `"ab\p"` will not produce an error.Invalid input creates a `Value` in an
+/// undefined state, which may cause unexpected behavior. For untrusted input, use [`from_str`](crate::from_str)
+/// or [`from_slice`](crate::from_slice) instead. Use with your own discretion.
 #[macro_export]
 macro_rules! json {
     ([]) => { $crate::Value::Array(Vec::new()) };

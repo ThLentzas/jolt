@@ -313,6 +313,20 @@ pub(super) fn check_array_index_strict(token: &RefToken) -> Result<usize, Pointe
 //
 // npath: $['store']['book'][0]['title']
 // pointer path: /store/book/0/title
+/// Converts a normalized path to a pointer path.
+///
+/// A normalized path uses bracket notation (`$['store']['book'][0]['title']`), while a pointer
+/// path uses slash notation (`/store/book/0/title`).
+
+/// Returns `None` if the input is an invalid npath.
+/// # Example
+///
+/// ```
+/// let npath = "$['store']['book'][0]['title']";
+/// let ptr_path = jolt::to_ptr_path(npath).unwrap();
+///
+/// assert_eq!(ptr_path, "/store/book/0/title");
+/// ```
 pub fn to_ptr_path(npath: &str) -> Option<String> {
     if !npath.starts_with('$') {
         return None;
