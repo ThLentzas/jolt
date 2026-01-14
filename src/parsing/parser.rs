@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
             // note that this could return an error, {}001, -> leading zeros are not allowed
             return Err(ParseError {
                 kind: ParseErrorKind::UnexpectedToken { expected: None },
-                pos: self.peeked.unwrap().start_index(),
+                pos: self.peeked.unwrap().start_index,
             });
         }
         Ok(val)
@@ -65,23 +65,23 @@ impl<'a> Parser<'a> {
             });
         };
 
-        let val = match token.kind() {
+        let val = match token.kind {
             TokenKind::LCurlyBracket => Value::Object(self.parse_object()?),
             TokenKind::LSquareBracket => Value::Array(self.parse_array()?),
             TokenKind::Number => {
-                Value::Number(self.parse_number(token.start_index(), token.offset()))
+                Value::Number(self.parse_number(token.start_index, token.offset))
             }
             TokenKind::String => {
-                Value::String(self.parse_string(token.start_index(), token.offset())?)
+                Value::String(self.parse_string(token.start_index, token.offset)?)
             }
-            TokenKind::Boolean => Value::Boolean(self.parse_bool(token.start_index())),
+            TokenKind::Boolean => Value::Boolean(self.parse_bool(token.start_index)),
             TokenKind::Null => Value::Null,
             _ => {
                 return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("json value"),
                     },
-                    pos: token.start_index(),
+                    pos: token.start_index,
                 });
             }
         };
@@ -90,11 +90,10 @@ impl<'a> Parser<'a> {
 
     // We peek and advance 4 times, after moving past the opening '{'
     //
-    // 1. peek and expect either '}' for an empty object or a key string -> advance
-    // 2. peek and expect ':' after key -> advance
-    // 3. after colon we call parse_value(), it advances internally the pointer to the next token
-    // 4. peek, after value we expect either ',' to separate from the next key-value pair -> advance
-    // or '}' -> break
+    // 1. peek and expect either '}' for an empty object or a key string
+    // 2. peek and expect ':' after key
+    // 3. after colon we call parse_value()
+    // 4. peek, after value we expect either ',' to separate from the next key-value pair or '}' 
     //
     // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
     // will be consumed by the caller (parse_value()) after this function returns.
@@ -127,7 +126,7 @@ impl<'a> Parser<'a> {
             // is still active and then we call self.parse_string() which also takes &mut self.
             //
             // With this approach we extract the information that we need, then the 1st borrow ends
-            // after we are done with token and we can call parse_string()
+            // after we are done with token, and we can call parse_string()
             let Some(token) = self.peek()? else {
                 return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedEof,
@@ -135,10 +134,9 @@ impl<'a> Parser<'a> {
                 });
             };
 
-            let kind = token.kind();
-            let start = token.start_index();
-            let offset = token.offset();
-
+            let kind = token.kind;
+            let start = token.start_index;
+            let offset = token.offset;
             match kind {
                 // {"foo": "bar",}
                 TokenKind::RCurlyBracket => {
@@ -162,7 +160,7 @@ impl<'a> Parser<'a> {
                     }
                     self.next()?;
                     match self.peek()? {
-                        Some(t) if expect(t.kind(), TokenKind::Colon) => {
+                        Some(t) if expect(t.kind, TokenKind::Colon) => {
                             self.next()?;
                         }
                         // mismatch on colon
@@ -171,7 +169,7 @@ impl<'a> Parser<'a> {
                                 kind: ParseErrorKind::UnexpectedToken {
                                     expected: Some("colon ':'"),
                                 },
-                                pos: t.start_index(),
+                                pos: t.start_index,
                             });
                         }
                         None => {
@@ -195,20 +193,20 @@ impl<'a> Parser<'a> {
             }
 
             match self.peek()? {
-                Some(token) if expect(token.kind(), TokenKind::Comma) => {
+                Some(token) if expect(token.kind, TokenKind::Comma) => {
                     self.next()?;
                     if let Some(next) = self.peek()? {
-                        if expect(next.kind(), TokenKind::RCurlyBracket) {
+                        if expect(next.kind, TokenKind::RCurlyBracket) {
                             return Err(ParseError {
                                 kind: ParseErrorKind::UnexpectedToken {
                                     expected: Some("string key"),
                                 },
-                                pos: next.start_index(),
+                                pos: next.start_index,
                             });
                         }
                     }
                 }
-                Some(token) if expect(token.kind(), TokenKind::RCurlyBracket) => {
+                Some(token) if expect(token.kind, TokenKind::RCurlyBracket) => {
                     self.next()?;
                     self.depth -= 1;
                     break;
@@ -219,7 +217,7 @@ impl<'a> Parser<'a> {
                         kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("'}' or ','"),
                         },
-                        pos: token.start_index(),
+                        pos: token.start_index,
                     });
                 }
                 None => {
@@ -252,12 +250,12 @@ impl<'a> Parser<'a> {
         }
 
         self.depth += 1;
-
         let mut arr = Vec::new();
+        // when we encounter ']' we break
         loop {
             match self.peek()? {
                 // [1,2,]
-                Some(next) if expect(next.kind(), TokenKind::RSquareBracket) => {
+                Some(next) if expect(next.kind, TokenKind::RSquareBracket) => {
                     // []
                     self.next()?;
                     self.depth -= 1;
@@ -267,21 +265,21 @@ impl<'a> Parser<'a> {
                 _ => arr.push(self.parse_value()?),
             }
             match self.peek()? {
-                Some(next) if expect(next.kind(), TokenKind::Comma) => {
+                Some(next) if expect(next.kind, TokenKind::Comma) => {
                     self.next()?;
                     // trailing comma case: [1,2,]
                     if let Some(next) = self.peek()? {
-                        if expect(next.kind(), TokenKind::RSquareBracket) {
+                        if expect(next.kind, TokenKind::RSquareBracket) {
                             return Err(ParseError {
                                 kind: ParseErrorKind::UnexpectedToken {
                                     expected: Some("json value"),
                                 },
-                                pos: next.start_index(),
+                                pos: next.start_index,
                             });
                         }
                     }
                 }
-                Some(next) if expect(next.kind(), TokenKind::RSquareBracket) => {
+                Some(next) if expect(next.kind, TokenKind::RSquareBracket) => {
                     self.next()?;
                     self.depth -= 1;
                     break;
@@ -291,7 +289,7 @@ impl<'a> Parser<'a> {
                         kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("',' or ']'"),
                         },
-                        pos: next.start_index(),
+                        pos: next.start_index,
                     });
                 }
                 None => {
@@ -433,8 +431,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn expect(left: &TokenKind, right: TokenKind) -> bool {
-    *left == right
+fn expect(left: TokenKind, right: TokenKind) -> bool {
+    left == right
 }
 
 #[cfg(test)]

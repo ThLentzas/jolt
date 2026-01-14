@@ -216,10 +216,6 @@ pub struct ParseError {
 impl error::Error for ParseError {}
 
 impl fmt::Display for ParseError {
-    // macros like write!, println! and so on do autoderef
-    // we access kind via a reference to self and because match takes ownership and kind holds
-    // variants of String that do not implement copy we pass a reference to it instead; similar to
-    // self.kind in Number for the partial_cmp() imp
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} at index {}", self.kind, self.pos)
     }
@@ -235,9 +231,6 @@ impl From<LexError> for ParseError {
 }
 
 // this error occurs when we try to parse true, false, null or fn names
-// didn't think of a better name and needed to return an Err in read_boolean_or_null()
-// LiteralError does not make sense because all the possible values are literals(string literal,
-// number etc..)
 #[derive(Debug)]
 pub(super) struct KeywordError {
     pub(super) kind: KeywordErrorKind,

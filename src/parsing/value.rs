@@ -29,7 +29,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!({"foo": "bar"})
+    /// let val = json!({"foo": "bar"});
     /// ```
     Object(IndexMap<String, Value>),
     /// Represents a JSON array.
@@ -37,7 +37,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!([1, 2, 3, 4])
+    /// let val = json!([1, 2, 3, 4]);
     /// ```
     Array(Vec<Value>),
     /// Represents a JSON number.
@@ -45,7 +45,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!(10)
+    /// let val = json!(10);
     /// ```
     Number(Number),
     /// Represents a JSON string.
@@ -53,7 +53,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!("foo")
+    /// let val = json!("foo");
     /// ```
     String(String),
     /// Represents a JSON bool.
@@ -61,7 +61,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!(true)
+    /// let val = json!(true);
     /// ```
     Boolean(bool),
     /// Represents a JSON null.
@@ -69,7 +69,7 @@ pub enum Value {
     /// ```
     /// # use jolt::json;
     /// #
-    /// let val = json!(null)
+    /// let val = json!(null);
     /// ```
     Null,
 }

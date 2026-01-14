@@ -9,7 +9,7 @@ use std::{error, fmt};
 // Index 240-244 (0xF0-0xF4): 4-byte sequence starters = 4
 // Index 245-255 (0xF5-0xFF): Invalid = 0
 const UTF8_CHAR_WIDTH: [u8; 256] = [
-    // 1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    // 1  2  3  4  5  6  7  8  9  A  B  C  D  E  
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 0
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 1
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 2
@@ -108,8 +108,8 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
 }
 
 // returns the width(number of bytes) of a sequence
-pub(super) fn utf8_char_width(byte: u8) -> usize {
-    UTF8_CHAR_WIDTH[byte as usize] as usize
+pub(super) fn utf8_char_width(b: u8) -> usize {
+    UTF8_CHAR_WIDTH[b as usize] as usize
 }
 
 pub(super) fn is_bom_present(buffer: &[u8]) -> bool {

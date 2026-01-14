@@ -17,23 +17,9 @@ pub(super) enum TokenKind {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(super) struct Token {
-    start_index: usize,
-    offset: usize,
-    kind: TokenKind,
-}
-
-impl Token {
-    pub(super) fn start_index(&self) -> usize {
-        self.start_index
-    }
-
-    pub(super) fn offset(&self) -> usize {
-        self.offset
-    }
-
-    pub(super) fn kind(&self) -> &TokenKind {
-        &self.kind
-    }
+    pub(super) start_index: usize,
+    pub(super) offset: usize,
+    pub(super) kind: TokenKind,
 }
 
 pub(super) struct Lexer<'a> {
@@ -193,7 +179,7 @@ impl<'a> Lexer<'a> {
             let current = self.buffer[self.pos];
             match current {
                 // raw control characters are not allowed
-                // [34, 10, 34] is invalid - the control character is passed as raw byte, and it is unescaped
+                // [34, 10, 34] is invalid, the control character is passed as raw byte, and it is unescaped
                 // but [34, 92, 110, 34] is valid as a new line character
                 c if c.is_ascii_control() => {
                     return Err(StringError {
@@ -209,7 +195,7 @@ impl<'a> Lexer<'a> {
                     escapes::check_escape_character(&self.buffer, self.pos)?;
                     self.pos += escapes::len(&self.buffer, self.pos);
                 }
-                // ascii case
+                // ascii 
                 _ => self.pos += 1
             }
         }
@@ -219,19 +205,19 @@ impl<'a> Lexer<'a> {
                 pos: self.pos - 1,
             });
         }
-        // consume closing '"'
+        // consume closing "
         self.advance_by(1);
         Ok(())
     }
 
-    // an approach with starts_with() could work but in the case of mismatch we won't know the index
+    // an approach with starts_with() could work but in the mismatch case we won't know the index
     fn read_boolean(&mut self) -> Result<(), LexError> {
-        let target = if self.buffer[self.pos] == b't' {
+        let keyword = if self.buffer[self.pos] == b't' {
             "true".as_bytes()
         } else {
             "false".as_bytes()
         };
-        super::read_keyword(self.buffer, &mut self.pos, target)?;
+        super::read_keyword(self.buffer, &mut self.pos, keyword)?;
         Ok(())
     }
 

@@ -4,11 +4,12 @@
 //!
 //! # Parsing
 //!
-//! You can parse JSON data using either [`from_slice()`](from_slice) or [`from_str()`](from_str). If the parsing process is successful the
-//! result is the following enum.
+//! You can parse JSON data using either [`from_slice()`](from_slice) or [`from_str()`](from_str).
+//! If the parsing process is successful the result is the following enum.
 //!
 //! ```
-//! # use jolt::{Value, Number};
+//! # use jolt::Number;
+//! # use indexmap::IndexMap;
 //! #
 //! enum Value {
 //!     Object(IndexMap<String, Value>),
@@ -37,7 +38,7 @@
 //!         }
 //!     });
 //!
-//!     let book = val.pointer("/store/books/0")?;
+//!     let book = val.pointer("/store/books/0").unwrap();
 //!
 //!     assert_eq!(book.unwrap(), &json!("A"));
 //! }
@@ -71,16 +72,16 @@
 //!     });
 //!
 //!     // Select all book titles
-//!     let titles = val.select_as_values("$.store.books[*].title")?;
+//!     let titles = val.select_as_values("$.store.books[*].title").unwrap();
 //!     assert_eq!(titles.len(), 3);
 //!
 //!     // Get normalized paths instead of values
 //!     // ["$['store']['books'][0]['title']", "$['store']['books'][1]['title']", ...]
-//!     let paths = val.select_as_npaths("$.store.books[*].title")?;
+//!     let paths = val.select_as_npaths("$.store.books[*].title").unwrap();
 //!     assert_eq!(paths.len(), 3);
 //!
 //!     // Filter: books with capacity > 30
-//!     let books = val.select("$.store.books[?@.capacity > 30]")?;
+//!     let books = val.select("$.store.books[?@.capacity > 30]").unwrap();
 //!     assert_eq!(books.len(), 2);
 //! }
 //!```
@@ -106,7 +107,7 @@
 //!     let val = json!({
 //!         "name": "Alice",
 //!         "foo": ["bar", "baz"]
-//!     })?;
+//!     });
 //!
 //!     let name = val.get("name").unwrap();
 //!     assert_eq!(name, &json!("Alice"));
@@ -187,12 +188,13 @@ pub use parsing::value::pointer::to_ptr_path;
 /// ```
 /// # use jolt;
 /// #
-/// let value = jolt::from_slice(b r#"{"foo": "bar"}"#).unwrap();
+/// let value = jolt::from_slice(br#"{"foo": "bar"}"#).unwrap();
 /// ```
 /// # Errors
 /// Performs strict UTF-8 validation where any invalid sequence results in an error. Non-strict parsers typically
 /// substitute invalid sequences with the replacement character (�), but this parser rejects them.
-/// The process can also fail if the slice violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259) grammar.
+/// The process can also fail if the slice violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259)
+/// grammar.
 pub fn from_slice(buffer: &[u8]) -> Result<Value, ParseError> {
     parsing::parse(buffer)
 }

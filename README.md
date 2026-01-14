@@ -191,7 +191,7 @@ let val = json!({
  });
  ```
 This macro is intended for quickly constructing test data. It does **not** perform any escape sequence handling. For example, `"ab\u0063"` will not be converted to `"abc"` as per the JSON grammar, and
-invalid escapes like `"ab\p"` will not produce an error.Invalid input creates a `Value` in an
+invalid escapes like `"ab\p"` will not produce an error. Invalid input creates a `Value` in an
 undefined state, which may cause unexpected behavior. For untrusted input, use `from_slice()`
 or `from_str()` instead. Use with your own discretion.
 
