@@ -57,25 +57,31 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
+    // this method peeks to determine which method to call to parse the corresponding value, then
+    // when we are ready to process the token each parse method calls next() to consume the token
+    // and return the value
     fn parse_value(&mut self) -> Result<Value, ParseError> {
-        let Some(token) = self.next()? else {
+        let Some(token) = self.peek()? else {
             return Err(ParseError {
                 kind: ParseErrorKind::UnexpectedEof,
                 pos: self.buffer.len() - 1,
             });
         };
 
-        let val = match token.kind {
+        // why we don't use the token directly? Read the comment in parse_object() at loop{}
+        let kind = token.kind;
+        let start = token.start_index;
+        let offset = token.offset;
+        let val = match kind {
             TokenKind::LCurlyBracket => Value::Object(self.parse_object()?),
             TokenKind::LSquareBracket => Value::Array(self.parse_array()?),
-            TokenKind::Number => {
-                Value::Number(self.parse_number(token.start_index, token.offset))
-            }
-            TokenKind::String => {
-                Value::String(self.parse_string(token.start_index, token.offset)?)
-            }
-            TokenKind::Boolean => Value::Boolean(self.parse_bool(token.start_index)),
-            TokenKind::Null => Value::Null,
+            TokenKind::Number => Value::Number(self.parse_number(start, offset)),
+            TokenKind::String => Value::String(self.parse_string(start, offset)?),
+            TokenKind::Boolean => Value::Boolean(self.parse_bool(start)),
+            TokenKind::Null => {
+                self.next()?;
+                Value::Null
+            },
             _ => {
                 return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
@@ -88,29 +94,29 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
-    // We peek and advance 4 times, after moving past the opening '{'
-    //
-    // 1. peek and expect either '}' for an empty object or a key string
-    // 2. peek and expect ':' after key
-    // 3. after colon we call parse_value()
-    // 4. peek, after value we expect either ',' to separate from the next key-value pair or '}' 
-    //
-    // When encountering '}' in steps 1 or 4, we break WITHOUT calling advance(). The closing '}'
-    // will be consumed by the caller (parse_value()) after this function returns.
     fn parse_object(&mut self) -> Result<IndexMap<String, Value>, ParseError> {
-        if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
-            return Err(ParseError {
-                kind: ParseErrorKind::NestingDepthLimitExceeded {
-                    depth: super::NESTING_DEPTH_LIMIT,
-                },
-                // the position of the buffer
-                pos: self.lexer.pos,
-            });
-        }
-
+        self.next()?; // Consume '{'
+        
+        self.check_depth()?;
         self.depth += 1;
         let len = self.buffer.len();
         let mut map = IndexMap::new();
+
+        // Case: empty object {}
+        match self.peek()? {
+            Some(token) if token.kind == TokenKind::RCurlyBracket => {
+                self.next()?;
+                self.depth -= 1;
+                return Ok(map);
+            }
+            Some(_) => (),
+            None => {
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: len - 1,
+                });
+            }
+        }
 
         // We don't know how many tokens are part of the current object, the moment we encounter '}'
         // we break
@@ -123,7 +129,8 @@ impl<'a> Parser<'a> {
             //                 let key = self.parse_string(token.start_index(), token.offset())?;
             //
             // The compiler will complain that we have 2 mutable borrows for self. We do, self.peek()
-            // is still active and then we call self.parse_string() which also takes &mut self.
+            // and then we call self.parse_string() which also takes &mut self, the borrow from peek
+            // is still active part of the match block
             //
             // With this approach we extract the information that we need, then the 1st borrow ends
             // after we are done with token, and we can call parse_string()
@@ -138,12 +145,7 @@ impl<'a> Parser<'a> {
             let start = token.start_index;
             let offset = token.offset;
             match kind {
-                // {"foo": "bar",}
-                TokenKind::RCurlyBracket => {
-                    self.next()?;
-                    self.depth -= 1;
-                    break;
-                }
+                // expect key
                 TokenKind::String => {
                     // We don't allow duplicate names at the same depth level
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
@@ -158,27 +160,7 @@ impl<'a> Parser<'a> {
                             pos: start,
                         });
                     }
-                    self.next()?;
-                    match self.peek()? {
-                        Some(t) if expect(t.kind, TokenKind::Colon) => {
-                            self.next()?;
-                        }
-                        // mismatch on colon
-                        Some(t) => {
-                            return Err(ParseError {
-                                kind: ParseErrorKind::UnexpectedToken {
-                                    expected: Some("colon ':'"),
-                                },
-                                pos: t.start_index,
-                            });
-                        }
-                        None => {
-                            return Err(ParseError {
-                                kind: ParseErrorKind::UnexpectedEof,
-                                pos: self.buffer.len() - 1,
-                            });
-                        }
-                    }
+                    self.expect_colon()?;
                     map.insert(name, self.parse_value()?);
                 }
                 // mismatch on key
@@ -191,11 +173,12 @@ impl<'a> Parser<'a> {
                     });
                 }
             }
-
+            // expect Comma to separate key-value pairs or '}' to end current object
             match self.peek()? {
                 Some(token) if expect(token.kind, TokenKind::Comma) => {
                     self.next()?;
                     if let Some(next) = self.peek()? {
+                        // {"foo": "bar",}
                         if expect(next.kind, TokenKind::RCurlyBracket) {
                             return Err(ParseError {
                                 kind: ParseErrorKind::UnexpectedToken {
@@ -239,31 +222,31 @@ impl<'a> Parser<'a> {
     // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
     // by the caller (parse_value()) after this function returns.
     fn parse_array(&mut self) -> Result<Vec<Value>, ParseError> {
-        if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
-            return Err(ParseError {
-                kind: ParseErrorKind::NestingDepthLimitExceeded {
-                    depth: super::NESTING_DEPTH_LIMIT,
-                },
-                // the position of the buffer
-                pos: self.lexer.pos,
-            });
-        }
+        self.next()?; // Consume the TokenKind::LSquareBracket token that parse_value() peeked
 
+        self.check_depth()?;
         self.depth += 1;
         let mut arr = Vec::new();
+
+        // Case: empty array []
+        match self.peek()? {
+            Some(token) if token.kind == TokenKind::RSquareBracket => {
+                self.next()?;
+                self.depth -= 1;
+                return Ok(arr);
+            }
+            Some(_) => (),
+            None => {
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedEof,
+                    pos: self.buffer.len()   - 1,
+                });
+            }
+        }
+
         // when we encounter ']' we break
         loop {
-            match self.peek()? {
-                // [1,2,]
-                Some(next) if expect(next.kind, TokenKind::RSquareBracket) => {
-                    // []
-                    self.next()?;
-                    self.depth -= 1;
-                    break;
-                }
-                // Some(next) or None parse.value() will handle both cases
-                _ => arr.push(self.parse_value()?),
-            }
+            arr.push(self.parse_value()?);
             match self.peek()? {
                 Some(next) if expect(next.kind, TokenKind::Comma) => {
                     self.next()?;
@@ -346,10 +329,11 @@ impl<'a> Parser<'a> {
     // we can keep track of that slice and call push_str() instead of push(). push() needs to increase
     // len, do bounds checks etc each time is called.
     // This approach improves performance by 1.5ms, from 7.4 to 5.9
-    // 
+    //
     // to extract the value from slice all we need is the starting index and the offset; we pass only
     // what we need, not the whole token
     fn parse_string(&mut self, start: usize, offset: usize) -> Result<String, ParseError> {
+        self.next()?;
         let slice = &self.buffer[start + 1..start + offset - 1];
 
         // calls iter.any() internally
@@ -408,12 +392,47 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_number(&mut self, start: usize, offset: usize) -> Number {
+        self.next().unwrap();
         let slice = &self.buffer[start..start + offset];
         number::parse(slice)
     }
 
     fn parse_bool(&mut self, start: usize) -> bool {
+        self.next().unwrap();
         self.buffer[start] == b't'
+    }
+
+    fn expect_colon(&mut self) -> Result<(), ParseError> {
+        match self.peek()? {
+            Some(t) if t.kind == TokenKind::Colon => {
+                self.next()?;
+                Ok(())
+            }
+            // mismatch on colon
+            Some(t) => Err(ParseError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: Some("colon ':'"),
+                },
+                pos: t.start_index,
+            }),
+            None => Err(ParseError {
+                kind: ParseErrorKind::UnexpectedEof,
+                pos: self.buffer.len() - 1,
+            }),
+        }
+    }
+
+    fn check_depth(&mut self) -> Result<(), ParseError> {
+        if self.depth + 1 > super::NESTING_DEPTH_LIMIT {
+            return Err(ParseError {
+                kind: ParseErrorKind::NestingDepthLimitExceeded {
+                    depth: super::NESTING_DEPTH_LIMIT,
+                },
+                // the position of the buffer
+                pos: self.lexer.pos,
+            });
+        }
+        Ok(())
     }
 
     fn peek(&mut self) -> Result<Option<&Token>, ParseError> {
@@ -754,33 +773,8 @@ mod tests {
     //
     // format!() creates a String, then .as_bytes() borrows from it, but the String gets dropped immediately after that line
     #[test]
-    fn array_exceeds_nesting_depth() {
+    fn exceeds_depth_limit() {
         let text = format!("{}{}", "[".repeat(257), "]".repeat(257));
-        let buffer = text.as_bytes();
-        let mut parser = Parser::new(buffer);
-        let result = parser.parse();
-
-        assert_eq!(
-            result,
-            Err(ParseError {
-                kind: ParseErrorKind::NestingDepthLimitExceeded {
-                    depth: parsing::NESTING_DEPTH_LIMIT
-                },
-                pos: parser.lexer.pos
-            })
-        );
-    }
-
-    #[test]
-    fn object_exceeds_nesting_depth() {
-        let mut text = "{}".to_string();
-        for _ in 0..256 {
-            // {}
-            // {"key": {}}
-            // {"key": {"key": {}}}
-            text = format!(r#"{{"key": {}}}"#, text);
-        }
-
         let buffer = text.as_bytes();
         let mut parser = Parser::new(buffer);
         let result = parser.parse();

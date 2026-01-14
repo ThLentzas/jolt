@@ -173,7 +173,7 @@ impl<'a> Lexer<'a> {
 
     fn read_string(&mut self) -> Result<(), StringError> {
         let len = self.buffer.len();
-        self.pos += 1; // skip opening "
+        self.advance_by(1); // skip opening "
 
         while self.pos < len && self.buffer[self.pos] != b'"' {
             let current = self.buffer[self.pos];
@@ -189,14 +189,14 @@ impl<'a> Lexer<'a> {
                 }
                 c if !c.is_ascii() => {
                     utf8::check_utf8_sequence(&self.buffer, self.pos)?;
-                    self.pos += utf8::utf8_char_width(current);
+                    self.advance_by(utf8::utf8_char_width(current));
                 }
                 b'\\' => {
                     escapes::check_escape_character(&self.buffer, self.pos)?;
-                    self.pos += escapes::len(&self.buffer, self.pos);
+                    self.advance_by(escapes::len(&self.buffer, self.pos));
                 }
                 // ascii 
-                _ => self.pos += 1
+                _ => self.advance_by(1)
             }
         }
         if self.pos == len {
