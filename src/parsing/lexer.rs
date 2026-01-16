@@ -189,7 +189,7 @@ impl<'a> Lexer<'a> {
                 }
                 c if !c.is_ascii() => {
                     utf8::check_utf8_sequence(&self.buffer, self.pos)?;
-                    self.advance_by(utf8::utf8_char_width(current));
+                    self.advance_by(utf8::char_width(current));
                 }
                 b'\\' => {
                     escapes::check_escape_char(&self.buffer, self.pos)?;

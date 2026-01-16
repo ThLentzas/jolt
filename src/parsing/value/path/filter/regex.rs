@@ -339,7 +339,7 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_concat()?;
 
         while self.buffer.get(self.pos) == Some(&b'|') {
-            self.consume(1);
+            self.advance_by(1);
             let rhs = self.parse_concat()?;
             lhs = self.push_node(Regex::Union(lhs, rhs))?;
         }
@@ -387,7 +387,7 @@ impl<'a> Parser<'a> {
 
         match self.buffer.get(self.pos) {
             Some(b'*') => {
-                self.consume(1);
+                self.advance_by(1);
                 let node = Regex::Star(atom_idx);
                 Ok(self.push_node(node)?)
             }
@@ -412,15 +412,15 @@ impl<'a> Parser<'a> {
             //     Ok(self.emit(Regex::Union(atom_idx, empty_idx)))
             // }
             Some(b'+') => {
-                self.consume(1);
+                self.advance_by(1);
                 Ok(self.push_node(Regex::Plus(atom_idx))?)
             }
             Some(b'?') => {
-                self.consume(1);
+                self.advance_by(1);
                 Ok(self.push_node(Regex::Question(atom_idx))?)
             }
             Some(b'{') => {
-                self.consume(1);
+                self.advance_by(1);
                 let (min, max) = self.parse_quant_range()?;
                 match max {
                     Some(m) => Ok(self.expand_bounded(atom_idx, min, m)?),
@@ -537,11 +537,11 @@ impl<'a> Parser<'a> {
                 }
                 match self.buffer.get(self.pos) {
                     Some(b',') => {
-                        self.consume(1);
+                        self.advance_by(1);
                         match self.buffer.get(self.pos) {
                             // {2,}
                             Some(b'}') => {
-                                self.consume(1);
+                                self.advance_by(1);
                                 Ok((min, None))
                             }
                             Some(b) if !b.is_ascii_digit() => Err(RegexError {
@@ -561,7 +561,7 @@ impl<'a> Parser<'a> {
                                 }
                                 match self.buffer.get(self.pos) {
                                     Some(b'}') => {
-                                        self.consume(1);
+                                        self.advance_by(1);
                                         Ok((min, Some(max)))
                                     }
                                     Some(b) => Err(RegexError {
@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
                     // we can rewrite it as {2,2} which will allow us to expand it as {min, max}
                     // range. In both cases our range is bounded while in {2,} is not
                     Some(b'}') => {
-                        self.consume(1);
+                        self.advance_by(1);
                         Ok((min, Some(min)))
                     }
                     Some(b) => Err(RegexError {
@@ -622,11 +622,11 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> Result<usize, RegexError> {
         match self.buffer.get(self.pos) {
             Some(b'(') => {
-                self.consume(1);
+                self.advance_by(1);
                 let expr_idx = self.parse_union()?;
                 match self.buffer.get(self.pos) {
                     Some(b')') => {
-                        self.consume(1);
+                        self.advance_by(1);
                         Ok(expr_idx)
                     }
                     Some(b) => Err(RegexError {
@@ -686,7 +686,7 @@ impl<'a> Parser<'a> {
     fn parse_class(&mut self) -> Result<CharClass, RegexError> {
         match self.buffer[self.pos] {
             b'.' => {
-                self.consume(1);
+                self.advance_by(1);
                 Ok(CharClass::Dot)
             }
             b'[' => Ok(CharClass::ClassExpr(self.parse_class_expr()?)),
@@ -699,7 +699,7 @@ impl<'a> Parser<'a> {
     // no quantifiers or nested regex is allowed inside a set
     fn parse_class_expr(&mut self) -> Result<ClassExpr, RegexError> {
         // consume '['
-        self.consume(1);
+        self.advance_by(1);
         let mut items = Vec::new();
         let len = self.buffer.len();
         let mut negated = false;
@@ -707,12 +707,12 @@ impl<'a> Parser<'a> {
         if let Some(b) = self.buffer.get(self.pos) {
             if *b == b'^' {
                 negated = true;
-                self.consume(1);
+                self.advance_by(1);
             }
         }
 
         if let Some(b'-') = self.buffer.get(self.pos) {
-            self.consume(1);
+            self.advance_by(1);
             items.push(ExprItem::Literal('-'));
         }
 
@@ -729,7 +729,7 @@ impl<'a> Parser<'a> {
                 //
                 // in any other case, it must be escaped
                 if *b == b'-' {
-                    self.consume(1);
+                    self.advance_by(1);
                     match self.buffer.get(self.pos) {
                         //[a-]
                         Some(b) if *b == b']' => {
@@ -775,7 +775,7 @@ impl<'a> Parser<'a> {
             });
         }
         // consume ']'
-        self.consume(1);
+        self.advance_by(1);
 
         Ok(ClassExpr { negated, items })
     }
@@ -811,7 +811,7 @@ impl<'a> Parser<'a> {
 
     fn parse_escape(&mut self) -> Result<Escape, RegexError> {
         // consume '\'
-        self.consume(1);
+        self.advance_by(1);
         match self.buffer.get(self.pos) {
             Some(b'p') | Some(b'P') => Ok(Escape::Property(self.parse_property()?)),
             Some(_) => Ok(Escape::Literal(self.map_escape_character()?)),
@@ -823,22 +823,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_char(&mut self) -> char {
-        let c;
-        let current = self.buffer[self.pos];
-
-        if !current.is_ascii() {
-            c = utf8::read_utf8_char(self.buffer, self.pos);
-            self.consume(utf8::utf8_char_width(current));
-        } else {
-            c = current as char;
-            self.consume(1);
-        }
+        let c = utf8::read_utf8_char(self.buffer, self.pos);
+        self.advance_by(utf8::char_width(self.buffer[self.pos]));
         c
     }
 
     fn parse_property(&mut self) -> Result<Property, RegexError> {
         let negated = self.buffer[self.pos] == b'P';
-        self.consume(1);
+        self.advance_by(1);
 
         // need 3 or 4 characters after p/P: {..}
         // this won't work, we don't know if we have a major or a minor category
@@ -849,7 +841,7 @@ impl<'a> Parser<'a> {
         //     });
         // }
         match self.buffer.get(self.pos) {
-            Some(b) if *b == b'{' => self.consume(1),
+            Some(b) if *b == b'{' => self.advance_by(1),
             Some(b) => {
                 return Err(RegexError {
                     kind: RegexErrorKind::UnexpectedCharacter(*b),
@@ -867,7 +859,7 @@ impl<'a> Parser<'a> {
         let category = self.parse_category()?;
 
         match self.buffer.get(self.pos) {
-            Some(b) if *b == b'}' => self.consume(1),
+            Some(b) if *b == b'}' => self.advance_by(1),
             Some(b) => {
                 return Err(RegexError {
                     kind: RegexErrorKind::UnexpectedCharacter(*b),
@@ -901,7 +893,7 @@ impl<'a> Parser<'a> {
             }
             b => b as char,
         };
-        self.consume(1);
+        self.advance_by(1);
         Ok(c)
     }
 
@@ -1028,7 +1020,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.consume(n);
+        self.advance_by(n);
         Ok(category)
     }
 
@@ -1064,7 +1056,7 @@ impl<'a> Parser<'a> {
         self.buffer.get(self.pos + 1)
     }
 
-    fn consume(&mut self, n: usize) {
+    fn advance_by(&mut self, n: usize) {
         self.pos += n;
     }
 }

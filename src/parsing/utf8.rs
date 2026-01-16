@@ -107,8 +107,8 @@ pub(super) fn check_utf8_sequence(buffer: &[u8], pos: usize) -> Result<(), Utf8E
     Ok(())
 }
 
-// returns the width(number of bytes) of a sequence
-pub(super) fn utf8_char_width(b: u8) -> usize {
+// returns the width(number of bytes) of a sequence, including ASCII
+pub(super) fn char_width(b: u8) -> usize {
     UTF8_CHAR_WIDTH[b as usize] as usize
 }
 
@@ -117,7 +117,7 @@ pub(super) fn is_bom_present(buffer: &[u8]) -> bool {
 }
 
 pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> char {
-    let width = utf8_char_width(buffer[pos]);
+    let width = char_width(buffer[pos]);
     // SAFETY: always called on a valid sequence
     unsafe {
         str::from_utf8_unchecked(&buffer[pos..pos + width])

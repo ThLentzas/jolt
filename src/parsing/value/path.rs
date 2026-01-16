@@ -638,41 +638,36 @@ impl<'a, 'r> Parser<'a, 'r> {
 
         while i < slice.len() {
             let j = i;
-            while i < slice.len() && slice[i] != b'\\' && slice[i].is_ascii() {
+            while i < slice.len() && slice[i] != b'\\' {
                 if slice[i].is_ascii_control() {
                     return Err(StringError {
                         kind: StringErrorKind::InvalidControlCharacter { byte: slice[i] },
-                        // convert back to buffer index for error
+                        // use absolute pos for error
                         pos: self.pos + i,
                     });
                 }
-                i += 1;
+                i += utf8::char_width(slice[i]);
             }
+            // SAFETY: slice is part of the buffer that we created by calling as_bytes() in the input str
             name.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
             if i >= slice.len() {
                 break;
             }
-            match slice[i] {
-                b'\\' => {
-                    let next = slice.get(i + 1);
-                    match next {
-                        // single quotes must be escaped within single-quoted strings.
-                        // json path specific, not part of standard json escapes.
-                        Some(b'\'') if quote == b'\'' => {
-                            name.push('\'');
-                            // prevents the escaped quote from being treated as a closing delimiter
-                            i += 2;
-                        }
-                        _ => {
-                            escapes::check_escape_char(slice, i)?;
-                            name.push(escapes::map_escape_char(slice, i));
-                            i += escapes::len(slice, i);
-                        }
-                    }
+
+            // can only be an escape seq
+            let next = slice.get(i + 1);
+            match next {
+                // single quotes must be escaped within single-quoted strings.
+                // json path specific, not part of standard json escapes.
+                Some(b'\'') if quote == b'\'' => {
+                    name.push('\'');
+                    // prevents the escaped quote from being treated as a closing delimiter
+                    i += 2;
                 }
                 _ => {
-                    name.push(utf8::read_utf8_char(slice, i));
-                    i += utf8::utf8_char_width(slice[i]);
+                    escapes::check_escape_char(slice, i)?;
+                    name.push(escapes::map_escape_char(slice, i));
+                    i += escapes::len(slice, i);
                 }
             }
 
@@ -707,7 +702,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         if current.is_ascii() {
             self.pos += 1;
         } else {
-            self.pos += utf8::utf8_char_width(current);
+            self.pos += utf8::char_width(current);
         }
 
         // We stop when we encounter 1 of the following characters without necessarily having an
@@ -740,11 +735,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                     pos: self.pos,
                 });
             }
-            if current.is_ascii() {
-                self.pos += 1;
-            } else {
-                self.pos += utf8::utf8_char_width(current);
-            }
+            self.pos += utf8::char_width(current);
         }
         let name = unsafe { str::from_utf8_unchecked(&self.buffer[start..self.pos]) }.to_string();
 

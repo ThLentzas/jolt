@@ -3,8 +3,6 @@ use crate::parsing::error::{StringError, StringErrorKind};
 use crate::parsing::escapes::{self, EscapeError, EscapeErrorKind};
 use crate::parsing::utf8;
 use crate::parsing::value::error::{PointerError, PointerErrorKind};
-use std::iter::Peekable;
-use std::str::Chars;
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
 // where the token started based on the underline buffer for better error messaging
@@ -79,37 +77,19 @@ impl<'a> Pointer<'a> {
         }
 
         let start = self.pos;
-        // Fast path: we never encounter anything that needs to be mapped, write the whole slice
-        // at once
-        if !slice.iter().any(|&b| matches!(b, b'\\' | b'~')) {
-            // SAFETY: buffer represents &str
-            let val = unsafe { String::from_utf8_unchecked(Vec::from(slice)) };
-            if val.len() > parsing::STRING_LENGTH_LIMIT {
-                return Err(StringError {
-                    kind: StringErrorKind::LengthLimitExceeded {
-                        len: parsing::STRING_LENGTH_LIMIT,
-                    },
-                    // at the index of opening quote
-                    pos: self.pos - 1,
-                });
-            }
-            self.pos = end + 1;
-            return Ok(Some(RefToken { val, pos: start }));
-        }
-
         let mut i = 0;
 
         while i < slice.len() {
             let j = i;
-            while i < slice.len() && slice[i] != b'\\' && slice[i] != b'~' && slice[i].is_ascii() {
+            while i < slice.len() && slice[i] != b'\\' && slice[i] != b'~' {
                 if slice[i].is_ascii_control() {
                     return Err(StringError {
                         kind: StringErrorKind::InvalidControlCharacter { byte: slice[i] },
-                        // for the error use the absolute position
+                        // for the error we use the absolute position
                         pos: self.pos + i,
                     });
                 }
-                i += 1;
+                i += utf8::char_width(slice[i]);
             }
 
             val.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
@@ -127,13 +107,18 @@ impl<'a> Pointer<'a> {
                         val.push(self.map_ptr_escape(slice, &mut i)?);
                     }
                 }
-                b'~' => val.push(self.map_ptr_escape(slice, &mut i)?),
-                b => {
-                    val.push(utf8::read_utf8_char(slice, i));
-                    i += utf8::utf8_char_width(b) - 1;
-                }
+                // can only be '~'
+                _ => val.push(self.map_ptr_escape(slice, &mut i)?),
             }
             i += 1;
+        }
+        if val.len() > parsing::STRING_LENGTH_LIMIT {
+            return Err(StringError {
+                kind: StringErrorKind::LengthLimitExceeded {
+                    len: parsing::STRING_LENGTH_LIMIT,
+                },
+                pos: start,
+            });
         }
         // move past '/'
         self.pos = end + 1;
@@ -338,8 +323,10 @@ pub(super) fn check_array_index_strict(token: &RefToken) -> Result<usize, Pointe
 /// # Example
 ///
 /// ```
+/// # use jolt::pointer;
+/// #
 /// let npath = "$['store']['book'][0]['title']";
-/// let ptr_path = jolt::to_ptr_path(npath).unwrap();
+/// let ptr_path = pointer::to_ptr_path(npath).unwrap();
 ///
 /// assert_eq!(ptr_path, "/store/book/0/title");
 /// ```
@@ -388,7 +375,7 @@ pub fn to_ptr_path(npath: &str) -> Option<String> {
     Some(path)
 }
 
-// toDo: ask about how should we expose to_ptr_path(), add expect_comma_or_end() for parser, use utf8::char_width() instead of branching
+// toDo: ask about how should we expose to_ptr_path(), add expect_comma_or_end() for parser
 fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
     *pos += 1; // consume opening single quote '
     let mut key = String::new();
@@ -407,7 +394,7 @@ fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
             if slice[i].is_ascii_control() {
                 return None;
             }
-            i += utf8::utf8_char_width(*b);
+            i += utf8::char_width(*b);
         }
 
         key.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
@@ -465,7 +452,7 @@ fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
                 key.push('1');
                 i += 1;
             }
-            // can only be '~', tilde as a literal in a pointer path is represented as ~0
+            // can only be '~', '~' as a literal in a pointer path is represented as ~0
             _ => {
                 key.push('~');
                 key.push('0');

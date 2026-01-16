@@ -176,6 +176,8 @@ impl<'r> From<PathNode<'r, Option<Rc<PathTrace<'r>>>>> for Node<'r> {
 
 // what we return to the user
 // lifetimes: val references a Value that lives in root
+//
+/// Contains a reference to a value and the normalized root to value path.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node<'r> {
     pub val: &'r Value,

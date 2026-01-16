@@ -1,5 +1,5 @@
 use crate::parsing::number::Number;
-use crate::parsing::value::error::{PatchError, PointerError};
+use crate::parsing::value::error::{PatchError, PathError, PointerError};
 use crate::parsing::value::path::Parser;
 use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
 use crate::parsing::value::pointer::Pointer;
@@ -14,7 +14,6 @@ mod patch;
 mod path;
 pub mod pointer;
 
-pub use crate::parsing::value::error::PathError;
 pub use crate::parsing::value::path::tracker::Node;
 
 // Clone is needed for Cow
@@ -78,7 +77,7 @@ pub enum Value {
 
 impl Value {
     /// Returns true if `Value` is an `Object`, false otherwise.
-    /// # Examples
+    ///
     /// ```
     /// # use jolt::json;
     /// #
@@ -93,7 +92,7 @@ impl Value {
     }
 
     /// Returns true if `Value` is an `Array`, false otherwise.
-    /// # Examples
+    ///
     /// ```
     /// # use jolt::json;
     /// #
@@ -107,7 +106,6 @@ impl Value {
 
     /// Returns true if `Value` is a `Number`, false otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -121,7 +119,6 @@ impl Value {
 
     /// Returns true if `Value` is a `String`, false otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -135,7 +132,6 @@ impl Value {
 
     /// Returns true if `Value` is a `Boolean`, false otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -149,7 +145,6 @@ impl Value {
 
     /// Returns true if `Value` is a `Null`, false otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -163,7 +158,6 @@ impl Value {
 
     /// If `self` is `Object` returns a reference to the underlying map, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -184,7 +178,6 @@ impl Value {
 
     /// If `self` is `Object` returns a mutable reference to the underlying map, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -205,7 +198,6 @@ impl Value {
 
     /// If `self` is an `Array` returns a reference to the underlying vector, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -223,7 +215,6 @@ impl Value {
 
     /// If `self` is `Array` returns a reference to the underlying vector, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -242,7 +233,6 @@ impl Value {
 
     /// If `self` is `Number` returns a reference to it, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -261,7 +251,6 @@ impl Value {
 
     /// If `self` is `String` returns a reference to it, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -278,7 +267,6 @@ impl Value {
 
     /// If `self` is `Boolean`, returns its value, None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -295,7 +283,6 @@ impl Value {
 
     /// If `self` is `Null`, returns (), None otherwise.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -314,7 +301,6 @@ impl Value {
     ///
     /// Returns None if the type doesn't match or the key/index doesn't exist.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -339,7 +325,6 @@ impl Value {
     ///
     /// Returns None if the type doesn't match or the key/index doesn't exist.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -364,7 +349,6 @@ impl Value {
     // same as Option::take()
     /// Takes the value, replacing it with `Null`.
     ///
-    /// # Examples
     /// ```
     /// # use jolt::json;
     /// #
@@ -399,8 +383,6 @@ impl Value {
     //      val = "Bob"
     //
     /// Returns a reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
-    ///
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;
@@ -455,8 +437,6 @@ impl Value {
     // look at pointer() above for any comments
     //
     /// Returns a mutable reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
-    ///
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;
@@ -514,8 +494,7 @@ impl Value {
     //
     /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
     ///
-    /// Returns a list where each node has a reference to a matched value and the root to value path. The path is normalized.
-    /// # Examples
+    /// Returns a list of [Node]s
     ///
     /// ```
     /// # use jolt::json;
@@ -542,7 +521,6 @@ impl Value {
     /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
     ///
     /// Returns a list containing the normalized paths of the matched values.
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;
@@ -570,7 +548,6 @@ impl Value {
     /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
     ///
     /// Returns a list of references to the matched values.
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;
@@ -598,8 +575,6 @@ impl Value {
     /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document.
     ///
     /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
-    ///
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;
@@ -641,8 +616,6 @@ impl Value {
     /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document atomically.
     ///
     /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
-    ///
-    /// # Examples
     ///
     /// ```
     /// # use jolt::json;

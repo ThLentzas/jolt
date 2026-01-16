@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
             TokenKind::Null => {
                 self.next()?;
                 Value::Null
-            },
+            }
             _ => {
                 return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
             None => {
                 return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedEof,
-                    pos: self.buffer.len()   - 1,
+                    pos: self.buffer.len() - 1,
                 });
             }
         }
@@ -325,73 +325,52 @@ impl<'a> Parser<'a> {
     // which impacts the performance, but when we push chunks we only get to do it once. This is
     // based on how the hardware works.
     // In the new approach we keep scanning until we encounter a non ascii byte or an escape sequence
-    // Those 2 need special handling. In any other case, as long as we keep encountering ASCII characters
+    // Those 2 need special handling. In any other case, as long as we keep encountering non-escape characters
     // we can keep track of that slice and call push_str() instead of push(). push() needs to increase
     // len, do bounds checks etc each time is called.
     // This approach improves performance by 1.5ms, from 7.4 to 5.9
     //
     // to extract the value from slice all we need is the starting index and the offset;
+    // the only type of StringError that can occur at this point is LenLimitExceeded. It makes no
+    // sense for this method to return StringError
     fn parse_string(&mut self) -> Result<String, ParseError> {
         // always safe to call unwrap twice; next() is called after parse_value() called peek()
         // so it can be an Error and it can be None
         let token = self.next()?.unwrap();
         let slice = &self.buffer[token.start_index + 1..token.start_index + token.offset - 1];
-
-        // calls iter.any() internally
-        if !slice.contains(&b'\\') {
-            // SAFETY: lexer already verified the sequence
-            let val = unsafe { String::from_utf8_unchecked(Vec::from(slice)) };
-            if val.len() > super::STRING_LENGTH_LIMIT {
-                return Err(ParseError {
-                    kind: ParseErrorKind::StringLengthLimitExceeded {
-                        len: super::STRING_LENGTH_LIMIT,
-                    },
-                    pos: token.start_index,
-                });
-            }
-            return Ok(val);
-        }
-
         let mut val = String::with_capacity(slice.len());
         let mut i = 0;
-        
+
         while i < slice.len() {
             let j = i;
-
-            // find the chunk that contains only ASCII
-            while i < slice.len() && slice[i] != b'\\' && slice[i].is_ascii() {
-                i += 1;
+            // find the chunk that does not contain any escape that needs special handling
+            while i < slice.len() && slice[i] != b'\\' {
+                i += utf8::char_width(slice[i]);
             }
-            
-            // if it contains at least 1 character parse it and push it as str
+            // if it contains at least 1 character parse it
             if i > j {
                 // SAFETY: lexer already verified the sequence
                 let chunk = unsafe { str::from_utf8_unchecked(&slice[j..i]) };
-                if chunk.len() > super::STRING_LENGTH_LIMIT {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::StringLengthLimitExceeded {
-                            len: super::STRING_LENGTH_LIMIT,
-                        },
-                        pos: token.start_index,
-                    });
-                }
                 val.push_str(chunk);
             }
             if i >= slice.len() {
                 break;
             }
-            // can be only utf-8 or escape
-            match slice[i] {
-                b'\\' => {
-                    val.push(escapes::map_escape_char(slice, i));
-                    i += escapes::len(slice, i);
-                }
-                b => {
-                    val.push(utf8::read_utf8_char(slice, i));
-                    i += utf8::utf8_char_width(b);
-                }
-            }
+            // can be only be an escape
+            val.push(escapes::map_escape_char(slice, i));
+            i += escapes::len(slice, i);
+
         }
+        
+        if val.len() > super::STRING_LENGTH_LIMIT {
+            return Err(ParseError {
+                kind: ParseErrorKind::StringLengthLimitExceeded {
+                    len: super::STRING_LENGTH_LIMIT,
+                },
+                pos: token.start_index,
+            });
+        }
+
         Ok(val)
     }
 
@@ -643,7 +622,7 @@ mod tests {
             "": true,
             "null": null
         }"#
-        .as_bytes();
+            .as_bytes();
 
         // couldn't set up with json!() had problems with large numbers
         let mut numbers = Vec::new();
@@ -677,7 +656,7 @@ mod tests {
 
         assert_eq!(Value::Object(map), result);
     }
-    
+
     #[test]
     fn empty_input() {
         let buffer = [];
