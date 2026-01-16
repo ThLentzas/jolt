@@ -192,7 +192,7 @@ impl<'a> Lexer<'a> {
                     self.advance_by(utf8::utf8_char_width(current));
                 }
                 b'\\' => {
-                    escapes::check_escape_character(&self.buffer, self.pos)?;
+                    escapes::check_escape_char(&self.buffer, self.pos)?;
                     self.advance_by(escapes::len(&self.buffer, self.pos));
                 }
                 // ascii 
@@ -329,6 +329,7 @@ mod tests {
                     kind: TokenKind::String,
                 },
             ),
+            // surrogate pair
             (
                 b"\"A\\uD83D\\uDE00B\"",
                 Token {
@@ -470,7 +471,7 @@ mod tests {
         ]
     }
 
-    // 1 mismatch, 1 eof
+    // mismatch, eof
     fn invalid_literals() -> Vec<(&'static [u8], LexError)> {
         vec![
             (

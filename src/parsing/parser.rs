@@ -60,6 +60,16 @@ impl<'a> Parser<'a> {
     // this method peeks to determine which method to call to parse the corresponding value, then
     // when we are ready to process the token each parse method calls next() to consume the token
     // and return the value
+    //
+    // The method that parses a value is responsible for consuming the tokens that make up that value.
+    // The first call of every parse method is next() to consume the token that triggerred the call.
+    //
+    // parse_object() consumes '{'
+    // parse_array consumes '['
+    // parse_number,string,bool all need 1 token; they use the starting index and offset to parse
+    // the value from the buffer.
+    //
+    // After parsing a value, peek() references the next token after it
     fn parse_value(&mut self) -> Result<Value, ParseError> {
         let Some(token) = self.peek()? else {
             return Err(ParseError {
@@ -68,16 +78,12 @@ impl<'a> Parser<'a> {
             });
         };
 
-        // why we don't use the token directly? Read the comment in parse_object() at loop{}
-        let kind = token.kind;
-        let start = token.start_index;
-        let offset = token.offset;
-        let val = match kind {
+        let val = match token.kind {
             TokenKind::LCurlyBracket => Value::Object(self.parse_object()?),
             TokenKind::LSquareBracket => Value::Array(self.parse_array()?),
-            TokenKind::Number => Value::Number(self.parse_number(start, offset)),
-            TokenKind::String => Value::String(self.parse_string(start, offset)?),
-            TokenKind::Boolean => Value::Boolean(self.parse_bool(start)),
+            TokenKind::Number => Value::Number(self.parse_number()),
+            TokenKind::String => Value::String(self.parse_string()?),
+            TokenKind::Boolean => Value::Boolean(self.parse_bool()),
             TokenKind::Null => {
                 self.next()?;
                 Value::Null
@@ -94,9 +100,10 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
+    // read parse_value()
     fn parse_object(&mut self) -> Result<IndexMap<String, Value>, ParseError> {
         self.next()?; // Consume '{'
-        
+
         self.check_depth()?;
         self.depth += 1;
         let len = self.buffer.len();
@@ -140,17 +147,16 @@ impl<'a> Parser<'a> {
                     pos: len - 1,
                 });
             };
-
             let kind = token.kind;
             let start = token.start_index;
-            let offset = token.offset;
+
             match kind {
                 // expect key
                 TokenKind::String => {
                     // We don't allow duplicate names at the same depth level
                     // {"key": false, "key": true} not allowed, duplicate name at the same level
                     // {"key": {"key": {}}} allowed, they are on a different depth level
-                    let name = self.parse_string(start, offset)?;
+                    let name = self.parse_string()?;
                     if map.contains_key(&name) {
                         return Err(ParseError {
                             kind: ParseErrorKind::DuplicateName {
@@ -178,7 +184,7 @@ impl<'a> Parser<'a> {
                 Some(token) if expect(token.kind, TokenKind::Comma) => {
                     self.next()?;
                     if let Some(next) = self.peek()? {
-                        // {"foo": "bar",}
+                        // Case: {"foo": "bar",}
                         if expect(next.kind, TokenKind::RCurlyBracket) {
                             return Err(ParseError {
                                 kind: ParseErrorKind::UnexpectedToken {
@@ -190,7 +196,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Some(token) if expect(token.kind, TokenKind::RCurlyBracket) => {
-                    self.next()?;
+                    self.next()?; // Consume '}'
                     self.depth -= 1;
                     break;
                 }
@@ -214,15 +220,9 @@ impl<'a> Parser<'a> {
         Ok(map)
     }
 
-    // We peek and advance 2 times, after moving past the opening '['
-    //
-    // 1. peek and expect either ']' for an empty array or a json value(parse_value() will advance)
-    // 2. peek and expect ',' to separate values -> advance, or ']' -> break;
-    //
-    // When encountering ']', we break WITHOUT calling advance(). The closing ']' will be consumed
-    // by the caller (parse_value()) after this function returns.
+    // read parse_value()
     fn parse_array(&mut self) -> Result<Vec<Value>, ParseError> {
-        self.next()?; // Consume the TokenKind::LSquareBracket token that parse_value() peeked
+        self.next()?; // Consume '['
 
         self.check_depth()?;
         self.depth += 1;
@@ -248,7 +248,7 @@ impl<'a> Parser<'a> {
         loop {
             arr.push(self.parse_value()?);
             match self.peek()? {
-                Some(next) if expect(next.kind, TokenKind::Comma) => {
+                Some(token) if expect(token.kind, TokenKind::Comma) => {
                     self.next()?;
                     // trailing comma case: [1,2,]
                     if let Some(next) = self.peek()? {
@@ -262,17 +262,17 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                Some(next) if expect(next.kind, TokenKind::RSquareBracket) => {
+                Some(token) if expect(token.kind, TokenKind::RSquareBracket) => {
                     self.next()?;
                     self.depth -= 1;
                     break;
                 }
-                Some(next) => {
+                Some(token) => {
                     return Err(ParseError {
                         kind: ParseErrorKind::UnexpectedToken {
                             expected: Some("',' or ']'"),
                         },
-                        pos: next.start_index,
+                        pos: token.start_index,
                     });
                 }
                 None => {
@@ -330,11 +330,12 @@ impl<'a> Parser<'a> {
     // len, do bounds checks etc each time is called.
     // This approach improves performance by 1.5ms, from 7.4 to 5.9
     //
-    // to extract the value from slice all we need is the starting index and the offset; we pass only
-    // what we need, not the whole token
-    fn parse_string(&mut self, start: usize, offset: usize) -> Result<String, ParseError> {
-        self.next()?;
-        let slice = &self.buffer[start + 1..start + offset - 1];
+    // to extract the value from slice all we need is the starting index and the offset;
+    fn parse_string(&mut self) -> Result<String, ParseError> {
+        // always safe to call unwrap twice; next() is called after parse_value() called peek()
+        // so it can be an Error and it can be None
+        let token = self.next()?.unwrap();
+        let slice = &self.buffer[token.start_index + 1..token.start_index + token.offset - 1];
 
         // calls iter.any() internally
         if !slice.contains(&b'\\') {
@@ -345,7 +346,7 @@ impl<'a> Parser<'a> {
                     kind: ParseErrorKind::StringLengthLimitExceeded {
                         len: super::STRING_LENGTH_LIMIT,
                     },
-                    pos: start,
+                    pos: token.start_index,
                 });
             }
             return Ok(val);
@@ -353,13 +354,16 @@ impl<'a> Parser<'a> {
 
         let mut val = String::with_capacity(slice.len());
         let mut i = 0;
-
+        
         while i < slice.len() {
             let j = i;
 
+            // find the chunk that contains only ASCII
             while i < slice.len() && slice[i] != b'\\' && slice[i].is_ascii() {
                 i += 1;
             }
+            
+            // if it contains at least 1 character parse it and push it as str
             if i > j {
                 // SAFETY: lexer already verified the sequence
                 let chunk = unsafe { str::from_utf8_unchecked(&slice[j..i]) };
@@ -368,7 +372,7 @@ impl<'a> Parser<'a> {
                         kind: ParseErrorKind::StringLengthLimitExceeded {
                             len: super::STRING_LENGTH_LIMIT,
                         },
-                        pos: start,
+                        pos: token.start_index,
                     });
                 }
                 val.push_str(chunk);
@@ -376,12 +380,12 @@ impl<'a> Parser<'a> {
             if i >= slice.len() {
                 break;
             }
+            // can be only utf-8 or escape
             match slice[i] {
                 b'\\' => {
-                    val.push(escapes::map_escape_character(slice, i));
+                    val.push(escapes::map_escape_char(slice, i));
                     i += escapes::len(slice, i);
                 }
-                // can only be utf8
                 b => {
                     val.push(utf8::read_utf8_char(slice, i));
                     i += utf8::utf8_char_width(b);
@@ -391,15 +395,19 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
-    fn parse_number(&mut self, start: usize, offset: usize) -> Number {
-        self.next().unwrap();
-        let slice = &self.buffer[start..start + offset];
+    fn parse_number(&mut self) -> Number {
+        // always safe to call unwrap twice; next() is called after parse_value() called peek()
+        // so it can be an Error and it can be None
+        let token = self.next().unwrap().unwrap();
+        let slice = &self.buffer[token.start_index..token.start_index + token.offset];
         number::parse(slice)
     }
 
-    fn parse_bool(&mut self, start: usize) -> bool {
-        self.next().unwrap();
-        self.buffer[start] == b't'
+    fn parse_bool(&mut self) -> bool {
+        // always safe to call unwrap twice; next() is called after parse_value() called peek()
+        // so it can be an Error and it can be None
+        let token = self.next().unwrap().unwrap();
+        self.buffer[token.start_index] == b't'
     }
 
     fn expect_colon(&mut self) -> Result<(), ParseError> {
@@ -669,8 +677,7 @@ mod tests {
 
         assert_eq!(Value::Object(map), result);
     }
-
-    // same logic applies for [\n, \t, '\r', ' ']
+    
     #[test]
     fn empty_input() {
         let buffer = [];
@@ -685,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_whitespaces() {
+    fn only_whitespaces() {
         // \t, \n, \r, ' '
         let buffer: [u8; 4] = [9, 10, 13, 32];
         let mut parser = Parser::new(&buffer);
@@ -745,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn string_value_exceeds_length_limit() {
+    fn string_len_exceeds_limit() {
         let mut buffer = Vec::with_capacity(parsing::STRING_LENGTH_LIMIT + 3);
 
         buffer.push(b'"');

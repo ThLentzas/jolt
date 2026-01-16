@@ -10,7 +10,7 @@ pub(super) fn is_escape(b: u8) -> bool {
 }
 
 // when this method gets called we are at '\'
-pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
+pub(super) fn check_escape_char(buffer: &[u8], pos: usize) -> Result<(), EscapeError> {
     let len = buffer.len();
     let mut i = pos;
 
@@ -38,7 +38,7 @@ pub(super) fn check_escape_character(buffer: &[u8], pos: usize) -> Result<(), Es
     Ok(())
 }
 
-pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
+pub(super) fn map_escape_char(buffer: &[u8], pos: usize) -> char {
     match buffer[pos + 1] {
         b'\\' => '\\',
         b'"' => '"',
@@ -48,12 +48,14 @@ pub(super) fn map_escape_character(buffer: &[u8], pos: usize) -> char {
         b'n' => '\n',
         b'r' => '\r',
         b't' => '\t',
+        // should we move this call to decode() in the _ arm since the method is called only in
+        // valid escapes?
         b'u' => decode_unicode(buffer, pos),
         _ => unreachable!("backslash not followed by an escape character"),
     }
 }
 
-// returns the length of an escape sequence, it is always called on valid escape sequences
+// returns the length of an escape sequence, it is always called on valid escape
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     if matches!(
@@ -156,19 +158,16 @@ fn decode_unicode(buffer: &[u8], pos: usize) -> char {
     let mut i = pos;
     i += 2; // skip '\u'
     let hex = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
-    let ch: char;
 
     if is_surrogate(hex) {
         let high = hex;
         i += 6; // 4 hex digits + \u
         let low = number::hex_to_u16(&buffer[i..i + 4]).unwrap();
         let codepoint = decode_surrogate_pair(high as u32, low as u32);
-        ch = char::from_u32(codepoint).unwrap();
+        char::from_u32(codepoint).unwrap()
     } else {
-        ch = char::from_u32(hex as u32).unwrap();
+        char::from_u32(hex as u32).unwrap()
     }
-
-    ch
 }
 
 fn is_surrogate(val: u16) -> bool {

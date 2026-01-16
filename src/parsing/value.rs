@@ -381,8 +381,7 @@ impl Value {
     // in a path /foo/bar/1 we don't know if 1 is an index or a key. If the current value is an object
     // it is treated as a key, if an array as an index
     //
-    // starting from the root value, for every token created by gen_ref_token() we check with the
-    // current val
+    // starting from the root value, for every token created by next() we check with the current val
     // -if val is an object then the token's value must be a key
     // -if val is an array then the token's value must be an unsigned base-10 integer value
     // -any other type we return None
@@ -488,8 +487,6 @@ impl Value {
 
         let mut current = self;
         while let Some(token) = ptr.next()? {
-            // We never check if number of tokens exceed the NestingDepthLimit because even if they did
-            // we would get no match at NestingDepthLimit + 1 and we would return None
             match current {
                 Value::Object(map) => {
                     let Some(val) = map.get_mut(&token.val) else {
@@ -497,8 +494,6 @@ impl Value {
                     };
                     current = val;
                 }
-                // we can not check the value earlier to see if it is valid numeric index because
-                // we don't know if it will be called in an Object or an Array
                 Value::Array(arr) => match pointer::check_array_index(&token)? {
                     Some(index) if index >= arr.len() => return Ok(None),
                     Some(index) => current = &mut arr[index],

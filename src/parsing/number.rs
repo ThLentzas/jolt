@@ -14,7 +14,6 @@ const INT_LIMIT: &[u8] = b"9007199254740991";
 const INT_MAX: i64 = 9_007_199_254_740_991;
 const INT_MIN: i64 = -9_007_199_254_740_991;
 
-// https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
 // much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
 // it is used to keep track of what we have seen so far when parsing a number
 struct NumberState {
@@ -345,6 +344,8 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     Ok(())
 }
 
+// https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
+//
 // we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
 // process: 1) convert the byte buffer to string 2) parse the string
 pub(super) fn parse(buffer: &[u8]) -> Number {

@@ -74,9 +74,9 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
 //
 // why the predicate?
 // 
-// if we are looking for 'a' and encounter it as \a my previous logic of randomly skipping everything 
-// after \ would incorrectly miss it, so we would either return None or not the leftmost occurrence
-// we need to know which characters to consider after '\' and they are not always the same; we have
+// if we are looking for 'a' and encounter it as '\a' the previous logic of randomly skipping everything
+// after \ would incorrectly miss it, so we would either return None or not the leftmost occurrence.
+// We need to know which characters to consider after '\' and they are not always the same; we have
 // an edge case in path when we have to scan for closing single quote '\''. If we used a function we
 // would miss it in a case where it is escaped, it won't match in matches and return its index in
 // the escape sequence. 'foo\'bar', find() should return 10 not 5
@@ -91,9 +91,10 @@ where
         // so we need to adjust and get the absolute position when we index into the buffer
         //
         // if memchr2() returns the index of '\', we peek to determine what decision to make.
+        //
         // Case 1: out of bounds -> incomplete sequence -> None
         // Case 2: not a valid escape, just skip '\', if the needle is found later, our logic will
-        // return an UnknownCharacter for the invalid sequence rathen than Eof
+        // return an UnknownCharacter for the invalid sequence rather than Eof
         // Case 3: valid escape, skip it
         match memchr::memchr2(b'\\', needle, &haystack[pos..]) {
             Some(p) if (haystack[pos + p]) == b'\\' => {

@@ -632,22 +632,6 @@ impl<'a, 'r> Parser<'a, 'r> {
         })?;
 
         let slice = &self.buffer[self.pos..end];
-        // calls iter.any() internally
-        if !slice.contains(&b'\\') {
-            // SAFETY: buffer represents &str
-            let val = unsafe { String::from_utf8_unchecked(Vec::from(slice)) };
-            if val.len() > parsing::STRING_LENGTH_LIMIT {
-                return Err(StringError {
-                    kind: StringErrorKind::LengthLimitExceeded {
-                        len: parsing::STRING_LENGTH_LIMIT,
-                    },
-                    // at the index of opening quote
-                    pos: self.pos - 1,
-                });
-            }
-            self.pos = end + 1;
-            return Ok(val);
-        }
 
         let mut name = String::with_capacity(slice.len());
         let mut i = 0;
@@ -680,8 +664,8 @@ impl<'a, 'r> Parser<'a, 'r> {
                             i += 2;
                         }
                         _ => {
-                            escapes::check_escape_character(slice, i)?;
-                            name.push(escapes::map_escape_character(slice, i));
+                            escapes::check_escape_char(slice, i)?;
+                            name.push(escapes::map_escape_char(slice, i));
                             i += escapes::len(slice, i);
                         }
                     }

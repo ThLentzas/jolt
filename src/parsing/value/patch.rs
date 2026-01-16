@@ -296,6 +296,16 @@ fn insert_at(
             map.insert(token.val, value);
         }
         Value::Array(arr) => {
+            // Case: "-"
+            // According to the Pointer spec, if '-' is used on an array it refers to a nonexisting
+            // element, the one after the last array element. When we call descend() if we encounter
+            // '-' as a token value in an array we return an error because the "target location"
+            // does not exist, but if we are at the level where we actually get to insert in an array
+            // we treat '-' as append.
+            if token.val == "-" {
+                arr.push(value);
+                return Ok(());
+            }
             let index = pointer::check_array_index_strict(&token)?;
             let len = arr.len();
             // if index == len we insert at the end
@@ -692,6 +702,27 @@ mod tests {
             (
                 Operation::Add {
                     path: String::from("/foo/bar/3"),
+                    value: json!(4),
+                },
+                json!(
+                    {
+                        "foo": {
+                            "bar": [1, 2, 3]
+                        }
+                    }
+                ),
+                json!(
+                    {
+                        "foo": {
+                            "bar": [1, 2, 3, 4]
+                        }
+                    }
+                ),
+            ),
+            // insert at the end of the array where last token.val is '-'
+            (
+                Operation::Add {
+                    path: String::from("/foo/bar/-"),
                     value: json!(4),
                 },
                 json!(
