@@ -199,6 +199,7 @@ impl<'a> Lexer<'a> {
                 _ => self.advance_by(1)
             }
         }
+        // exhausted the buffer, didn't find closing quote
         if self.pos == len {
             return Err(StringError {
                 kind: StringErrorKind::UnexpectedEndOf,
@@ -338,6 +339,8 @@ mod tests {
                     kind: TokenKind::String,
                 },
             ),
+            // escaped control character
+            // '\n' as  '\' and 'n'
             (
                 b"\"b\\n\"",
                 Token {
@@ -368,7 +371,7 @@ mod tests {
 
     fn invalid_strings() -> Vec<(&'static [u8], LexError)> {
         vec![
-            // raw byte control character
+            // raw control character
             (
                 b"\"\x00",
                 LexError::from(StringError {

@@ -4,8 +4,7 @@ use crate::parsing::utf8::Utf8Error;
 use std::{error, fmt};
 
 #[derive(Debug, PartialEq)]
-pub enum
-StringErrorKind {
+pub(super) enum StringErrorKind {
     UnexpectedEndOf,
     InvalidByteSequence { len: u8 },
     InvalidSurrogate,
@@ -50,9 +49,9 @@ impl fmt::Display for StringErrorKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct StringError {
-    pub kind: StringErrorKind,
-    pub pos: usize,
+pub(super) struct StringError {
+    pub(super) kind: StringErrorKind,
+    pub(super) pos: usize,
 }
 
 impl error::Error for StringError {}
@@ -98,7 +97,7 @@ impl From<EscapeError> for StringError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum LexErrorKind {
+pub(super) enum LexErrorKind {
     MalformedString(StringErrorKind),
     UnexpectedEof,
     UnexpectedCharacter { byte: u8 },
@@ -123,9 +122,9 @@ impl fmt::Display for LexErrorKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct LexError {
-    pub kind: LexErrorKind,
-    pub pos: usize
+pub(super) struct LexError {
+    pub(super) kind: LexErrorKind,
+    pub(super) pos: usize,
 }
 
 impl error::Error for LexError {}
@@ -170,14 +169,17 @@ impl From<NumericError> for LexError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum ParseErrorKind {
+pub(super) enum ParseErrorKind {
     Lexical(LexErrorKind),
     UnexpectedEof,
     DuplicateName { name: String },
+    // expected is an Option because when we encounter a leftover token we don't expect anything
+    // Case: false5
+    // we don't expect anything after false
     UnexpectedToken { expected: Option<&'static str> },
     NestingDepthLimitExceeded { depth: u16 },
     InputBufferLimitExceeded { len: usize },
-    StringLengthLimitExceeded { len: usize }
+    StringLengthLimitExceeded { len: usize },
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -209,8 +211,8 @@ impl fmt::Display for ParseErrorKind {
 
 #[derive(Debug, PartialEq)]
 pub struct ParseError {
-    pub kind: ParseErrorKind,
-    pub pos: usize
+    pub(super) kind: ParseErrorKind,
+    pub(super) pos: usize,
 }
 
 impl error::Error for ParseError {}
@@ -225,7 +227,7 @@ impl From<LexError> for ParseError {
     fn from(err: LexError) -> Self {
         ParseError {
             kind: ParseErrorKind::Lexical(err.kind),
-            pos: err.pos
+            pos: err.pos,
         }
     }
 }

@@ -375,7 +375,6 @@ pub fn to_ptr_path(npath: &str) -> Option<String> {
     Some(path)
 }
 
-// toDo: ask about how should we expose to_ptr_path(), add expect_comma_or_end() for parser
 fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
     *pos += 1; // consume opening single quote '
     let mut key = String::new();

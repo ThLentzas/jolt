@@ -6,6 +6,11 @@ use crate::parsing::number::Number;
 use indexmap::IndexMap;
 use std::string::String;
 
+enum Action {
+    Continue,
+    Break,
+}
+
 pub(super) struct Parser<'a> {
     buffer: &'a [u8],
     lexer: Lexer<'a>,
@@ -83,7 +88,7 @@ impl<'a> Parser<'a> {
             TokenKind::LSquareBracket => Value::Array(self.parse_array()?),
             TokenKind::Number => Value::Number(self.parse_number()),
             TokenKind::String => Value::String(self.parse_string()?),
-            TokenKind::Boolean => Value::Boolean(self.parse_bool()),
+            TokenKind::Boolean => Value::Bool(self.parse_bool()),
             TokenKind::Null => {
                 self.next()?;
                 Value::Null
@@ -180,41 +185,9 @@ impl<'a> Parser<'a> {
                 }
             }
             // expect Comma to separate key-value pairs or '}' to end current object
-            match self.peek()? {
-                Some(token) if expect(token.kind, TokenKind::Comma) => {
-                    self.next()?;
-                    if let Some(next) = self.peek()? {
-                        // Case: {"foo": "bar",}
-                        if expect(next.kind, TokenKind::RCurlyBracket) {
-                            return Err(ParseError {
-                                kind: ParseErrorKind::UnexpectedToken {
-                                    expected: Some("string key"),
-                                },
-                                pos: next.start_index,
-                            });
-                        }
-                    }
-                }
-                Some(token) if expect(token.kind, TokenKind::RCurlyBracket) => {
-                    self.next()?; // Consume '}'
-                    self.depth -= 1;
-                    break;
-                }
-                // mismatch
-                Some(token) => {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnexpectedToken {
-                            expected: Some("'}' or ','"),
-                        },
-                        pos: token.start_index,
-                    });
-                }
-                None => {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnexpectedEof,
-                        pos: len - 1,
-                    });
-                }
+            match self.expect_comma_or_end("string key", TokenKind::RCurlyBracket)? {
+                Action::Continue => (),
+                Action::Break => break,
             }
         }
         Ok(map)
@@ -247,40 +220,9 @@ impl<'a> Parser<'a> {
         // when we encounter ']' we break
         loop {
             arr.push(self.parse_value()?);
-            match self.peek()? {
-                Some(token) if expect(token.kind, TokenKind::Comma) => {
-                    self.next()?;
-                    // trailing comma case: [1,2,]
-                    if let Some(next) = self.peek()? {
-                        if expect(next.kind, TokenKind::RSquareBracket) {
-                            return Err(ParseError {
-                                kind: ParseErrorKind::UnexpectedToken {
-                                    expected: Some("json value"),
-                                },
-                                pos: next.start_index,
-                            });
-                        }
-                    }
-                }
-                Some(token) if expect(token.kind, TokenKind::RSquareBracket) => {
-                    self.next()?;
-                    self.depth -= 1;
-                    break;
-                }
-                Some(token) => {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnexpectedToken {
-                            expected: Some("',' or ']'"),
-                        },
-                        pos: token.start_index,
-                    });
-                }
-                None => {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnexpectedEof,
-                        pos: self.buffer.len() - 1,
-                    });
-                }
+            match self.expect_comma_or_end("json value", TokenKind::RSquareBracket)? {
+                Action::Continue => (),
+                Action::Break => break,
             }
         }
         Ok(arr)
@@ -359,9 +301,8 @@ impl<'a> Parser<'a> {
             // can be only be an escape
             val.push(escapes::map_escape_char(slice, i));
             i += escapes::len(slice, i);
-
         }
-        
+
         if val.len() > super::STRING_LENGTH_LIMIT {
             return Err(ParseError {
                 kind: ParseErrorKind::StringLengthLimitExceeded {
@@ -422,6 +363,51 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    fn expect_comma_or_end(
+        &mut self,
+        expected: &'static str,
+        bracket: TokenKind,
+    ) -> Result<Action, ParseError> {
+        let Some(token) = self.peek()? else {
+            return Err(ParseError {
+                kind: ParseErrorKind::UnexpectedEof,
+                pos: self.buffer.len() - 1,
+            });
+        };
+
+        match token.kind {
+            TokenKind::Comma => {
+                self.next()?;
+                if let Some(next) = self.peek()? {
+                    // Case: {"foo": "bar",}
+                    if next.kind == bracket {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::UnexpectedToken {
+                                expected: Some(expected),
+                            },
+                            pos: next.start_index,
+                        });
+                    }
+                }
+                // if we don't encounter a closing bracket or peek() return None, continue and let
+                // parse_value() handle it
+                Ok(Action::Continue)
+            }
+            t if t == bracket => {
+                self.next()?; // Consume '}'
+                self.depth -= 1;
+                Ok(Action::Break)
+            }
+            // mismatch
+            _ => Err(ParseError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: Some("',' or closing bracket"),
+                },
+                pos: token.start_index,
+            }),
+        }
+    }
+
     fn peek(&mut self) -> Result<Option<&Token>, ParseError> {
         if self.peeked.is_none() {
             self.peeked = self.lexer.lex()?;
@@ -435,10 +421,6 @@ impl<'a> Parser<'a> {
             None => Ok(self.lexer.lex()?),
         }
     }
-}
-
-fn expect(left: TokenKind, right: TokenKind) -> bool {
-    left == right
 }
 
 #[cfg(test)]
@@ -483,6 +465,20 @@ mod tests {
                 ParseError {
                     kind: ParseErrorKind::UnexpectedEof,
                     pos: 9,
+                },
+            ),
+            (
+                b"{ \"foo\": 5,}",
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken { expected: Some("string key") },
+                    pos: 11,
+                },
+            ),
+            (
+                b"{ \"foo\": 5 null",
+                ParseError {
+                    kind: ParseErrorKind::UnexpectedToken { expected: Some("',' or closing bracket") },
+                    pos: 11,
                 },
             ),
             (
@@ -547,7 +543,7 @@ mod tests {
                 b"[116 true]",
                 ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
-                        expected: Some("',' or ']'"),
+                        expected: Some("',' or closing bracket"),
                     },
                     pos: 5,
                 },
@@ -646,9 +642,9 @@ mod tests {
             "escape_characters".to_string(),
             Value::String(String::from("\\\"/\x08\x0C\n\r\t")),
         );
-        map.insert("boolean".to_string(), Value::Boolean(false));
+        map.insert("boolean".to_string(), Value::Bool(false));
         map.insert("numbers".to_string(), Value::Array(numbers));
-        map.insert("".to_string(), Value::Boolean(true));
+        map.insert("".to_string(), Value::Bool(true));
         map.insert("null".to_string(), Value::Null);
 
         let mut parser = Parser::new(buffer);

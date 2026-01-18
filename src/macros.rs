@@ -24,8 +24,8 @@ macro_rules! json {
     ([]) => { $crate::Value::Array(Vec::new()) };
     ({}) => { $crate::Value::Object(IndexMap::new()) };
     (null) => { $crate::Value::Null };
-    (true) => { $crate::Value::Boolean(true) };
-    (false) => { $crate::Value::Boolean(false) };
+    (true) => { $crate::Value::Bool(true) };
+    (false) => { $crate::Value::Bool(false) };
     ([ $($elem:tt),+ $(,)? ]) => { $crate::Value::Array(vec![$(json!($elem)),+]) };
     ({ $($key:tt: $val:tt),+ $(,)? }) => {{
         use indexmap::IndexMap;

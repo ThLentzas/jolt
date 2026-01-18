@@ -1,12 +1,13 @@
 use crate::parsing::number::Number;
-use crate::parsing::value::error::{PatchError, PathError, PointerError};
 use crate::parsing::value::path::Parser;
 use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
 use crate::parsing::value::pointer::Pointer;
 use indexmap::IndexMap;
 use std::cmp::{Ordering, PartialEq};
 use std::hash::{Hash, Hasher};
-use std::mem;
+use std::{fmt, mem};
+use std::fmt::Display;
+use crate::parsing;
 
 mod error;
 mod from;
@@ -15,6 +16,9 @@ mod path;
 pub mod pointer;
 
 pub use crate::parsing::value::path::tracker::Node;
+pub use crate::parsing::value::error::PointerError;
+pub use crate::parsing::value::error::PathError;
+pub use crate::parsing::value::error::PatchError;
 
 // Clone is needed for Cow
 // Value is recursive type like LogicalExpression, but we don't need Box because both map and
@@ -62,7 +66,7 @@ pub enum Value {
     /// #
     /// let val = json!(true);
     /// ```
-    Boolean(bool),
+    Bool(bool),
     /// Represents a JSON null.
     ///
     /// ```
@@ -140,7 +144,7 @@ impl Value {
     /// assert!(val.is_bool());
     /// ```
     pub fn is_bool(&self) -> bool {
-        matches!(self, Value::Boolean(_))
+        matches!(self, Value::Bool(_))
     }
 
     /// Returns true if `Value` is a `Null`, false otherwise.
@@ -276,7 +280,7 @@ impl Value {
     /// ```
     pub fn as_bool(&self) -> Option<bool> {
         match self {
-            Value::Boolean(b) => Some(*b),
+            Value::Bool(b) => Some(*b),
             _ => None,
         }
     }
@@ -656,6 +660,113 @@ impl Value {
         }
         Ok(())
     }
+
+    fn fmt_compact(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "null"),
+            Value::Bool(b) => write!(f, "{b}"),
+            Value::Number(n) => write!(f, "{n}"),
+            Value::String(s) => write!(f, "{}", parsing::to_jstr(s, '\"')),
+            Value::Array(arr) => {
+                write!(f, "[")?;
+                for (i, v) in arr.iter().enumerate() {
+                    // don't add comma after the opening '['
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    v.fmt_compact(f)?;
+                }
+                write!(f, "]")
+            }
+            Value::Object(map) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    // don't add comma after the opening '{'
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "{}:", parsing::to_jstr(k, '\"'))?;
+                    v.fmt_compact(f)?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+
+    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+        const INDENT: &str = "    "; // 4 spaces
+
+        match self {
+            Value::Null => write!(f, "null"),
+            Value::Bool(b) => write!(f, "{b}"),
+            Value::Number(n) => write!(f, "{n}"),
+            Value::String(s) => write!(f, "{}", parsing::to_jstr(s, '\"')),
+            Value::Array(arr) => {
+                if arr.is_empty() {
+                    return write!(f, "[]");
+                }
+                writeln!(f, "[")?;
+                for (i, v) in arr.iter().enumerate() {
+                    // indent for this level
+                    for _ in 0..=depth {
+                        write!(f, "{INDENT}")?;
+                    }
+                    v.fmt_pretty(f, depth + 1)?;
+                    if i < arr.len() - 1 {
+                        write!(f, ",")?;
+                    }
+                    writeln!(f)?;
+                }
+                // closing bracket at current indent level
+                for _ in 0..depth {
+                    write!(f, "{INDENT}")?;
+                }
+                write!(f, "]")
+            }
+            Value::Object(map) => {
+                if map.is_empty() {
+                    return write!(f, "{{}}");
+                }
+                writeln!(f, "{{")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    // build the indentation for the current level
+                    for _ in 0..=depth {
+                        write!(f, "{INDENT}")?;
+                    }
+                    write!(f, "{}: ", parsing::to_jstr(k, '\"'))?;
+                    v.fmt_pretty(f, depth + 1)?;
+                    if i < map.len() - 1 {
+                        write!(f, ",")?;
+                    }
+                    writeln!(f)?;
+                }
+                for _ in 0..depth {
+                    write!(f, "{INDENT}")?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
+impl Display for Value {
+    /// Formats the value as a string.
+    ///
+    /// - `{}` produces compact JSON: `{"a":1,"b":2}`
+    /// - `{:#}` produces pretty-printed JSON:
+    ///   ```json
+    ///   {
+    ///       "a": 1,
+    ///       "b": 2
+    ///   }
+    ///   ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            self.fmt_pretty(f, 0)
+        } else {
+            self.fmt_compact(f)
+        }
+    }
 }
 
 impl Hash for Value {
@@ -667,7 +778,7 @@ impl Hash for Value {
             Value::Array(arr) => arr.hash(state),
             Value::Number(n) => n.hash(state),
             Value::String(s) => s.hash(state),
-            Value::Boolean(b) => b.hash(state),
+            Value::Bool(b) => b.hash(state),
             Value::Null => {}
         }
     }
@@ -680,7 +791,7 @@ impl PartialOrd for Value {
             (Value::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2),
             // we can't call b1.partial_cmp(b2) because in rust false < true results to true but in
             // the spec it should result to false
-            (Value::Boolean(b1), Value::Boolean(b2)) => {
+            (Value::Bool(b1), Value::Bool(b2)) => {
                 if b1 == b2 {
                     Some(Ordering::Equal)
                 } else {
@@ -888,10 +999,10 @@ mod tests {
     // don't want any order by checking each value 1 by 1
     fn comparisons() -> Vec<(Value, Value, Option<Ordering>)> {
         vec![
-            (Value::Boolean(false), Value::Boolean(true), None),
+            (Value::Bool(false), Value::Bool(true), None),
             (
-                Value::Boolean(false),
-                Value::Boolean(false),
+                Value::Bool(false),
+                Value::Bool(false),
                 Some(Ordering::Equal),
             ),
             (json!({}), json!({}), Some(Ordering::Equal)),
@@ -2287,5 +2398,84 @@ mod tests {
         ]"#;
         let _res = root.try_modify(input);
         assert_eq!(root, actual);
+    }
+
+    #[test]
+    fn test_fmt_compact() {
+        let value = Value::Object(IndexMap::from([
+            ("null".into(), Value::Null),
+            ("bool".into(), Value::Bool(true)),
+            ("number".into(), Value::Number(Number::from(42))),
+            ("string".into(), Value::String("hello".into())),
+            ("array".into(), Value::Array(vec![Value::Null])),
+            ("object".into(), Value::Object(IndexMap::new())),
+        ]));
+
+        let compact = format!("{value}");
+
+        assert_eq!(compact, r#"{"null":null,"bool":true,"number":42,"string":"hello","array":[null],"object":{}}"#);
+    }
+
+
+    #[test]
+    fn test_fmt_pretty() {
+        let val = Value::Object(IndexMap::from([
+            ("null".to_string(), Value::Null),
+            ("bool".to_string(), Value::Bool(true)),
+            ("int".to_string(), Value::Number(Number::from(42))),
+            ("float".to_string(), Value::Number(Number::from(3.14))),
+            ("string_with_escape".to_string(), Value::String("hello\nworld".to_string())),
+            // has no text representation
+            ("control".to_string(), Value::String("bell\u{0007}char".to_string())),
+            ("empty_array".to_string(), Value::Array(vec![])),
+            ("empty_object".to_string(), Value::Object(IndexMap::new())),
+            ("array".to_string(), Value::Array(vec![
+                Value::Null,
+                Value::Bool(false),
+                Value::Number(Number::from(1)),
+                Value::String("nested".to_string()),
+            ])),
+            ("object".to_string(), Value::Object(IndexMap::from([
+                ("a".to_string(), Value::Number(Number::from(1))),
+                ("b".to_string(), Value::Array(vec![
+                    Value::Number(Number::from(2)),
+                    Value::Number(Number::from(3)),
+                ])),
+                ("c".to_string(), Value::Object(IndexMap::from([
+                    ("deep".to_string(), Value::Bool(true)),
+                ]))),
+            ]))),
+        ]));
+
+        let res = format!("{val:#}");
+        // tried to make it prettier but breaks the 4-space indentation, it works as expected just ugly
+        assert_eq!(res,
+            r#"{
+    "null": null,
+    "bool": true,
+    "int": 42,
+    "float": 3.14,
+    "string_with_escape": "hello\nworld",
+    "control": "bell\u0007char",
+    "empty_array": [],
+    "empty_object": {},
+    "array": [
+        null,
+        false,
+        1,
+        "nested"
+    ],
+    "object": {
+        "a": 1,
+        "b": [
+            2,
+            3
+        ],
+        "c": {
+            "deep": true
+        }
+    }
+}"#
+        )
     }
 }

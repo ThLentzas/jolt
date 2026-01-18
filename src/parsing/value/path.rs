@@ -1347,7 +1347,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                     "false".as_bytes()
                 };
                 parsing::read_keyword(self.buffer, &mut self.pos, keyword)?;
-                Ok(Value::Boolean(current == b't'))
+                Ok(Value::Bool(current == b't'))
             }
             b'n' => {
                 parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;

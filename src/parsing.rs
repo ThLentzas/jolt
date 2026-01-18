@@ -1,3 +1,4 @@
+use core::str;
 use crate::parsing::error::{KeywordError, KeywordErrorKind};
 use crate::parsing::{error::ParseError, parser::Parser, value::Value};
 use memchr;
@@ -115,4 +116,55 @@ where
         }
     }
     None
+}
+
+// returns the text representation of a json string; it is used in normalized path and in fmt_pretty
+// this is why we pass quote as an argument, because in npaths we need single and for pretty we want
+// double
+//
+// For Vale::String("foo\nbar") the output is "\"foo\\nbar\""
+fn to_jstr(s: &str, quote: char) -> String {
+    let buffer = s.as_bytes();
+    let len = buffer.len();
+    let mut pos = 0;
+    let mut val = String::with_capacity(s.len() + 2);
+    val.push(quote);
+
+    while pos < len {
+        let j = pos;
+        while pos < len {
+            if buffer[pos]  < 0x20 || buffer[pos] == b'\"' || buffer[pos] == b'\\' {
+                break;
+            }
+            pos += utf8::char_width(buffer[pos]);
+        }
+        if j < pos {
+            val.push_str(unsafe { str::from_utf8_unchecked(&buffer[j..pos]) });
+        }
+        if pos >= len {
+            break;
+        }
+
+        // we reverse the logic we applied during parsing
+        // we mapped '\' and '\n' to '\n'
+        // now we split '\n' to \' and 'n'
+        // what we want to achieve is represent the character with some text
+        // it is not possible for all characters, this is why for the 00 - 1F range we use the Unicode
+        // sequence
+        match buffer[pos] {
+            b'\'' => val.push_str("\\'"),
+            b'\\' => val.push_str("\\\\"),
+            0x08 => val.push_str("\\b"),
+            0x09 => val.push_str("\\t"),
+            0x0A => val.push_str("\\n"),
+            0x0C => val.push_str("\\f"),
+            0x0D => val.push_str("\\r"),
+            b => val.push_str(&format!("\\u{:04x}", b)),
+        }
+        // advance for escape
+        pos += 1;
+    }
+    val.push(quote);
+
+    val
 }

@@ -247,6 +247,19 @@ impl From<BigInt> for Number {
     }
 }
 
+impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            NumberKind::I64(n) => write!(f, "{n}"),
+            NumberKind::F64(n) => write!(f, "{n}"),
+            #[cfg(feature = "arbitrary_precision")]
+            NumberKind::BigInt(n) => write!(f, "{n}"),
+            #[cfg(feature = "arbitrary_precision")]
+            NumberKind::BigDecimal(n) => write!(f, "{n}"),
+        }
+    }
+}
+
 // We return u16 because the valid range for the Unicode sequences are 0x0000-0xFFFF(0-65535)
 // 0-65535 is the range for u16
 pub(super) fn hex_to_u16(buffer: &[u8]) -> Result<u16, HexError> {

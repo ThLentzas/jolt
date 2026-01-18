@@ -5,7 +5,7 @@ use crate::parsing::value::path::filter::function::FnExprError;
 use std::{error, fmt};
 
 #[derive(Debug, PartialEq)]
-pub enum PointerErrorKind {
+pub(super) enum PointerErrorKind {
     InvalidPointerSyntax,
     MalformedString(StringErrorKind),
     InvalidIndex { message: &'static str },
@@ -27,8 +27,8 @@ impl fmt::Display for PointerErrorKind {
 
 #[derive(Debug, PartialEq)]
 pub struct PointerError {
-    pub kind: PointerErrorKind,
-    pub pos: usize,
+    pub(super) kind: PointerErrorKind,
+    pub(super) pos: usize,
 }
 
 impl error::Error for PointerError {}
@@ -49,7 +49,7 @@ impl From<StringError> for PointerError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum PathErrorKind {
+pub(super) enum PathErrorKind {
     UnexpectedEndOf,
     MalformedString(StringErrorKind),
     UnexpectedCharacter { byte: u8 },
@@ -63,8 +63,8 @@ pub enum PathErrorKind {
 
 #[derive(Debug, PartialEq)]
 pub struct PathError {
-    pub kind: PathErrorKind,
-    pub pos: usize,
+    pub(super) kind: PathErrorKind,
+    pub(super) pos: usize,
 }
 
 impl fmt::Display for PathErrorKind {

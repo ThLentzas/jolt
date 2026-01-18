@@ -180,8 +180,9 @@ mod parsing;
 pub use parsing::error::ParseError;
 pub use parsing::number::Number;
 pub use parsing::value::Value;
+// exposes the module, then the use can do pointer::to_ptr_path()
 pub use parsing::value::pointer;
-pub use parsing::value::Node;
+pub use parsing::value::{Node, PatchError, PathError, PointerError};
 
 /// Parses a byte slice into a `Value`.
 /// # Example

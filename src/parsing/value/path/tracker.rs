@@ -1,5 +1,6 @@
 use crate::parsing::value::Value;
 use std::rc::Rc;
+use crate::parsing;
 
 // It describes only the specific move we just made, where we stepped into.
 // lifetimes: Step holds a reference to a key of an object that lives in root
@@ -144,7 +145,7 @@ impl<'r> PathTrace<'r> {
             path.push('[');
             match step {
                 Step::Root => (),
-                Step::Key(key) => path.push_str(format_name(key).as_str()),
+                Step::Key(key) => path.push_str(parsing::to_jstr(key, '\'').as_str()),
                 // we can't call char::from_u32(*i as u32).unwrap()
                 // 'i' in this case is the codepoint, so if index is 1 we get back '\u{1}' which
                 // is a control character
@@ -182,36 +183,4 @@ impl<'r> From<PathNode<'r, Option<Rc<PathTrace<'r>>>>> for Node<'r> {
 pub struct Node<'r> {
     pub val: &'r Value,
     pub path: String,
-}
-
-// formats a name selector to be compliant with the npath requirements
-fn format_name(name: &str) -> String {
-    let mut val = String::new();
-    val.push('\'');
-
-    // we reverse the logic we applied during parsing
-    // we mapped '\' and '\n' to '\n'
-    // now we split '\n' to \' and 'n'
-    // what we want to achieve is represent the character with some text
-    // it is not possible for all characters, this is why for the 00 - 1F range we use the Unicode
-    // sequence
-    for c in name.chars() {
-        match c {
-            '\'' => val.push_str("\\'"),
-            '\\' => val.push_str("\\\\"),
-            '\u{0008}' => val.push_str("\\b"),
-            '\u{000C}' => val.push_str("\\f"),
-            '\n' => val.push_str("\\n"),
-            '\r' => val.push_str("\\r"),
-            '\t' => val.push_str("\\t"),
-            // [00,1F]
-            c if c < '\u{0020}' => {
-                // always lowercase
-                val.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => val.push(c),
-        }
-    }
-    val.push('\'');
-    val
 }

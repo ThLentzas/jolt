@@ -6,7 +6,10 @@ const UNICODE_SEQ_LEN: u8 = 6;
 const SURROGATE_PAIR_LEN: u8 = 12;
 
 pub(super) fn is_escape(b: u8) -> bool {
-    matches!(b, b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u')
+    matches!(
+        b,
+        b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
+    )
 }
 
 // when this method gets called we are at '\'
@@ -23,10 +26,7 @@ pub(super) fn check_escape_char(buffer: &[u8], pos: usize) -> Result<(), EscapeE
     }
 
     let next = buffer[i];
-    if !matches!(
-        next,
-        b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
-    ) {
+    if !is_escape(next) {
         return Err(EscapeError {
             kind: EscapeErrorKind::UnknownEscapedCharacter { byte: next },
             pos: i,
@@ -58,6 +58,7 @@ pub(super) fn map_escape_char(buffer: &[u8], pos: usize) -> char {
 // returns the length of an escape sequence, it is always called on valid escape
 pub(super) fn len(buffer: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
+    // does not include 'u', don't use is_escape()
     if matches!(
         buffer[i],
         b'\\' | b'"' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
