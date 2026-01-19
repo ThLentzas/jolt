@@ -6,6 +6,7 @@ use crate::parsing::value::path::filter::table;
 const QUANTIFIER_LIMIT: u8 = 100;
 const MAX_NODES: u16 = 10_000;
 
+// any error during the parsing process returns false
 pub(super) fn full_match(input: &str, pattern: &str) -> bool {
     let mut parser = Parser::new(pattern.as_bytes());
     if let Err(_) = parser.parse() {
@@ -704,11 +705,9 @@ impl<'a> Parser<'a> {
         let len = self.buffer.len();
         let mut negated = false;
 
-        if let Some(b) = self.buffer.get(self.pos) {
-            if *b == b'^' {
-                negated = true;
-                self.advance_by(1);
-            }
+        if let Some(b'^') = self.buffer.get(self.pos) {
+            negated = true;
+            self.advance_by(1);
         }
 
         if let Some(b'-') = self.buffer.get(self.pos) {
@@ -719,7 +718,7 @@ impl<'a> Parser<'a> {
         while self.pos < len && self.buffer[self.pos] != b']' {
             let start = self.pos;
             let item = self.parse_class_expr_item()?;
-            if let Some(b) = self.buffer.get(self.pos) {
+            if let Some(b'-') = self.buffer.get(self.pos) {
                 // we have 4 cases to consider when we parse a hyphen unescaped
                 // [^-...]
                 // [-a] is treated as a literal
@@ -728,43 +727,41 @@ impl<'a> Parser<'a> {
                 // for the first three cases hyphen is treated as literal and for the last one as range
                 //
                 // in any other case, it must be escaped
-                if *b == b'-' {
-                    self.advance_by(1);
-                    match self.buffer.get(self.pos) {
-                        //[a-]
-                        Some(b) if *b == b']' => {
-                            // we don't have to consume ']' now; it is consumed when we exit the loop
-                            items.push(item);
-                            items.push(ExprItem::Literal('-'));
-                            break;
-                        }
-                        Some(_) => {
-                            let rhs = self.parse_class_expr_item()?;
-                            if !is_valid_cs_range(&item, &rhs) {
-                                return Err(RegexError {
-                                    kind: RegexErrorKind::InvalidCsRange,
-                                    pos: start,
-                                });
-                            }
-                            // always safe to call after is_valid_cs_range()
-                            items.push(ExprItem::Range(
-                                item.as_char().unwrap(),
-                                rhs.as_char().unwrap(),
-                            ))
-                        }
-                        // we peeked, and we didn't get anything, we have an Eof case
-                        // we have 2 choices, either we return an err here or do nothing exit
-                        // the loop and catch it after
-                        None => {
+                self.advance_by(1);
+                match self.buffer.get(self.pos) {
+                    //[a-]
+                    Some(b) if *b == b']' => {
+                        // we don't have to consume ']' now; it is consumed when we exit the loop
+                        items.push(item);
+                        items.push(ExprItem::Literal('-'));
+                        break;
+                    }
+                    Some(_) => {
+                        let rhs = self.parse_class_expr_item()?;
+                        if !is_valid_cs_range(&item, &rhs) {
                             return Err(RegexError {
-                                kind: RegexErrorKind::UnexpectedEof,
-                                pos: self.pos - 1,
+                                kind: RegexErrorKind::InvalidCsRange,
+                                pos: start,
                             });
                         }
+                        // always safe to call after is_valid_cs_range()
+                        items.push(ExprItem::Range(
+                            item.as_char().unwrap(),
+                            rhs.as_char().unwrap(),
+                        ))
                     }
-                } else {
-                    items.push(item);
+                    // we peeked, and we didn't get anything, we have an Eof case
+                    // we have 2 choices, either we return an err here or do nothing exit
+                    // the loop and catch it after
+                    None => {
+                        return Err(RegexError {
+                            kind: RegexErrorKind::UnexpectedEof,
+                            pos: self.pos - 1,
+                        });
+                    }
                 }
+            } else {
+                items.push(item);
             }
         }
 
