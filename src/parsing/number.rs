@@ -62,7 +62,7 @@ struct NumberState {
 //  So our Vec<u32> is: vec![1_695_547_392, 3_051_597_590, 2]
 //  1,695,547,392 * (2^32)^0 + 3,051,597,590 * (2^32)^1 + 2 * (2^32)^2 = 50,000,000,000,000,000,000
 //
-// In parser.rs for the test valid_array() the number 340282366920938463463374607431768211456
+// In parse for the test valid_array() the number 340282366920938463463374607431768211456
 // is vec![0, 0, 1] for u64 and vec![0, 0, 0, 0, 1]
 //
 // 10^40

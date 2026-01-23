@@ -1,5 +1,5 @@
 use super::error::{ParseError, ParseErrorKind};
-use super::lexer::{Lexer, Token, TokenKind};
+use super::lex::{Lexer, Token, TokenKind};
 use super::value::Value;
 use super::{escapes, number, utf8};
 use crate::parsing::number::Number;

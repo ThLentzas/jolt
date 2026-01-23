@@ -882,6 +882,15 @@ impl<'a, 'r> Parser<'a, 'r> {
     // the result is: 3, 5, 1, 2, 4, 6. The remaining elements of the array have a key 'b' which
     // results in a non-empty list and the comparison with .x returns false so no nodes added in the
     // list
+    //
+    // Pratt parsing
+    //
+    // we could use Pratt parsing but it is an overkill for this case; we only have 3 operators
+    // 1 prefix(!) and 2 infix(&&, ||), we have parenthesized expression too but those start a new
+    // chain anyway
+    //
+    // a Function Call Hierarchy based on precedence is more than enough, read parse_logical_or()
+    // below
     fn parse_filter(&mut self) -> Result<Selector, PathError> {
         self.pos += 1; // consume '?'
         // "? *S"
@@ -1265,6 +1274,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 // an embedded query can be a filter query or part of a logical expression. The point
                 // is we don't know yet. We need to look ahead for the next token and determine if
                 // we have some operator
+                // What we did is called Follow set , it tells us what can follow the First set
                 let arg = self.parse_comparable()?;
                 self.skip_ws()?;
 
@@ -1486,7 +1496,7 @@ mod tests {
     }
 
     // Name selectors return member names which are json strings. We have already covered the invalid
-    // cases in lexer.rs(invalid_strings())
+    // cases in lex(invalid_strings())
     fn invalid_name_selectors() -> Vec<(&'static str, PathError)> {
         vec![
             // name-first from name-shorthand notation can not start with a digit

@@ -1,14 +1,14 @@
 use core::str;
 use crate::parsing::error::{KeywordError, KeywordErrorKind};
-use crate::parsing::{error::ParseError, parser::Parser, value::Value};
+use crate::parsing::{error::ParseError, parse::Parser, value::Value};
 use memchr;
 
 pub(super) mod error;
 mod escapes;
-mod lexer;
+mod lex;
 mod map;
 pub(super) mod number;
-mod parser;
+mod parse;
 mod utf8;
 pub(super) mod value;
 
