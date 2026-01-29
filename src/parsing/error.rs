@@ -3,9 +3,9 @@ use crate::parsing::number::{NumericError, NumericErrorKind};
 use crate::parsing::utf8::Utf8Error;
 use std::{error, fmt};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum StringErrorKind {
-    UnexpectedEndOf,
+    UnexpectedEof,
     InvalidByteSequence { len: u8 },
     InvalidSurrogate,
     // the byte value might be an utf8 sequence, we can conditionally render it in display
@@ -19,7 +19,7 @@ pub(super) enum StringErrorKind {
 impl fmt::Display for StringErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StringErrorKind::UnexpectedEndOf => {
+            StringErrorKind::UnexpectedEof => {
                 write!(f, "unexpected end of input, unterminated string")
             }
             StringErrorKind::InvalidByteSequence { len } => {
@@ -48,7 +48,7 @@ impl fmt::Display for StringErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct StringError {
     pub(super) kind: StringErrorKind,
     pub(super) pos: usize,
@@ -81,7 +81,7 @@ impl From<EscapeError> for StringError {
                 pos: err.pos,
             },
             EscapeErrorKind::UnexpectedEof => StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
+                kind: StringErrorKind::UnexpectedEof,
                 pos: err.pos,
             },
             EscapeErrorKind::InvalidUnicodeSequence { digit } => StringError {
@@ -96,7 +96,7 @@ impl From<EscapeError> for StringError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum LexErrorKind {
     MalformedString(StringErrorKind),
     UnexpectedEof,
@@ -121,7 +121,7 @@ impl fmt::Display for LexErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct LexError {
     pub(super) kind: LexErrorKind,
     pub(super) pos: usize,
@@ -151,7 +151,7 @@ impl From<KeywordError> for LexError {
                 kind: LexErrorKind::UnexpectedCharacter { byte },
                 pos: err.pos,
             },
-            KeywordErrorKind::UnexpectedEndOf => LexError {
+            KeywordErrorKind::UnexpectedEof => LexError {
                 kind: LexErrorKind::UnexpectedEof,
                 pos: err.pos,
             },
@@ -168,7 +168,7 @@ impl From<NumericError> for LexError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum ParseErrorKind {
     Lexical(LexErrorKind),
     UnexpectedEof,
@@ -209,7 +209,7 @@ impl fmt::Display for ParseErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub(super) kind: ParseErrorKind,
     pub(super) pos: usize,
@@ -240,6 +240,6 @@ pub(super) struct KeywordError {
 }
 #[derive(Debug)]
 pub(super) enum KeywordErrorKind {
-    UnexpectedEndOf,
+    UnexpectedEof,
     UnexpectedCharacter { byte: u8 },
 }

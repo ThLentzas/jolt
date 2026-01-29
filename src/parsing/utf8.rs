@@ -128,7 +128,7 @@ pub(super) fn read_utf8_char(buffer: &[u8], pos: usize) -> char {
 }
 
 // only 1 kind of Utf8Error, InvalidByteSequence
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Utf8Error {
     pub(super) len: u8,
     pub(super) pos: usize,

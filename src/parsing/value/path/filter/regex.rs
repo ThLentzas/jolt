@@ -26,7 +26,7 @@ pub(super) fn partial_match(input: &str, pattern: &str) -> bool {
     nfa.partial_match(input)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum Regex {
     Empty,
     Concat(usize, usize),
@@ -37,7 +37,7 @@ pub(super) enum Regex {
     Atom(usize),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum CharClass {
     Literal(char),
     Dot,
@@ -66,7 +66,7 @@ impl From<Escape> for CharClass {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ClassExpr {
     negated: bool,
     items: Vec<ExprItem>,
@@ -80,7 +80,7 @@ impl ClassExpr {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum ExprItem {
     Literal(char),
     Property(Property),
@@ -121,7 +121,7 @@ enum Escape {
 }
 
 // major, minor
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum GeneralCategory {
     Letter,
     LetterLowercase,
@@ -224,7 +224,7 @@ impl GeneralCategory {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Property {
     category: GeneralCategory,
     negated: bool,
@@ -1081,7 +1081,7 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
     true
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum RegexErrorKind {
     // invalid character set range
     InvalidCsRange,
@@ -1093,7 +1093,7 @@ enum RegexErrorKind {
     UnexpectedEof,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 struct RegexError {
     kind: RegexErrorKind,
     pos: usize,

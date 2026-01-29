@@ -162,7 +162,7 @@ Jolt enforces limits to prevent resource exhaustion:
 - **Integers**: `[−(2^53)+1, (2^53)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable
   range.
 - **Floats**: IEEE 754 double-precision range.
-- **Regex**: The max value of a quantifier is `100`, `a{100}`, and the total number of nodes in the AST to `10000`.  
+- **Regex**: The max value of a quantifier is `100`, `a{100}`, and the total number of nodes in the AST is `10000`.  
   For example, `ab` produces 3 nodes:
 ```
    Concat(Atom(a), Atom(b))
@@ -192,8 +192,7 @@ let val = json!({
  ```
 This macro is intended for quickly constructing test data. It does **not** perform any escape sequence handling. For example, `"ab\u0063"` will not be converted to `"abc"` as per the JSON grammar, and
 invalid escapes like `"ab\p"` will not produce an error. Invalid input creates a `Value` in an
-undefined state, which may cause unexpected behavior. For untrusted input, use `from_slice()`
-or `from_str()` instead. Use with your own discretion.
+undefined state, which may lead to unexpected behavior. For untrusted input, use `from_slice()` or `from_str()` instead. Use with your own discretion.
 
 #### License
 

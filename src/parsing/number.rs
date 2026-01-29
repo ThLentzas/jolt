@@ -72,7 +72,7 @@ struct NumberState {
 //
 // With u64:
 // vec![7766279631452241920, 542101086035307936, 2]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum NumberKind {
     I64(i64),
     F64(f64),
@@ -82,15 +82,43 @@ enum NumberKind {
     BigDecimal(BigDecimal),
 }
 
+// Eq is sound because JSON numbers cannot be NaN. The parser rejects these values, so reflexivity
+// is guaranteed. We will never encounter a case like NaN != NaN.
 impl Eq for NumberKind {}
 
 impl Hash for NumberKind {
-    // toDo: explain
+    // https://doc.rust-lang.org/std/hash/index.html
+    // To generate a hash for NumberKind we need to consider the variant and the associated data
+    // hash() tells the hasher which data to include when generating a hash
+    //
+    // To get the discriminant of the variant we can use mem::discriminant() that does not return
+    // the unique integer but a Discriminant<T> which can be used when generating the hash
+    // https://doc.rust-lang.org/reference/items/enumerations.html#discriminants
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
 
         match self {
             NumberKind::I64(i) => i.hash(state),
+            // this is the part where we can't just call f.hash(state) because f64 does not implement
+            // Hash.
+            //
+            // To generate a hash we transmute f64 to u64. to_bits() gives us the raw 64 bits stored
+            // in memory for f, its representation(sign, exponent, mantissa) and we read those bits
+            // as u64. We want bitwise equality. Two floats with identical bits should hash the same.
+            //
+            // We need to handle the signed zero case where the invariant a == b then hash(a) == hash(b)
+            // breaks.
+            //
+            // 0.0 == -0.0 is true but their hashes are not because of the sign bit. When we encounter
+            // a 0.0 or -0.0 we set that value to 0(same bits) so the hash is the same.
+            //
+            // 0.0_f64.to_bits() returns 0
+            // (-0.0_f64).to_bits() returns 9_223_372_036_854_775_808 which is the number we expect
+            // the msb is 1 followed by 63 zeros as u64.
+            //
+            // We will never encounter a case where F64 and I64 produce the same hash because even
+            // if i.hash(state) and bits.hash(state) return the same hash, in the final one we also
+            // include the variant and F64 will produce a different hash from I64
             NumberKind::F64(f) => {
                 let bits = if *f == 0.0 { 0 } else { f.to_bits() };
                 bits.hash(state);
@@ -205,16 +233,7 @@ impl PartialOrd for Number {
 }
 
 impl From<i64> for Number {
-    // the user can try to create a Value with a number that exceeds our INT_LIMIT. If such values
-    // is provided we set it to INT_LIMIT because from() should not panic!/return an Error
-    // Value::Number(Number { kind: ...} ) this is also not possible because kind is private
-    //
-    // the goal is to not have values that are in an invalid state
     fn from(val: i64) -> Self {
-        let mut val = val;
-        if val.abs() > INT_MAX {
-            val = if val > 0 { INT_MAX } else { INT_MIN };
-        }
         Number {
             kind: NumberKind::I64(val),
         }
@@ -442,7 +461,7 @@ impl NumericBounds for i64 {
     const MAX: i64 = 9_007_199_254_740_991;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NumericErrorKind {
     LeadingZeros,
     InvalidSign { message: &'static str },

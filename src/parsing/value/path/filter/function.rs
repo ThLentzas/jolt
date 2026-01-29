@@ -173,7 +173,7 @@ impl FnExpr {
 }
 
 // types used in the signature of the function
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum FnType {
     ValueType,
     NodesType,
@@ -183,7 +183,7 @@ pub enum FnType {
 
 // length(), count() and value() return ValueType
 // search, match return Logical
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum FnResult<'r> {
     // if the function returns data from root, borrow it. If it calculates new data, own it.
     // length(), match(), search() and count() all create new data, but value() returns an existing
@@ -197,7 +197,7 @@ pub(super) enum FnResult<'r> {
 }
 
 // the resolved values that will be passed as parameters in a function
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum FnArg<'r> {
     Value(Cow<'r, Value>),
     Nodelist(Vec<&'r Value>),
@@ -527,7 +527,7 @@ impl Function for ValueFn {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FnExprError {
     // the number of arguments that the function has
     ArityMismatch { expected: usize, got: usize },

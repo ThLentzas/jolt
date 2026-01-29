@@ -158,7 +158,7 @@ impl<'r> PathTrace<'r> {
 }
 
 // value and the root to value path
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct PathNode<'r, T> {
     pub(crate) trace: T,
     pub(crate) val: &'r Value,
@@ -179,7 +179,7 @@ impl<'r> From<PathNode<'r, Option<Rc<PathTrace<'r>>>>> for Node<'r> {
 // lifetimes: val references a Value that lives in root
 //
 /// Contains a reference to a value and the normalized root to value path.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Node<'r> {
     pub val: &'r Value,
     pub path: String,

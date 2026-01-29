@@ -228,7 +228,7 @@ struct Slice {
     step: Option<i64>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Range {
     // current can become negative when traversing from right to left(negative step)
     // current = 1, step = -2 -> current becomes -1
@@ -423,7 +423,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     fn parse_root(&mut self) -> Result<(), PathError> {
         if self.buffer.is_empty() {
             return Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
+                kind: PathErrorKind::UnexpectedEof,
                 pos: self.pos,
             });
         }
@@ -532,7 +532,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 // we didn't encounter ']'
                 false => {
                     return Err(PathError {
-                        kind: PathErrorKind::UnexpectedEndOf,
+                        kind: PathErrorKind::UnexpectedEof,
                         pos: self.pos - 1,
                     });
                 }
@@ -542,7 +542,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         // handles the $[ case where after consuming '[' we never enter the loop
         if self.pos >= len {
             return Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
+                kind: PathErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             });
         }
@@ -586,7 +586,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             }
             None => {
                 return Err(PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: self.pos - 1,
                 });
             }
@@ -607,7 +607,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             Some(b'-' | b'0'..=b'9' | b':') => self.parse_numeric(),
             Some(b'?') => self.parse_filter(),
             None => Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
+                kind: PathErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             }),
             Some(n) => Err(PathError {
@@ -627,7 +627,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         })
         .map(|i| self.pos + i)
         .ok_or(StringError {
-            kind: StringErrorKind::UnexpectedEndOf,
+            kind: StringErrorKind::UnexpectedEof,
             pos: len - 1,
         })?;
 
@@ -778,7 +778,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             // -
             (b'-', None) => {
                 return Err(PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: self.pos,
                 });
             }
@@ -887,7 +887,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     //
     // we could use Pratt parsing but it is an overkill for this case; we only have 3 operators
     // 1 prefix(!) and 2 infix(&&, ||), we have parenthesized expression too but those start a new
-    // chain anyway
+    // chain anyway. Comparison operators do not have precedence.
     //
     // a Function Call Hierarchy based on precedence is more than enough, read parse_logical_or()
     // below
@@ -954,6 +954,10 @@ impl<'a, 'r> Parser<'a, 'r> {
                 self.pos += 2; // consume ||
                 self.skip_ws()?;
                 let rhs = self.parse_logical_and()?;
+                // Left-associativity: fold successive operands leftward.
+                // After parsing x, y, z in "x || y || z":
+                //   iter 1: lhs = (x || y)
+                //   iter 2: lhs = ((x || y) || z)
                 lhs = LogicalExpr::Or(Box::new(lhs), Box::new(rhs));
             } else {
                 break;
@@ -983,6 +987,10 @@ impl<'a, 'r> Parser<'a, 'r> {
                 self.pos += 2; // consume &&
                 self.skip_ws()?;
                 let rhs = self.parse_basic_expr()?;
+                // Left-associativity: fold successive operands leftward.
+                // After parsing x, y, z in "x && y && z":
+                //   iter 1: lhs = (x && y)
+                //   iter 2: lhs = ((x && y) && z)
                 lhs = LogicalExpr::And(Box::new(lhs), Box::new(rhs));
             } else {
                 break;
@@ -1313,7 +1321,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             // exhausted the buffer without encountering ')'
             if self.pos >= self.buffer.len() {
                 return Err(PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: self.pos - 1,
                 });
             }
@@ -1371,7 +1379,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         parsing::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Err(PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
+                kind: PathErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             });
         }
@@ -1448,7 +1456,7 @@ mod tests {
             (
                 "$ \n\r",
                 PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: 3,
                 },
             ),
@@ -1460,21 +1468,21 @@ mod tests {
             (
                 "$.",
                 PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: 1,
                 },
             ),
             (
                 "$[",
                 PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: 1,
                 },
             ),
             (
                 "$..",
                 PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: 2,
                 },
             ),
@@ -1521,14 +1529,14 @@ mod tests {
             (
                 "$['foo]",
                 PathError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 6,
                 }),
             ),
             (
                 "$[\"foo]",
                 PathError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 6,
                 }),
             ),
@@ -1540,7 +1548,7 @@ mod tests {
             (
                 "$[-",
                 PathError {
-                    kind: PathErrorKind::UnexpectedEndOf,
+                    kind: PathErrorKind::UnexpectedEof,
                     pos: 2,
                 },
             ),
@@ -1771,7 +1779,7 @@ mod tests {
     fn test_empty_path() {
         let root = json!({});
         let err = PathError {
-            kind: PathErrorKind::UnexpectedEndOf,
+            kind: PathErrorKind::UnexpectedEof,
             pos: 0,
         };
         let res = root.select("");

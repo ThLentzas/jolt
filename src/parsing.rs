@@ -30,7 +30,7 @@ fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), Ke
 
     if keyword.len() > remaining.len() {
         return Err(KeywordError {
-            kind: KeywordErrorKind::UnexpectedEndOf,
+            kind: KeywordErrorKind::UnexpectedEof,
             pos: buffer.len() - 1,
         });
     }

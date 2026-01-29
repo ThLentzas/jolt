@@ -4,7 +4,7 @@ use crate::parsing::number::{NumericErrorKind, OutOfRangeError};
 use crate::parsing::value::path::filter::function::FnExprError;
 use std::{error, fmt};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq,Eq)]
 pub(super) enum PointerErrorKind {
     InvalidPointerSyntax,
     MalformedString(StringErrorKind),
@@ -25,7 +25,7 @@ impl fmt::Display for PointerErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PointerError {
     pub(super) kind: PointerErrorKind,
     pub(super) pos: usize,
@@ -48,9 +48,9 @@ impl From<StringError> for PointerError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum PathErrorKind {
-    UnexpectedEndOf,
+    UnexpectedEof,
     MalformedString(StringErrorKind),
     UnexpectedCharacter { byte: u8 },
     // index/slice selectors
@@ -61,7 +61,7 @@ pub(super) enum PathErrorKind {
     FnExpr(FnExprError),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PathError {
     pub(super) kind: PathErrorKind,
     pub(super) pos: usize,
@@ -70,7 +70,7 @@ pub struct PathError {
 impl fmt::Display for PathErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PathErrorKind::UnexpectedEndOf => {
+            PathErrorKind::UnexpectedEof => {
                 write!(f, "unexpected end of input")
             }
             PathErrorKind::MalformedString(err) => write!(f, "{}", err),
@@ -114,8 +114,8 @@ impl From<KeywordError> for PathError {
                 kind: PathErrorKind::UnexpectedCharacter { byte },
                 pos: err.pos,
             },
-            KeywordErrorKind::UnexpectedEndOf => PathError {
-                kind: PathErrorKind::UnexpectedEndOf,
+            KeywordErrorKind::UnexpectedEof => PathError {
+                kind: PathErrorKind::UnexpectedEof,
                 pos: err.pos,
             },
         }
@@ -133,7 +133,7 @@ impl From<OutOfRangeError> for PathError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PatchError {
     // in previous cases, we used to pass ParseErrorKind as the type to avoid having pos twice, 1
     // for the inner type and one of the outer type, but now PatchError is an enum, not a struct
@@ -159,7 +159,7 @@ impl fmt::Display for PatchError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum OpError {
     MissingMember {
         member: &'static str,

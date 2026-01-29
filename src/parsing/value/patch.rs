@@ -13,7 +13,7 @@ enum OpKind {
     Test,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum Operation {
     Add { path: String, value: Value },
     Remove { path: String },
@@ -149,7 +149,7 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Vec<Operation>, PatchError> {
 }
 
 // the target location as referred to by the rfc
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Location<'a> {
     Root,
     // parent is the Value that we should apply the op

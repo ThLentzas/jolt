@@ -1,7 +1,7 @@
 use crate::parsing::error::{LexError, LexErrorKind, StringError, StringErrorKind};
 use crate::parsing::{escapes, number, utf8};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum TokenKind {
     LCurlyBracket,
     RCurlyBracket,
@@ -15,7 +15,8 @@ pub(super) enum TokenKind {
     Null,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+// rename parsing, use Eof
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) struct Token {
     pub(super) start_index: usize,
     pub(super) offset: usize,
@@ -32,6 +33,10 @@ impl<'a> Lexer<'a> {
         Self { buffer, pos: 0 }
     }
 
+    // instead of Option<Token> a different approach is to have a TokenKind::Eof variant and return
+    // that instead of None. In the None case, the token we return has as start buffer.len() and
+    // offset 0, we would keep the same structure for our parser, peeked would still be an Option<Token>
+    // but peek() would always return a Token
     pub(super) fn lex(&mut self) -> Result<Option<Token>, LexError> {
         super::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
@@ -202,7 +207,7 @@ impl<'a> Lexer<'a> {
         // exhausted the buffer, didn't find closing quote
         if self.pos == len {
             return Err(StringError {
-                kind: StringErrorKind::UnexpectedEndOf,
+                kind: StringErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
             });
         }
@@ -383,7 +388,7 @@ mod tests {
             (
                 b"\"\\",
                 LexError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 1,
                 }),
             ),
@@ -399,7 +404,7 @@ mod tests {
             (
                 b"\"\\u",
                 LexError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 2,
                 }),
             ),
@@ -407,7 +412,7 @@ mod tests {
             (
                 b"\"\\uD83D\"",
                 LexError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 7,
                 }),
             ),
@@ -438,7 +443,7 @@ mod tests {
             (
                 b"\"abc",
                 LexError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 3,
                 }),
             ),

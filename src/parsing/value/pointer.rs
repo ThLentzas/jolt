@@ -10,7 +10,7 @@ use crate::parsing::value::error::{PointerError, PointerErrorKind};
 // we are building the token value based on the pointer path, but we will need to do replacements
 // (replacing ~0 and ~1), RefTokens must own their data rather than referencing slices of the
 // original pointer path.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct RefToken {
     pub(super) val: String,
     pub(super) pos: usize,
@@ -507,7 +507,7 @@ mod test {
             (
                 "/foo/bar~",
                 PointerError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 8,
                 }),
             ),
@@ -533,7 +533,7 @@ mod test {
             (
                 "/\\u007e",
                 PointerError::from(StringError {
-                    kind: StringErrorKind::UnexpectedEndOf,
+                    kind: StringErrorKind::UnexpectedEof,
                     pos: 6,
                 }),
             ),
