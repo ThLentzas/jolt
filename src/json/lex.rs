@@ -1,5 +1,5 @@
-use crate::parsing::error::{LexError, LexErrorKind, StringError, StringErrorKind};
-use crate::parsing::{escapes, number, utf8};
+use crate::json::error::{LexError, LexErrorKind, StringError, StringErrorKind};
+use crate::json::{escapes, number, utf8};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum TokenKind {
@@ -15,7 +15,7 @@ pub(super) enum TokenKind {
     Null,
 }
 
-// rename parsing, use Eof
+// rename json, use Eof
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) struct Token {
     pub(super) start_index: usize,

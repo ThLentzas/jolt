@@ -1,6 +1,6 @@
-use crate::parsing::value::Value;
+use crate::json::value::Value;
 use std::rc::Rc;
-use crate::parsing;
+use crate::json;
 
 // It describes only the specific move we just made, where we stepped into.
 // lifetimes: Step holds a reference to a key of an object that lives in root
@@ -145,7 +145,7 @@ impl<'r> PathTrace<'r> {
             path.push('[');
             match step {
                 Step::Root => (),
-                Step::Key(key) => path.push_str(parsing::to_jstr(key, '\'').as_str()),
+                Step::Key(key) => path.push_str(json::to_jstr(key, '\'').as_str()),
                 // we can't call char::from_u32(*i as u32).unwrap()
                 // 'i' in this case is the codepoint, so if index is 1 we get back '\u{1}' which
                 // is a control character
@@ -178,7 +178,10 @@ impl<'r> From<PathNode<'r, Option<Rc<PathTrace<'r>>>>> for Node<'r> {
 // what we return to the user
 // lifetimes: val references a Value that lives in root
 //
-/// Contains a reference to a value and the normalized root to value path.
+/// Returned by [`select()`](Value::select) when evaluating JSONPath queries.
+/// # Fields
+/// * `val` - Reference to the matched value in the JSON document.
+/// * `path` - Normalized path from root to this value.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Node<'r> {
     pub val: &'r Value,

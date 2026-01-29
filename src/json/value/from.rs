@@ -1,4 +1,4 @@
-use crate::parsing::number::Number;
+use crate::json::number::Number;
 use crate::Value;
 use indexmap::IndexMap;
 

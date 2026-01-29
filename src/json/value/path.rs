@@ -1,14 +1,14 @@
-use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::number::{self, Atoi};
-use crate::parsing::value::Value;
-use crate::parsing::value::error::{PathError, PathErrorKind};
-use crate::parsing::value::path::filter::function::{FnExpr, FnExprArg};
-use crate::parsing::value::path::filter::{
+use crate::json::error::{StringError, StringErrorKind};
+use crate::json::number::{self, Atoi};
+use crate::json::value::Value;
+use crate::json::value::error::{PathError, PathErrorKind};
+use crate::json::value::path::filter::function::{FnExpr, FnExprArg};
+use crate::json::value::path::filter::{
     Comparable, ComparisonExpr, ComparisonOp, EmbeddedQuery, EmbeddedQueryType, LogicalExpr,
     TestExpr,
 };
-use crate::parsing::value::path::tracker::{PathNode, Step, Tracker};
-use crate::parsing::{self, escapes, utf8};
+use crate::json::value::path::tracker::{PathNode, Step, Tracker};
+use crate::json::{self, escapes, utf8};
 use std::cmp;
 use std::collections::HashMap;
 
@@ -449,7 +449,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     }
 
     fn parse_seg(&mut self) -> Result<Option<Segment>, PathError> {
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Ok(None);
         }
@@ -481,7 +481,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
     // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
     //
-    // if pos is at '.' we are not sure what kind of segment we are parsing; it can be the shorthand
+    // if pos is at '.' we are not sure what kind of segment we are json; it can be the shorthand
     // syntax for a child segment, .foo, or it can be a descendant segment that we don't know if
     // it is represented with a bracketed selection or the shorthand syntax. We need to peek to determine
     // the notation
@@ -511,13 +511,13 @@ impl<'a, 'r> Parser<'a, 'r> {
 
         while self.pos < len && self.buffer[self.pos] != b']' {
             segment.selectors.push(self.parse_selector()?);
-            parsing::skip_whitespaces(self.buffer, &mut self.pos);
+            json::skip_whitespaces(self.buffer, &mut self.pos);
 
             match self.pos < len {
                 true if self.buffer[self.pos] == b']' => {
                     break;
                 }
-                // after parsing a selector, if we don't encounter ']', we expect comma to separate
+                // after json a selector, if we don't encounter ']', we expect comma to separate
                 // multiple selectors.
                 true if self.buffer[self.pos] != b',' => {
                     return Err(PathError {
@@ -596,7 +596,7 @@ impl<'a, 'r> Parser<'a, 'r> {
 
     // gets called from parse_bracket after '[' or ','
     fn parse_selector(&mut self) -> Result<Selector, PathError> {
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
 
         match self.buffer.get(self.pos) {
             Some(c) if *c == b'\'' || *c == b'\"' => Ok(Selector::Name(self.parse_name()?)),
@@ -622,7 +622,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         let len = self.buffer.len();
         self.pos += 1; // skip opening quote(' or ")
 
-        let end = parsing::find(&self.buffer[self.pos..], quote, |b| {
+        let end = json::find(&self.buffer[self.pos..], quote, |b| {
             b == quote || escapes::is_escape(b)
         })
         .map(|i| self.pos + i)
@@ -671,10 +671,10 @@ impl<'a, 'r> Parser<'a, 'r> {
                 }
             }
 
-            if name.len() > parsing::STRING_LENGTH_LIMIT {
+            if name.len() > json::STRING_LENGTH_LIMIT {
                 return Err(StringError {
                     kind: StringErrorKind::LengthLimitExceeded {
-                        len: parsing::STRING_LENGTH_LIMIT,
+                        len: json::STRING_LENGTH_LIMIT,
                     },
                     // at the index of opening quote
                     pos: self.pos - 1,
@@ -717,7 +717,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         // '!' is missing because no valid expression can start in that case,
         // @.name!... (nothing valid follows)
         //
-        // if we have a case like "$.price< ", parsing will fail later when we attempt to parse the
+        // if we have a case like "$.price< ", json will fail later when we attempt to parse the
         // next segment
         while self.pos < len {
             current = self.buffer[self.pos];
@@ -725,7 +725,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             if matches!(
                 current,
                 b'.' | b'[' | b'<' | b'>' | b'=' | b'&' | b'|' | b')' | b']' | b','
-            ) || parsing::is_rfc_whitespace(current)
+            ) || json::is_rfc_whitespace(current)
             {
                 break;
             }
@@ -754,7 +754,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         num = self.parse_index()?;
         // from the slice syntax: start *S ":" *S end *S ":" *S step  we need to skip whitespaces
         // between first index and ':'
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos < self.buffer.len() && self.buffer[self.pos] == b':' {
             return self.parse_slice(Some(num));
         }
@@ -804,7 +804,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         let mut end: Option<i64> = None;
         self.pos += 1; // consume ':'
 
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
         // 1: or :
         if self.pos >= len {
             return Ok(Selector::Slice(Slice { start, end, step }));
@@ -822,7 +822,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             _ => return Ok(Selector::Slice(Slice { start, end, step })),
         }
 
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
         // 1::, ::, 1:5
         if self.pos > len {
             return Ok(Selector::Slice(Slice { start, end, step }));
@@ -830,7 +830,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         // 1:2: or :2:
         if end.is_some() && self.buffer[self.pos] == b':' {
             self.pos += 1; // skip the second ':'
-            parsing::skip_whitespaces(self.buffer, &mut self.pos);
+            json::skip_whitespaces(self.buffer, &mut self.pos);
         }
 
         match self.buffer.get(self.pos) {
@@ -883,9 +883,9 @@ impl<'a, 'r> Parser<'a, 'r> {
     // results in a non-empty list and the comparison with .x returns false so no nodes added in the
     // list
     //
-    // Pratt parsing
+    // Pratt json
     //
-    // we could use Pratt parsing but it is an overkill for this case; we only have 3 operators
+    // we could use Pratt json but it is an overkill for this case; we only have 3 operators
     // 1 prefix(!) and 2 infix(&&, ||), we have parenthesized expression too but those start a new
     // chain anyway. Comparison operators do not have precedence.
     //
@@ -955,7 +955,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 self.skip_ws()?;
                 let rhs = self.parse_logical_and()?;
                 // Left-associativity: fold successive operands leftward.
-                // After parsing x, y, z in "x || y || z":
+                // After json x, y, z in "x || y || z":
                 //   iter 1: lhs = (x || y)
                 //   iter 2: lhs = ((x || y) || z)
                 lhs = LogicalExpr::Or(Box::new(lhs), Box::new(rhs));
@@ -988,7 +988,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 self.skip_ws()?;
                 let rhs = self.parse_basic_expr()?;
                 // Left-associativity: fold successive operands leftward.
-                // After parsing x, y, z in "x && y && z":
+                // After json x, y, z in "x && y && z":
                 //   iter 1: lhs = (x && y)
                 //   iter 2: lhs = ((x && y) && z)
                 lhs = LogicalExpr::And(Box::new(lhs), Box::new(rhs));
@@ -1210,23 +1210,23 @@ impl<'a, 'r> Parser<'a, 'r> {
 
         match current {
             b'l' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "length".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "length".as_bytes())?;
                 name.push_str("length");
             }
             b'c' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "count".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "count".as_bytes())?;
                 name.push_str("count");
             }
             b'm' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "match".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "match".as_bytes())?;
                 name.push_str("match");
             }
             b's' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "search".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "search".as_bytes())?;
                 name.push_str("search");
             }
             b'v' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "value".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "value".as_bytes())?;
                 name.push_str("value");
             }
             _ => unreachable!(
@@ -1270,7 +1270,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             } else {
                 // this is the ambiguous part. It is known as the "First set problem"
                 //
-                // The "first set problem" in parsing, especially for LL(1) grammars, refers to when
+                // The "first set problem" in json, especially for LL(1) grammars, refers to when
                 // a non-terminal can derive multiple production rules that start with the exact
                 // same terminal symbol, creating ambiguity for top-down parsers (like LL parsers)
                 // that need to decide which rule to apply next based on the next input token.
@@ -1297,7 +1297,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                     // a logical one.
                     let mut expr = self.parse_comparison_tail(arg)?;
                     // we can't just call parse_logical_and/or
-                    // we are not parsing a logical expression from the start like we do when we call
+                    // we are not json a logical expression from the start like we do when we call
                     // parse_filter(). We have already parsed the lhs, we are at && or || we need to
                     // parse the remaining part of the expression. We need those tail methods to look
                     // after lhs. Calling parse_logical_and/or would look for lhs, encounter && and
@@ -1364,11 +1364,11 @@ impl<'a, 'r> Parser<'a, 'r> {
                 } else {
                     "false".as_bytes()
                 };
-                parsing::read_keyword(self.buffer, &mut self.pos, keyword)?;
+                json::read_keyword(self.buffer, &mut self.pos, keyword)?;
                 Ok(Value::Bool(current == b't'))
             }
             b'n' => {
-                parsing::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
+                json::read_keyword(self.buffer, &mut self.pos, "null".as_bytes())?;
                 Ok(Value::Null)
             }
             _ => unreachable!("parse_literal() called with invalid byte: {}", current),
@@ -1376,7 +1376,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     }
 
     fn skip_ws(&mut self) -> Result<(), PathError> {
-        parsing::skip_whitespaces(self.buffer, &mut self.pos);
+        json::skip_whitespaces(self.buffer, &mut self.pos);
         if self.pos >= self.buffer.len() {
             return Err(PathError {
                 kind: PathErrorKind::UnexpectedEof,
@@ -1437,10 +1437,10 @@ pub(super) fn normalize_index(index: i64, len: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::json;
-    use crate::parsing::value::IndexMap;
-    use crate::parsing::value::path::filter::function::FnExprError;
-    use crate::parsing::value::path::filter::function::FnType;
-    use crate::parsing::value::path::tracker::NoOpTracker;
+    use crate::json::value::IndexMap;
+    use crate::json::value::path::filter::function::FnExprError;
+    use crate::json::value::path::filter::function::FnType;
+    use crate::json::value::path::tracker::NoOpTracker;
 
     fn invalid_root() -> Vec<(&'static str, PathError)> {
         vec![

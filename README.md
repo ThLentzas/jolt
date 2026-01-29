@@ -14,7 +14,7 @@ A library that provides JSON support
 jolt = "0.1.0"
 ```
 
-## Parse
+## Parsing
 
 `from_slice()` performs strict utf-8 validation according to the spec. Any invalid utf-8 sequence will
 result in a `ParserError` and it will not be replaced by the replacement character `�`.
@@ -32,7 +32,7 @@ enum Value {
 }
 ```
 
-## Read
+## Reading
 
 There are 3 ways you can extract a value from a JSON document:
 
@@ -131,7 +131,7 @@ There are 3 ways you can extract a value from a JSON document:
     }
     ```
 
-## Write
+## Writing
 
 To modify a JSON document, use either `modify()` or `try_modify()`. Both methods
 accept a [JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) compliant string.

@@ -2,7 +2,7 @@ use super::error::{ParseError, ParseErrorKind};
 use super::lex::{Lexer, Token, TokenKind};
 use super::value::Value;
 use super::{escapes, number, utf8};
-use crate::parsing::number::Number;
+use crate::json::number::Number;
 use indexmap::IndexMap;
 use std::string::String;
 
@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
 
         let val = self.parse_value()?;
         if self.peek()?.is_some() {
-            // after successfully parsing a value we can't have leftover tokens
+            // after successfully json a value we can't have leftover tokens
             // false5, "abc"123, {}  null,
             // note that this could return an error, {}001, -> leading zeros are not allowed
             return Err(ParseError {
@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
     // parse_number,string,bool all need 1 token; they use the starting index and offset to parse
     // the value from the buffer.
     //
-    // After parsing a value, peek() references the next token after it
+    // After json a value, peek() references the next token after it
     fn parse_value(&mut self) -> Result<Value, ParseError> {
         let Some(token) = self.peek()? else {
             return Err(ParseError {
@@ -426,8 +426,8 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parsing;
-    use crate::parsing::number::Number;
+    use crate::json;
+    use crate::json::number::Number;
     #[cfg(feature = "arbitrary_precision")]
     use bigdecimal::BigDecimal;
     #[cfg(feature = "arbitrary_precision")]
@@ -470,14 +470,18 @@ mod tests {
             (
                 b"{ \"foo\": 5,}",
                 ParseError {
-                    kind: ParseErrorKind::UnexpectedToken { expected: Some("string key") },
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: Some("string key"),
+                    },
                     pos: 11,
                 },
             ),
             (
                 b"{ \"foo\": 5 null",
                 ParseError {
-                    kind: ParseErrorKind::UnexpectedToken { expected: Some("',' or closing bracket") },
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: Some("',' or closing bracket"),
+                    },
                     pos: 11,
                 },
             ),
@@ -617,8 +621,7 @@ mod tests {
             "numbers": [116, -943, 9007199254740991, -3.14159265358979e+100, 6.02214076e+23, 2.718281828e-50],
             "": true,
             "null": null
-        }"#
-            .as_bytes();
+        }"#.as_bytes();
 
         // couldn't set up with json!() had problems with large numbers
         let mut numbers = Vec::new();
@@ -636,6 +639,8 @@ mod tests {
         );
         map.insert(
             "surrogate_pair".to_string(),
+            // the value is actually the "Grinning Face" emoji, codepoint U+1F600 but for some reason
+            // it is not getting displayed
             Value::String(String::from("😀")),
         );
         map.insert(
@@ -711,7 +716,7 @@ mod tests {
     //  and might not have 4MBs of memory
     #[test]
     fn input_buffer_exceeds_size_limit() {
-        let buffer = vec![b'"'; parsing::INPUT_BUFFER_LIMIT + 1];
+        let buffer = vec![b'"'; json::INPUT_BUFFER_LIMIT + 1];
         let mut parser = Parser::new(&buffer);
         let result = parser.parse();
 
@@ -719,7 +724,7 @@ mod tests {
             result,
             Err(ParseError {
                 kind: ParseErrorKind::InputBufferLimitExceeded {
-                    len: parsing::INPUT_BUFFER_LIMIT
+                    len: json::INPUT_BUFFER_LIMIT
                 },
                 pos: 0
             })
@@ -728,10 +733,10 @@ mod tests {
 
     #[test]
     fn string_len_exceeds_limit() {
-        let mut buffer = Vec::with_capacity(parsing::STRING_LENGTH_LIMIT + 3);
+        let mut buffer = Vec::with_capacity(json::STRING_LENGTH_LIMIT + 3);
 
         buffer.push(b'"');
-        buffer.extend(vec![b'a'; parsing::STRING_LENGTH_LIMIT + 1]);
+        buffer.extend(vec![b'a'; json::STRING_LENGTH_LIMIT + 1]);
         buffer.push(b'"');
 
         let mut parser = Parser::new(&buffer);
@@ -741,7 +746,7 @@ mod tests {
             result,
             Err(ParseError {
                 kind: ParseErrorKind::StringLengthLimitExceeded {
-                    len: parsing::STRING_LENGTH_LIMIT
+                    len: json::STRING_LENGTH_LIMIT
                 },
                 pos: 0
             })
@@ -765,7 +770,7 @@ mod tests {
             result,
             Err(ParseError {
                 kind: ParseErrorKind::NestingDepthLimitExceeded {
-                    depth: parsing::NESTING_DEPTH_LIMIT
+                    depth: json::NESTING_DEPTH_LIMIT
                 },
                 pos: parser.lexer.pos
             })

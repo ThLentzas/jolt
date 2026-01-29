@@ -1,7 +1,7 @@
-use crate::parsing::value::path::filter::function::{FnExpr, FnResult};
-use crate::parsing::value::path::tracker::{NoOpTracker, PathNode};
-use crate::parsing::value::path::{EvalContext, Segment};
-use crate::parsing::value::Value;
+use crate::json::value::path::filter::function::{FnExpr, FnResult};
+use crate::json::value::path::tracker::{NoOpTracker, PathNode};
+use crate::json::value::path::{EvalContext, Segment};
+use crate::json::value::Value;
 use std::borrow::Cow;
 
 pub(crate) mod function;
@@ -30,7 +30,7 @@ pub(crate) enum LogicalExpr {
 
 impl LogicalExpr {
     // short-circuiting and well-typedness of functions
-    // because the type checking happens during parsing, we will never encounter a case where we
+    // because the type checking happens during json, we will never encounter a case where we
     // might have an invalid function(Arity/Type mismatch) that we will miss because the lhs evaluated
     // to true/false, and we returned without evaluating the rhs
     //
@@ -136,7 +136,7 @@ impl Comparable {
     // gets the 'r lifetime.
     //
     // the problem is in this case: Comparable::Literal(t) => Operand::Value(Cow::Borrowed(t))
-    // This is the case where either lhs or rhs was a literal. During parsing we wrapped the literal
+    // This is the case where either lhs or rhs was a literal. During json we wrapped the literal
     // in a Value() so we can then use the comparison operators. The Comparable::Literal(t) has the
     // lifetime of self not of 'r, it does not live in root which is shorter than 'r.
     //

@@ -1,6 +1,6 @@
-use crate::parsing::escapes::{EscapeError, EscapeErrorKind};
-use crate::parsing::number::{NumericError, NumericErrorKind};
-use crate::parsing::utf8::Utf8Error;
+use crate::json::escapes::{EscapeError, EscapeErrorKind};
+use crate::json::number::{NumericError, NumericErrorKind};
+use crate::json::utf8::Utf8Error;
 use std::{error, fmt};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -209,6 +209,15 @@ impl fmt::Display for ParseErrorKind {
     }
 }
 
+/// Represents an error that can occur when parsing data into a [Value](crate::Value).
+///
+/// There are two main categories of parsing errors:
+///
+/// **Lexical Errors**: Occur when the input contains characters that are not part of the JSON alphabet.
+///    * `falze` (invalid literal).
+///
+/// **Syntactical Errors**: Occur when the syntax violates the JSON grammar rules.
+///    * `[1, 2,]` (trailing comma) or `{"key": }` (missing value).
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub(super) kind: ParseErrorKind,

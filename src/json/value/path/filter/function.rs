@@ -1,6 +1,6 @@
-use crate::parsing::value::path::filter::{regex, EmbeddedQuery, LogicalExpr};
-use crate::parsing::value::path::EvalContext;
-use crate::parsing::value::Value;
+use crate::json::value::path::filter::{regex, EmbeddedQuery, LogicalExpr};
+use crate::json::value::path::EvalContext;
+use crate::json::value::Value;
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;

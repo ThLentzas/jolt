@@ -16,9 +16,9 @@
 ///
 /// This macro is intended for quickly constructing test data. It does **not** perform any escape
 /// sequence handling. For example, `"ab\u0063"` will not be converted to `"abc"`, and
-/// invalid escapes like `"ab\p"` will not produce an error.Invalid input creates a `Value` in an
-/// undefined state, which may cause unexpected behavior. For untrusted input, use [`from_str`](crate::from_str)
-/// or [`from_slice`](crate::from_slice) instead. Use with your own discretion.
+/// invalid escapes like `"ab\p"` will not produce an error. Invalid input creates a `Value` in an
+/// undefined state, which may cause unexpected behavior. For untrusted input, use [`from_str()`](crate::from_str)
+/// or [`from_slice()`](crate::from_slice) instead. Use with your own discretion.
 #[macro_export]
 macro_rules! json {
     ([]) => { $crate::Value::Array(Vec::new()) };
@@ -43,13 +43,13 @@ macro_rules! json {
 // we could also implement atoi for every numeric type but this way is more efficient
 macro_rules! impl_atoi {
     ($t: ty) => {
-        impl crate::parsing::number::Atoi for $t {
+        impl crate::json::number::Atoi for $t {
             fn atoi(
                 buffer: &[u8],
                 pos: &mut usize,
-            ) -> Result<Self, crate::parsing::number::OutOfRangeError> {
-                use crate::parsing::number::OutOfRangeError;
-                use crate::parsing::number::NumericBounds;
+            ) -> Result<Self, crate::json::number::OutOfRangeError> {
+                use crate::json::number::OutOfRangeError;
+                use crate::json::number::NumericBounds;
                 
                 let mut num: $t = 0;
                 let start = *pos;

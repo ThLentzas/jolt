@@ -1,4 +1,4 @@
-use crate::parsing::number::{self, HexError};
+use crate::json::number::{self, HexError};
 use std::{error, fmt};
 
 const ESCAPE_CHAR_LEN: u8 = 2;

@@ -1,7 +1,7 @@
-use crate::parsing::value::error::{OpError, PatchError, PointerError};
-use crate::parsing::value::pointer;
-use crate::parsing::value::pointer::{Pointer, RefToken};
-use crate::{Value, parsing};
+use crate::json::value::error::{OpError, PatchError, PatchErrorKind, PointerError};
+use crate::json::value::pointer;
+use crate::json::value::pointer::{Pointer, RefToken};
+use crate::{Value, json};
 use indexmap::IndexMap;
 
 enum OpKind {
@@ -133,16 +133,30 @@ impl Operation {
 }
 
 pub(super) fn parse(buffer: &[u8]) -> Result<Vec<Operation>, PatchError> {
-    let Value::Array(arr) = parsing::parse(buffer)? else {
-        return Err(PatchError::UnexpectedValue { expected: "Array" });
+    let val = json::parse(buffer).map_err(|err| PatchError {
+        kind: PatchErrorKind::ParseError(err),
+        index: None,
+    })?;
+
+    let Value::Array(arr) = val else {
+        return Err(PatchError {
+            kind: PatchErrorKind::UnexpectedValue { expected: "Array" },
+            index: None, // No index because this is the root
+        });
     };
 
     let mut ops = Vec::new();
     for (i, elem) in arr.into_iter().enumerate() {
         let Value::Object(map) = elem else {
-            return Err(PatchError::UnexpectedValue { expected: "Object" });
+            return Err(PatchError {
+                kind: PatchErrorKind::UnexpectedValue { expected: "Object" },
+                index: Some(i),
+            });
         };
-        let op = into_op(map).map_err(|err| PatchError::InvalidOp(err, i))?;
+        let op = into_op(map).map_err(|err| PatchError {
+            kind: PatchErrorKind::InvalidOp(err),
+            index: Some(i),
+        })?;
         ops.push(op);
     }
     Ok(ops)
@@ -375,12 +389,12 @@ fn into_op(mut map: IndexMap<String, Value>) -> Result<Operation, OpError> {
         .swap_remove("op")
         .ok_or(OpError::MissingMember { member: "op" })?;
     let Value::String(op) = op else {
-        return Err(OpError::UnexpectedValue {
+        return Err(OpError::UnexpectedField {
             field: "op",
             expected: "string",
         });
     };
-    let kind = to_kind(&op).ok_or(OpError::UnexpectedValue {
+    let kind = to_kind(&op).ok_or(OpError::UnexpectedField {
         field: "op",
         expected: "valid op",
     })?;
@@ -389,7 +403,7 @@ fn into_op(mut map: IndexMap<String, Value>) -> Result<Operation, OpError> {
         .swap_remove("path")
         .ok_or(OpError::MissingMember { member: "path" })?;
     let Value::String(path) = path else {
-        return Err(OpError::UnexpectedValue {
+        return Err(OpError::UnexpectedField {
             field: "path",
             expected: "string",
         });
@@ -430,7 +444,7 @@ fn from(map: &mut IndexMap<String, Value>) -> Result<String, OpError> {
         .swap_remove("from")
         .ok_or(OpError::MissingMember { member: "from" })?;
     let Value::String(from) = from else {
-        return Err(OpError::UnexpectedValue {
+        return Err(OpError::UnexpectedField {
             field: "from",
             expected: "string",
         });
@@ -454,46 +468,58 @@ fn to_kind(val: &str) -> Option<OpKind> {
 mod tests {
     use crate::Value;
     use crate::json;
-    use crate::parsing::value::error::{OpError, PatchError};
-    use crate::parsing::value::patch::Operation;
+    use crate::json::value::error::{OpError, PatchError, PatchErrorKind};
+    use crate::json::value::patch::Operation;
 
     fn missing_members() -> Vec<(&'static str, PatchError)> {
         vec![
             (
                 r#"[{}]"#,
-                PatchError::InvalidOp(OpError::MissingMember { member: "op" }, 0),
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::MissingMember { member: "op" }),
+                    index: Some(0),
+                },
             ),
             (
                 r#"[{"op": "foo"}]"#,
-                PatchError::InvalidOp(
-                    OpError::UnexpectedValue {
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::UnexpectedField {
                         field: "op",
                         expected: "valid op",
-                    },
-                    0,
-                ),
+                    }),
+                    index: Some(0),
+                },
             ),
             (
                 r#"[{"op": "add"}]"#,
-                PatchError::InvalidOp(OpError::MissingMember { member: "path" }, 0),
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::MissingMember { member: "path" }),
+                    index: Some(0),
+                },
             ),
             (
                 r#"[{"op": "add", "path": 3}]"#,
-                PatchError::InvalidOp(
-                    OpError::UnexpectedValue {
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::UnexpectedField {
                         field: "path",
                         expected: "string",
-                    },
-                    0,
-                ),
+                    }),
+                    index: Some(0),
+                },
             ),
             (
                 r#"[{"op": "add", "path": "/foo/bar"}]"#,
-                PatchError::InvalidOp(OpError::MissingMember { member: "value" }, 0),
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::MissingMember { member: "value" }),
+                    index: Some(0),
+                },
             ),
             (
                 r#"[{"op": "move", "path": "/foo/bar"}]"#,
-                PatchError::InvalidOp(OpError::MissingMember { member: "from" }, 0),
+                PatchError {
+                    kind: PatchErrorKind::InvalidOp(OpError::MissingMember { member: "from" }),
+                    index: Some(0),
+                },
             ),
         ]
     }
@@ -638,7 +664,7 @@ mod tests {
                         "foo": [1, 2, 3, {}]
                     }
                 ),
-                OpError::NotEqual
+                OpError::NotEqual,
             ),
         ]
     }
@@ -845,7 +871,7 @@ mod tests {
             (
                 Operation::Test {
                     path: String::from("/bar/0"),
-                    value: json!(1)
+                    value: json!(1),
                 },
                 json!(
                     {
@@ -868,7 +894,10 @@ mod tests {
     #[test]
     fn invalid_root() {
         let res = super::parse("5".as_bytes());
-        let err = PatchError::UnexpectedValue { expected: "Array" };
+        let err = PatchError {
+            kind: PatchErrorKind::UnexpectedValue { expected: "Array" },
+            index: None,
+        };
 
         assert_eq!(res, Err(err));
     }
@@ -876,7 +905,10 @@ mod tests {
     #[test]
     fn non_object_in_array() {
         let res = super::parse("[null]".as_bytes());
-        let err = PatchError::UnexpectedValue { expected: "Object" };
+        let err = PatchError {
+            kind: PatchErrorKind::UnexpectedValue { expected: "Object" },
+            index: Some(0),
+        };
 
         assert_eq!(res, Err(err));
     }

@@ -88,15 +88,14 @@
 //! **Functions and Regular Expressions:**
 //!
 //! - `Functions`: All functions that are defined in
-//!   the [rfc](https://www.rfc-editor.org/rfc/rfc9535.html#name-function-extensions) are supported. There are plans to
-//!   add new ones such as `min()`, `max()` and `avg()` in future updates.
+//!   the [rfc](https://www.rfc-editor.org/rfc/rfc9535.html#name-function-extensions) are supported.
 //! - `Regex`: Jolt includes a built-in [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) engine for pattern matching
-//!   in filter expressions. The engine uses Thompson's NFA construction, guaranteeing `O(m * n)` time complexity where
+//!   in filter expressions. The engine uses Thompson's construction, guaranteeing `O(m * n)` time complexity where
 //!   `m` is the pattern length and `n` is the input length. Unicode character properties (e.g., `\p{L}` for letters)
 //!   are supported via a two-stage lookup table for `O(1)` category retrieval. This approach generates a binary of
 //!   approximately `170 KB`, which is `~40%` smaller than a binary-search-based approach `~280 KB` and significantly
 //!   smaller than a naive vector-based approach `~3.04 MB` for 1,114,112 entries.
-
+//!
 //! **get()**: A method on [Value] for direct access to container elements. Works with both objects and arrays
 //! through an interface, pass a string key for objects or an integer index for arrays. Returns
 //! `Option<&Value>`, allowing safe access without panicking.
@@ -120,7 +119,7 @@
 //!```
 //!
 //! # Writing
-//! To modify a JSON document, use either [modify()](Value::modify) or [try_modify()](Value::try_modify). Both methods
+//! To modify a JSON document, use either [`modify()`](Value::modify) or [`try_modify()`](Value::try_modify). Both methods
 //! accept a [JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) compliant string.
 //!
 //! - `modify()`: If an operation fails, previous changes are retained.
@@ -146,7 +145,7 @@
 //!
 //! Jolt enforces limits to prevent resource exhaustion:
 //!
-//! - **Byte Buffer**: `4 MB` maximum. Larger buffers are rejected before parsing.
+//! - **Byte Buffer**: `4 MB` maximum. Larger buffers are rejected before json.
 //! - **String length**: `8,192` characters per string value.
 //! - **Nesting depth**: `128` levels of nested objects/arrays.
 //! - **Integers**: `[−(2^53)+1, (2^53)−1]` the [I-JSON](https://www.rfc-editor.org/rfc/rfc7493#section-2.2) interoperable range.
@@ -174,44 +173,44 @@
 //! ```
 
 mod macros;
-mod parsing;
+mod json;
 
 // Any type that appears in a public function signature must be accessible to users
-pub use parsing::error::ParseError;
-pub use parsing::number::Number;
-pub use parsing::value::Value;
+pub use json::error::ParseError;
+pub use json::number::Number;
+pub use json::value::Value;
 // exposes the module, then the use can do pointer::to_ptr_path()
-pub use parsing::value::pointer;
-pub use parsing::value::{Node, PatchError, PathError, PointerError};
+pub use json::value::pointer;
+pub use json::value::{Node, PatchError, PathError, PointerError};
 
-/// Parses a byte slice into a `Value`.
+/// Parses a byte slice into a [Value].
 /// # Example
 ///
 /// ```
 /// # use jolt;
 /// #
-/// let value = jolt::from_slice(br#"{"foo": "bar"}"#).unwrap();
+/// let val = jolt::from_slice(br#"{"foo": "bar"}"#).unwrap();
 /// ```
 /// # Errors
 /// Performs strict UTF-8 validation where any invalid sequence results in an error. Non-strict parsers typically
 /// substitute invalid sequences with the replacement character (�), but this parser rejects them.
-/// The process can also fail if the slice violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259)
+/// The process can also fail if the input violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259)
 /// grammar.
 pub fn from_slice(buffer: &[u8]) -> Result<Value, ParseError> {
-    parsing::parse(buffer)
+    json::parse(buffer)
 }
 
-/// Parses a string slice into a `Value`.
+/// Parses a string slice into a [Value].
 ///
 /// # Example
 ///
 /// ```
-/// let value = jolt::from_str(r#"{"foo": "bar"}"#).unwrap();
+/// let val = jolt::from_str(r#"{"foo": "bar"}"#).unwrap();
 /// ```
 ///
 /// # Errors
 ///
-/// The process can fail if the slice violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259) grammar.
+/// The process can fail if the input violates any of the rules defined in the [JSON](https://www.rfc-editor.org/rfc/rfc8259) grammar.
 pub fn from_str(text: &str) -> Result<Value, ParseError> {
-    parsing::parse(text.as_bytes())
+    json::parse(text.as_bytes())
 }

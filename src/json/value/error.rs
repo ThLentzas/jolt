@@ -1,7 +1,7 @@
 use crate::ParseError;
-use crate::parsing::error::{KeywordError, KeywordErrorKind, StringError, StringErrorKind};
-use crate::parsing::number::{NumericErrorKind, OutOfRangeError};
-use crate::parsing::value::path::filter::function::FnExprError;
+use crate::json::error::{KeywordError, KeywordErrorKind, StringError, StringErrorKind};
+use crate::json::number::{NumericErrorKind, OutOfRangeError};
+use crate::json::value::path::filter::function::FnExprError;
 use std::{error, fmt};
 
 #[derive(Debug, PartialEq,Eq)]
@@ -25,6 +25,7 @@ impl fmt::Display for PointerErrorKind {
     }
 }
 
+/// Represents an error that can occur when parsing malformed JSON Pointer paths.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PointerError {
     pub(super) kind: PointerErrorKind,
@@ -61,6 +62,7 @@ pub(super) enum PathErrorKind {
     FnExpr(FnExprError),
 }
 
+/// Represents an error that can occur when parsing JSON Path expressions.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PathError {
     pub(super) kind: PathErrorKind,
@@ -134,38 +136,12 @@ impl From<OutOfRangeError> for PathError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum PatchError {
-    // in previous cases, we used to pass ParseErrorKind as the type to avoid having pos twice, 1
-    // for the inner type and one of the outer type, but now PatchError is an enum, not a struct
-    ParseError(ParseError),
-    UnexpectedValue { expected: &'static str },
-    // usize is the index of the operation within the array
-    InvalidOp(OpError, usize),
-}
-
-impl error::Error for PatchError {}
-
-impl fmt::Display for PatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PatchError::ParseError(err) => write!(f, "{}", err),
-            PatchError::UnexpectedValue { expected } => {
-                write!(f, "expected {}", expected)
-            }
-            PatchError::InvalidOp(err, index) => {
-                write!(f, "operation {} failed: {}", index, err)
-            }
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum OpError {
+pub(super) enum OpError {
     MissingMember {
         member: &'static str,
     },
     Pointer(PointerError),
-    UnexpectedValue {
+    UnexpectedField {
         field: &'static str,
         expected: &'static str,
     },
@@ -185,6 +161,8 @@ pub enum OpError {
     NotEqual,
 }
 
+impl error::Error for OpError {}
+
 impl fmt::Display for OpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -192,7 +170,7 @@ impl fmt::Display for OpError {
                 write!(f, "missing required member '{}'", member)
             }
             OpError::Pointer(err) => write!(f, "{}", err),
-            OpError::UnexpectedValue { field, expected } => {
+            OpError::UnexpectedField { field, expected } => {
                 write!(f, "expected {} for '{}'", expected, field)
             }
             OpError::PathNotFound { path, depth } => {
@@ -220,14 +198,53 @@ impl fmt::Display for OpError {
     }
 }
 
-impl From<ParseError> for PatchError {
-    fn from(err: ParseError) -> Self {
-        PatchError::ParseError(err)
-    }
-}
-
 impl From<PointerError> for OpError {
     fn from(err: PointerError) -> Self {
         OpError::Pointer(err)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PatchErrorKind {
+    // in previous cases, we used to pass ParseErrorKind as the type to avoid having pos twice, 1
+    // for the inner type and one of the outer type, but now PatchError is an enum, not a struct
+    ParseError(ParseError),
+    UnexpectedValue { expected: &'static str },
+    InvalidOp(OpError),
+}
+
+impl fmt::Display for PatchErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PatchErrorKind::ParseError(err) => write!(f, "{}", err),
+            PatchErrorKind::UnexpectedValue { expected } => {
+                write!(f, "expected {}", expected)
+            }
+            // Just print the underlying OpError.
+            // The "operation X failed" prefix is now handled by the parent struct.
+            PatchErrorKind::InvalidOp(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+/// Represents an error that can occur when processing JSON Patch operations.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PatchError {
+    pub(super) kind: PatchErrorKind,
+    // usize is the index of the operation within the array
+    pub(super) index: Option<usize>
+}
+
+impl error::Error for PatchError {}
+
+impl fmt::Display for PatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(idx) = self.index {
+            // we have an index, wrap the inner error with context
+            write!(f, "operation {} failed: {}", idx, self.kind)
+        } else {
+            // no index, just delegate to the inner error
+            write!(f, "{}", self.kind)
+        }
     }
 }

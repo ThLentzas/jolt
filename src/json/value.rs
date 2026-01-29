@@ -1,13 +1,13 @@
-use crate::parsing::number::Number;
-use crate::parsing::value::path::Parser;
-use crate::parsing::value::path::tracker::{NoOpTracker, PathTracker};
-use crate::parsing::value::pointer::Pointer;
+use crate::json;
+use crate::json::number::Number;
+use crate::json::value::path::Parser;
+use crate::json::value::path::tracker::{NoOpTracker, PathTracker};
+use crate::json::value::pointer::Pointer;
 use indexmap::IndexMap;
 use std::cmp::{Ordering, PartialEq};
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::{fmt, mem};
-use std::fmt::Display;
-use crate::parsing;
 
 mod error;
 mod from;
@@ -15,10 +15,11 @@ mod patch;
 mod path;
 pub mod pointer;
 
-pub use crate::parsing::value::path::tracker::Node;
-pub use crate::parsing::value::error::PointerError;
-pub use crate::parsing::value::error::PathError;
-pub use crate::parsing::value::error::PatchError;
+pub use crate::json::value::error::PatchError;
+use crate::json::value::error::PatchErrorKind;
+pub use crate::json::value::error::PathError;
+pub use crate::json::value::error::PointerError;
+pub use crate::json::value::path::tracker::Node;
 
 // Clone is needed for Cow
 // Value is recursive type like LogicalExpression, but we don't need Box because both map and
@@ -387,6 +388,7 @@ impl Value {
     //      val = "Bob"
     //
     /// Returns a reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
+    /// Returns `None` if the path is unresolved.
     ///
     /// ```
     /// # use jolt::json;
@@ -441,6 +443,7 @@ impl Value {
     // look at pointer() above for any comments
     //
     /// Returns a mutable reference to the value at the given [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) path.
+    /// Returns `None` if the path is unresolved.
     ///
     /// ```
     /// # use jolt::json;
@@ -496,7 +499,8 @@ impl Value {
     // in all select() methods below we call into_iter() because we don't care about PathNode at all
     // we just want to consume it and do the mapping
     //
-    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    /// Selects values from the JSON document using a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+    /// expression.
     ///
     /// Returns a list of [Node]s
     ///
@@ -522,7 +526,8 @@ impl Value {
         Ok(nodes)
     }
 
-    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    /// Selects values from the JSON document using a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+    /// expression.
     ///
     /// Returns a list containing the normalized paths of the matched values.
     ///
@@ -549,7 +554,8 @@ impl Value {
         Ok(paths)
     }
 
-    /// Selects values from the JSON document using a [JSON Path expression](https://www.rfc-editor.org/rfc/rfc9535).
+    /// Selects values from the JSON document using a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+    /// expression.
     ///
     /// Returns a list of references to the matched values.
     ///
@@ -579,7 +585,9 @@ impl Value {
     /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document.
     ///
     /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
-    ///
+    /// Unlike [`pointer()`](self.pointer) and [`pointer_mut()`](self.pointer_mut) which return `None`
+    /// for unresolved paths, this method returns an error. This enforces the strict path resolution
+    /// required by JSON Patch operations.
     /// ```
     /// # use jolt::json;
     /// #
@@ -610,8 +618,10 @@ impl Value {
     pub fn modify(&mut self, input: &str) -> Result<(), PatchError> {
         let ops = patch::parse(input.as_bytes())?;
         for (i, op) in ops.into_iter().enumerate() {
-            op.apply(self)
-                .map_err(|err| PatchError::InvalidOp(err, i))?;
+            op.apply(self).map_err(|err| PatchError {
+                kind: PatchErrorKind::InvalidOp(err),
+                index: Some(i),
+            })?;
         }
         Ok(())
     }
@@ -620,6 +630,9 @@ impl Value {
     /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document atomically.
     ///
     /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
+    /// Unlike [`pointer()`](self.pointer) and [`pointer_mut()`](self.pointer_mut) which return `None`
+    /// for unresolved paths, this method returns an error. This enforces the strict path resolution
+    /// required by JSON Patch operations.
     ///
     /// ```
     /// # use jolt::json;
@@ -655,7 +668,10 @@ impl Value {
         for (i, op) in ops.into_iter().enumerate() {
             if let Err(err) = op.apply(self) {
                 *self = copy;
-                return Err(PatchError::InvalidOp(err, i));
+                return Err(PatchError {
+                    kind: PatchErrorKind::InvalidOp(err),
+                    index: Some(i),
+                })?;
             }
         }
         Ok(())
@@ -666,7 +682,7 @@ impl Value {
             Value::Null => write!(f, "null"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Number(n) => write!(f, "{n}"),
-            Value::String(s) => write!(f, "{}", parsing::to_jstr(s, '\"')),
+            Value::String(s) => write!(f, "{}", json::to_jstr(s, '\"')),
             Value::Array(arr) => {
                 write!(f, "[")?;
                 for (i, v) in arr.iter().enumerate() {
@@ -685,7 +701,7 @@ impl Value {
                     if i > 0 {
                         write!(f, ",")?;
                     }
-                    write!(f, "{}:", parsing::to_jstr(k, '\"'))?;
+                    write!(f, "{}:", json::to_jstr(k, '\"'))?;
                     v.fmt_compact(f)?;
                 }
                 write!(f, "}}")
@@ -700,7 +716,7 @@ impl Value {
             Value::Null => write!(f, "null"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Number(n) => write!(f, "{n}"),
-            Value::String(s) => write!(f, "{}", parsing::to_jstr(s, '\"')),
+            Value::String(s) => write!(f, "{}", json::to_jstr(s, '\"')),
             Value::Array(arr) => {
                 if arr.is_empty() {
                     return write!(f, "[]");
@@ -733,7 +749,7 @@ impl Value {
                     for _ in 0..=depth {
                         write!(f, "{INDENT}")?;
                     }
-                    write!(f, "{}: ", parsing::to_jstr(k, '\"'))?;
+                    write!(f, "{}: ", json::to_jstr(k, '\"'))?;
                     v.fmt_pretty(f, depth + 1)?;
                     if i < map.len() - 1 {
                         write!(f, ",")?;
@@ -2413,9 +2429,11 @@ mod tests {
 
         let compact = format!("{value}");
 
-        assert_eq!(compact, r#"{"null":null,"bool":true,"number":42,"string":"hello","array":[null],"object":{}}"#);
+        assert_eq!(
+            compact,
+            r#"{"null":null,"bool":true,"number":42,"string":"hello","array":[null],"object":{}}"#
+        );
     }
-
 
     #[test]
     fn test_fmt_pretty() {
@@ -2424,32 +2442,49 @@ mod tests {
             ("bool".to_string(), Value::Bool(true)),
             ("int".to_string(), Value::Number(Number::from(42))),
             ("float".to_string(), Value::Number(Number::from(3.14))),
-            ("string_with_escape".to_string(), Value::String("hello\nworld".to_string())),
+            (
+                "string_with_escape".to_string(),
+                Value::String("hello\nworld".to_string()),
+            ),
             // has no text representation
-            ("control".to_string(), Value::String("bell\u{0007}char".to_string())),
+            (
+                "control".to_string(),
+                Value::String("bell\u{0007}char".to_string()),
+            ),
             ("empty_array".to_string(), Value::Array(vec![])),
             ("empty_object".to_string(), Value::Object(IndexMap::new())),
-            ("array".to_string(), Value::Array(vec![
-                Value::Null,
-                Value::Bool(false),
-                Value::Number(Number::from(1)),
-                Value::String("nested".to_string()),
-            ])),
-            ("object".to_string(), Value::Object(IndexMap::from([
-                ("a".to_string(), Value::Number(Number::from(1))),
-                ("b".to_string(), Value::Array(vec![
-                    Value::Number(Number::from(2)),
-                    Value::Number(Number::from(3)),
+            (
+                "array".to_string(),
+                Value::Array(vec![
+                    Value::Null,
+                    Value::Bool(false),
+                    Value::Number(Number::from(1)),
+                    Value::String("nested".to_string()),
+                ]),
+            ),
+            (
+                "object".to_string(),
+                Value::Object(IndexMap::from([
+                    ("a".to_string(), Value::Number(Number::from(1))),
+                    (
+                        "b".to_string(),
+                        Value::Array(vec![
+                            Value::Number(Number::from(2)),
+                            Value::Number(Number::from(3)),
+                        ]),
+                    ),
+                    (
+                        "c".to_string(),
+                        Value::Object(IndexMap::from([("deep".to_string(), Value::Bool(true))])),
+                    ),
                 ])),
-                ("c".to_string(), Value::Object(IndexMap::from([
-                    ("deep".to_string(), Value::Bool(true)),
-                ]))),
-            ]))),
+            ),
         ]));
 
         let res = format!("{val:#}");
         // tried to make it prettier but breaks the 4-space indentation, it works as expected just ugly
-        assert_eq!(res,
+        assert_eq!(
+            res,
             r#"{
     "null": null,
     "bool": true,

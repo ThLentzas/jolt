@@ -1,12 +1,12 @@
-use crate::parsing::number::{Atoi, OutOfRangeError};
-use crate::parsing::utf8;
-use crate::parsing::value::path::filter::nfa::{Nfa, NfaBuilder};
-use crate::parsing::value::path::filter::table;
+use crate::json::number::{Atoi, OutOfRangeError};
+use crate::json::utf8;
+use crate::json::value::path::filter::nfa::{Nfa, NfaBuilder};
+use crate::json::value::path::filter::table;
 
 const QUANTIFIER_LIMIT: u8 = 100;
 const MAX_NODES: u16 = 10_000;
 
-// any error during the parsing process returns false
+// any error during the json process returns false
 pub(super) fn full_match(input: &str, pattern: &str) -> bool {
     let mut parser = Parser::new(pattern.as_bytes());
     if let Err(_) = parser.parse() {
@@ -289,7 +289,7 @@ impl Property {
 //
 // Instead of having Regex::Atom(a) own a when building the ast, we store the char class into a
 // vector and then let Regex::Atom(0) hold the index of 'a' in that vector. This actually solves both
-// problems. During parsing nothing changes, we expand quantifiers the same that we did, for aa we
+// problems. During json nothing changes, we expand quantifiers the same that we did, for aa we
 // still get Concat(0,0) that 0 refers to nodes[0] while Atom(0) refers to classes[0]. Now when
 // walking the ast to create the automaton all we have to do is copy the index and pass ownership to
 // the class vector
@@ -901,7 +901,7 @@ impl<'a> Parser<'a> {
         let next = self.peek();
 
         // major, minor order
-        // after parsing a category we need to advance pos by the category's length, 1 for major,
+        // after json a category we need to advance pos by the category's length, 1 for major,
         // 2 for minor
         let (category, n) = match (current, next) {
             (Some(b'L'), Some(b'}')) => (GeneralCategory::Letter, 1),
@@ -1085,7 +1085,7 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
 enum RegexErrorKind {
     // invalid character set range
     InvalidCsRange,
-    // parsing ints for range quantifiers
+    // json ints for range quantifiers
     OutOfRange,
     QuantifierLimitExceeded(u8),
     ComplexityLimitExceeded(u16),

@@ -1,8 +1,8 @@
-use crate::parsing;
-use crate::parsing::error::{StringError, StringErrorKind};
-use crate::parsing::escapes::{self, EscapeError, EscapeErrorKind};
-use crate::parsing::utf8;
-use crate::parsing::value::error::{PointerError, PointerErrorKind};
+use crate::json;
+use crate::json::error::{StringError, StringErrorKind};
+use crate::json::escapes::{self, EscapeError, EscapeErrorKind};
+use crate::json::utf8;
+use crate::json::value::error::{PointerError, PointerErrorKind};
 
 // when we split the input pointer path to create tokens, apart from the value we also need to know
 // where the token started based on the underline buffer for better error messaging
@@ -59,7 +59,7 @@ impl<'a> Pointer<'a> {
         }
 
         // find next occurrence of '/' or the end of the input
-        let end = parsing::find(&self.buffer[self.pos..], b'/', |b| escapes::is_escape(b))
+        let end = json::find(&self.buffer[self.pos..], b'/', |b| escapes::is_escape(b))
             .map(|i| self.pos + i)
             .unwrap_or(len);
 
@@ -112,10 +112,10 @@ impl<'a> Pointer<'a> {
             }
             i += 1;
         }
-        if val.len() > parsing::STRING_LENGTH_LIMIT {
+        if val.len() > json::STRING_LENGTH_LIMIT {
             return Err(StringError {
                 kind: StringErrorKind::LengthLimitExceeded {
-                    len: parsing::STRING_LENGTH_LIMIT,
+                    len: json::STRING_LENGTH_LIMIT,
                 },
                 pos: start,
             });
@@ -363,7 +363,7 @@ pub fn to_ptr_path(npath: &str) -> Option<String> {
             Some(_) | None => return None,
         }
         path.push('/');
-        // after parsing a key/index we expect ']'
+        // after json a key/index we expect ']'
         match buffer.get(pos) {
             Some(b']') => pos += 1,
             Some(_) | None => return None,
@@ -380,7 +380,7 @@ fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
     let mut key = String::new();
 
     // standard escapes  + '\'' since it can appear escaped in single quoted strings
-    let end = parsing::find(&buffer[*pos..], b'\'', |b| escapes::is_escape(b) || b == b'\'')
+    let end = json::find(&buffer[*pos..], b'\'', |b| escapes::is_escape(b) || b == b'\'')
         .map(|i| *pos + i)?;
 
     let slice = &buffer[*pos..end];
@@ -482,8 +482,8 @@ fn parse_index(buffer: &[u8], pos: &mut usize, path: &mut String) {
 #[cfg(test)]
 mod test {
     use crate::json;
-    use crate::parsing::error::{StringError, StringErrorKind};
-    use crate::parsing::value::error::{PointerError, PointerErrorKind};
+    use crate::json::error::{StringError, StringErrorKind};
+    use crate::json::value::error::{PointerError, PointerErrorKind};
 
     fn invalid_paths() -> Vec<(&'static str, PointerError)> {
         vec![

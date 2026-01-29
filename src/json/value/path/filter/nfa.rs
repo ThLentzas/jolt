@@ -1,4 +1,4 @@
-use crate::parsing::value::path::filter::regex::{CharClass, Regex};
+use crate::json::value::path::filter::regex::{CharClass, Regex};
 
 // paper: https://swtch.com/~rsc/regexp/regexp1.html
 // https://swtch.com/~rsc/regexp/regexp3.html

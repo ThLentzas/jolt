@@ -1,6 +1,7 @@
+use crate::Value;
+use crate::json::error::{KeywordError, KeywordErrorKind, ParseError};
+use crate::json::parse::Parser;
 use core::str;
-use crate::parsing::error::{KeywordError, KeywordErrorKind};
-use crate::parsing::{error::ParseError, parse::Parser, value::Value};
 use memchr;
 
 pub(super) mod error;
@@ -14,7 +15,7 @@ pub(super) mod value;
 
 //implementation limits: https://www.ibm.com/docs/en/datapower-gateway/10.6.0?topic=20-json-parser-limits
 const INPUT_BUFFER_LIMIT: usize = 5_242_880;
-// the number of characters in the String after parsing
+// the number of characters in the String after json
 // in the worst case, where we have only Unicode sequences, the length of the input buffer is roughly
 // 49_000 bytes
 const STRING_LENGTH_LIMIT: usize = 8192;
@@ -24,7 +25,7 @@ pub(super) fn parse(buffer: &[u8]) -> Result<Value, ParseError> {
     Parser::new(buffer).parse()
 }
 
-// used to read true, false, null during parsing and functions name of filter selectors
+// used to read true, false, null during json and functions name of filter selectors
 fn read_keyword(buffer: &[u8], pos: &mut usize, keyword: &[u8]) -> Result<(), KeywordError> {
     let remaining = &buffer[*pos..];
 
@@ -74,7 +75,7 @@ fn skip_whitespaces(buffer: &[u8], pos: &mut usize) {
 // escaped
 //
 // why the predicate?
-// 
+//
 // if we are looking for 'a' and encounter it as '\a' the previous logic of randomly skipping everything
 // after \ would incorrectly miss it, so we would either return None or not the leftmost occurrence.
 // We need to know which characters to consider after '\' and they are not always the same; we have
@@ -133,7 +134,7 @@ fn to_jstr(s: &str, quote: char) -> String {
     while pos < len {
         let j = pos;
         while pos < len {
-            if buffer[pos]  < 0x20 || buffer[pos] == b'\"' || buffer[pos] == b'\\' {
+            if buffer[pos] < 0x20 || buffer[pos] == b'\"' || buffer[pos] == b'\\' {
                 break;
             }
             pos += utf8::char_width(buffer[pos]);
@@ -145,7 +146,7 @@ fn to_jstr(s: &str, quote: char) -> String {
             break;
         }
 
-        // we reverse the logic we applied during parsing
+        // we reverse the logic we applied during json
         // we mapped '\' and '\n' to '\n'
         // now we split '\n' to \' and 'n'
         // what we want to achieve is represent the character with some text

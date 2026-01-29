@@ -15,7 +15,7 @@ const INT_MAX: i64 = 9_007_199_254_740_991;
 const INT_MIN: i64 = -9_007_199_254_740_991;
 
 // much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
-// it is used to keep track of what we have seen so far when parsing a number
+// it is used to keep track of what we have seen so far when json a number
 struct NumberState {
     decimal_point: bool,
     scientific_notation: bool,
@@ -376,9 +376,9 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     Ok(())
 }
 
-// https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
+// https://github.com/Alexhuszagh/rust-lexical interesting num json library
 //
-// we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
+// we are json from a buffer that represent the number's value as an utf8 string; it is a two-step
 // process: 1) convert the byte buffer to string 2) parse the string
 pub(super) fn parse(buffer: &[u8]) -> Number {
     let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
@@ -442,7 +442,7 @@ impl fmt::Display for OutOfRangeError {
     }
 }
 
-// We need this trait for our atoi! macro. When we are parsing index selectors that need to be in
+// We need this trait for our atoi! macro. When we are json index selectors that need to be in
 // INT_LIMIT range we can't just call <$t>::MIN/MAX for i64, we need to pass our INT_LIMIT. When it
 // is called to parse quantifiers u8::MIN/MAX is fine but for i64 it would be out of the expected
 // range
@@ -547,8 +547,8 @@ fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     }
 }
 
-// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parsing::<f64>() to return inf/-inf
-// Based on that handling normal numbers is straightforward. If the result of parsing is inf/-inf since
+// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause json::<f64>() to return inf/-inf
+// Based on that handling normal numbers is straightforward. If the result of json is inf/-inf since
 // infinity and nan are not supported in the json rfc we can safely say that the number is out of range
 fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();

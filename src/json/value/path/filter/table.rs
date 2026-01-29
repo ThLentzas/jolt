@@ -1,4 +1,4 @@
-use crate::parsing::value::path::filter::regex::GeneralCategory;
+use crate::json::value::path::filter::regex::GeneralCategory;
 
 // https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedGeneralCategory.txt
 //
