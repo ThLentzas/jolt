@@ -194,6 +194,15 @@ This macro is intended for quickly constructing test data. It does **not** perfo
 invalid escapes like `"ab\p"` will not produce an error. Invalid input creates a `Value` in an
 undefined state, which may lead to unexpected behavior. For untrusted input, use `from_slice()` or `from_str()` instead. Use with your own discretion.
 
-#### License
+## License
 
-This project is licensed under the MIT License.
+Licensed under either of [Apache License, Version 2.0] or [MIT License] at your option.
+
+[MIT License]:
+[Apache License, Version 2.0]:
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
