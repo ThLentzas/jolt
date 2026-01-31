@@ -29,9 +29,9 @@ impl Operation {
         match self {
             Operation::Add { path, value } => match descend(path, root)? {
                 Location::Root => *root = value,
-                // will add the key/value pair if key does not exist
-                // will update the value if key does
-                // will append the value if index == len, otherwise shift the elements and insert
+                // add the key/value pair if key does not exist
+                // update the value if key does
+                // append the value if index == len, otherwise shift the elements and insert
                 Location::Child {
                     parent,
                     path,
@@ -90,7 +90,7 @@ impl Operation {
                     }
                 }
             }
-            // copy is nothing but add where copy::path is add::path and copy::from is add::value
+            // copy is nothing but add where copy's path is add's path and copy's from is add's value
             Operation::Copy { from, path } => {
                 let val = match descend(from, root)? {
                     Location::Root => root.clone(),
@@ -168,6 +168,7 @@ enum Location<'a> {
     Root,
     // parent is the Value that we should apply the op
     // path is returned because descend() took ownership(for error handling) but no error occurred
+    // helps to avoid allocation
     // token is the last token of the path, the one that we should apply to parent
     // depth is used for error handling
     Child {
@@ -190,7 +191,7 @@ fn descend(path: String, root: &mut Value) -> Result<Location<'_>, OpError> {
 
     let mut tokens = Vec::new();
     let mut ptr = Pointer::new(path.as_bytes());
-    ptr.check_start()?;
+    ptr.expect_root()?;
     while let Some(token) = ptr
         .next()
         .map_err(|err| OpError::Pointer(PointerError::from(err)))?
@@ -314,8 +315,7 @@ fn insert_at(
             // According to the Pointer spec, if '-' is used on an array it refers to a nonexisting
             // element, the one after the last array element. When we call descend() if we encounter
             // '-' as a token value in an array we return an error because the "target location"
-            // does not exist, but if we are at the level where we actually get to insert in an array
-            // we treat '-' as append.
+            // does not exist, but if the target location is an array we treat '-' as append.
             if token.val == "-" {
                 arr.push(value);
                 return Ok(());

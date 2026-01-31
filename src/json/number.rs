@@ -14,65 +14,14 @@ const INT_LIMIT: &[u8] = b"9007199254740991";
 const INT_MAX: i64 = 9_007_199_254_740_991;
 const INT_MIN: i64 = -9_007_199_254_740_991;
 
-// much better approach than passing boolean flags around; foo(true, true, false) is hard to understand
-// it is used to keep track of what we have seen so far when json a number
+// is used to keep track of what we have seen so far when parsing a number
 struct NumberState {
     decimal_point: bool,
     scientific_notation: bool,
     negative: bool,
 }
 
-// The way BigDecimal works is by storing every digit of the number as BigInt, (unscaled value,
-// an arbitrary-precision integer) and also the number of decimal places as int(scale)
-//
-//  The number 123.45 is stored as:
-//      Unscaled value: 12345
-//      Scale: 2
-//      Precision: 5 (number of digits)
-//
-// The actual value is calculated as: unscaled value * 10^(-scale)
-//
-// To store the unscaled value as an arbitrary precision integer BigInt uses a Vec<u32/u64> under the hood
-
-// In base 10: 1234 = 1 * 10^3 + 2 * 10^2 + 3 * 10^1 + 4 * 10^0
-// In base 2^32: each u32 is a coefficient for powers of 2^32
-
-// 2^32 = 4,294,967,296
-// 10,000,000,000,000 / 4,294,967,296 = 2328 remainder 1,316,134,912
-
-// So it's stored as:
-// vec![1_316_134_912, 2328]
-// Meaning: 1_316_134_912 * (2^32)^0 + 2328 * (2^32)^1
-//
-// The least significant "digit" (the remainder) goes in index 0, and more significant digits go in
-// higher indices. This is called "little-endian" order.
-//
-// 50,000,000,000,000,000,000 (50 quintillion)
-//
-// Step 1: Divide by 2^32
-//  50,000,000,000,000,000,000 ÷ 4,294,967,296 = 11,641,532,182
-//  Remainder: 1,695,547,392
-//
-// Step 2: That quotient is still > 2^32, so divide again
-//  11,641,532,182 / 4,294,967,296 = 2
-//  Remainder: 3,051,597,590
-//
-//  Step 3: Final quotient is 2 (fits in u32)
-//
-//  So our Vec<u32> is: vec![1_695_547_392, 3_051_597_590, 2]
-//  1,695,547,392 * (2^32)^0 + 3,051,597,590 * (2^32)^1 + 2 * (2^32)^2 = 50,000,000,000,000,000,000
-//
-// In parse for the test valid_array() the number 340282366920938463463374607431768211456
-// is vec![0, 0, 1] for u64 and vec![0, 0, 0, 0, 1]
-//
-// 10^40
-//
-// With u32:
-// vec![1661992960, 1808227885, 3721402093, 4028081056, 542101086]
-//
-// With u64:
-// vec![7766279631452241920, 542101086035307936, 2]
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 enum NumberKind {
     I64(i64),
     F64(f64),
@@ -195,8 +144,6 @@ impl Number {
 // will always use the same numeric representation
 impl PartialOrd for Number {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // match takes ownership and NumberKind does not implement Copy, so we pass a ref
-        // we have &self, and we can not move it out of a borrowed context
         match (&self.kind, &other.kind) {
             (NumberKind::I64(lhs), NumberKind::I64(rhs)) => lhs.partial_cmp(rhs),
             (NumberKind::F64(lhs), NumberKind::F64(rhs)) => lhs.partial_cmp(rhs),
@@ -228,6 +175,22 @@ impl PartialOrd for Number {
             (NumberKind::I64(lhs), NumberKind::BigInt(rhs)) => BigInt::from(*lhs).partial_cmp(rhs),
             #[cfg(feature = "arbitrary_precision")]
             _ => None,
+        }
+    }
+}
+
+impl From<u8> for Number {
+    fn from(val: u8) -> Self {
+        Number {
+            kind: NumberKind::I64(val as i64),
+        }
+    }
+}
+
+impl From<i32> for Number {
+    fn from(val: i32) -> Self {
+        Number {
+            kind: NumberKind::I64(val as i64),
         }
     }
 }
@@ -340,6 +303,7 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     }
 
     *pos += 1;
+    // single digit
     if next.is_none() {
         return Ok(());
     }
@@ -353,12 +317,11 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     while *pos < len {
         match current {
             b'0'..=b'9' => (),
-            b'.' => check_decimal_point(buffer, *pos, &mut state)?,
-            b'e' | b'E' | b'-' | b'+' => check_scientific_notation(buffer, *pos, &mut state)?,
+            b'.' => parse_frac(buffer, *pos, &mut state)?,
+            b'e' | b'E' | b'-' | b'+' => parse_exp(buffer, *pos, &mut state)?,
             _ => break,
         }
         *pos += 1;
-        // update current only if we did not reach the end of the buffer
         if *pos < len {
             current = buffer[*pos];
         }
@@ -376,9 +339,9 @@ pub(super) fn read(buffer: &[u8], pos: &mut usize) -> Result<(), NumericError> {
     Ok(())
 }
 
-// https://github.com/Alexhuszagh/rust-lexical interesting num json library
+// https://github.com/Alexhuszagh/rust-lexical interesting num parsing library
 //
-// we are json from a buffer that represent the number's value as an utf8 string; it is a two-step
+// we are parsing from a buffer that represent the number's value as an utf8 string; it is a two-step
 // process: 1) convert the byte buffer to string 2) parse the string
 pub(super) fn parse(buffer: &[u8]) -> Number {
     let float = buffer.iter().any(|&b| matches!(b, b'.' | b'e' | b'E'));
@@ -393,9 +356,9 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
         return Number::from(s.parse::<N>().unwrap());
     }
 
-    // Try to optimize even if arbitrary_precision is enabled; for any integer we can still store it
-    // as i64 as long as it is not out of range. In read() we don't check if the number is out of range
-    // when arbitrary_precision is enabled
+    // When arbitrary_precision is enabled for any integer we can still store it as i64 as long as it
+    // is not out of range. In read() we don't check if the number is out of range when
+    // arbitrary_precision is enabled
     #[cfg(feature = "arbitrary_precision")]
     {
         let digits = if buffer[0] == b'-' {
@@ -412,8 +375,7 @@ pub(super) fn parse(buffer: &[u8]) -> Number {
 
 // when we want to parse integers for index selectors we need to use i64::MAX for our bound but
 // when we parse range quantifiers for regex we need min/max to be at most 3 digits to prevent
-// resource exhaustion we can't keep scanning for more than that and have a bound like i64::MAX
-// we need u8 or even i8.
+// resource exhaustion we can't keep scanning for more than that, we need u8 or even i8.
 pub(crate) trait Atoi: Sized {
     fn atoi(buffer: &[u8], pos: &mut usize) -> Result<Self, OutOfRangeError>;
 }
@@ -425,9 +387,9 @@ pub(super) struct HexError {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct OutOfRangeError {
-    pub bound: String,
-    pub pos: usize,
+pub(crate) struct OutOfRangeError {
+    pub(crate) bound: Number,
+    pub(crate) pos: usize,
 }
 
 impl error::Error for OutOfRangeError {}
@@ -442,7 +404,7 @@ impl fmt::Display for OutOfRangeError {
     }
 }
 
-// We need this trait for our atoi! macro. When we are json index selectors that need to be in
+// We need this trait for our atoi! macro. When we are parsing index selectors that need to be in
 // INT_LIMIT range we can't just call <$t>::MIN/MAX for i64, we need to pass our INT_LIMIT. When it
 // is called to parse quantifiers u8::MIN/MAX is fine but for i64 it would be out of the expected
 // range
@@ -462,13 +424,12 @@ impl NumericBounds for i64 {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum NumericErrorKind {
+pub(crate) enum NumericErrorKind {
     LeadingZeros,
     InvalidSign { message: &'static str },
     InvalidScientific { message: &'static str },
     InvalidDecimal { message: &'static str },
-    // we call bound.to_string()
-    OutOfRange { bound: String },
+    OutOfRange { bound: Number },
 }
 
 impl fmt::Display for NumericErrorKind {
@@ -494,9 +455,9 @@ impl fmt::Display for NumericErrorKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct NumericError {
-    pub kind: NumericErrorKind,
-    pub pos: usize,
+pub(super) struct NumericError {
+    pub(super) kind: NumericErrorKind,
+    pub(super) pos: usize,
 }
 
 impl error::Error for NumericError {}
@@ -504,6 +465,22 @@ impl error::Error for NumericError {}
 impl fmt::Display for NumericError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} at index {}", self.kind, self.pos)
+    }
+}
+
+// is used to determine the bound for out of range errors when parsing a Number
+fn bound(state: &NumberState) -> Number {
+    if state.decimal_point || state.scientific_notation {
+        return if state.negative {
+            Number { kind: NumberKind::F64(f64::MIN) }
+        } else {
+            Number { kind: NumberKind::F64(f64::MAX) }
+        };
+    }
+    if state.negative {
+        Number { kind: NumberKind::I64(INT_MIN) }
+    } else {
+        Number { kind: NumberKind::I64(INT_MAX) }
     }
 }
 
@@ -516,21 +493,6 @@ fn is_out_of_range(buffer: &[u8], state: &NumberState) -> bool {
     }
 }
 
-fn bound(state: &NumberState) -> String {
-    if state.decimal_point || state.scientific_notation {
-        return if state.negative {
-            f64::MIN.to_string()
-        } else {
-            f64::MAX.to_string()
-        };
-    }
-    if state.negative {
-        INT_MIN.to_string()
-    } else {
-        INT_MAX.to_string()
-    }
-}
-
 // how we handle negatives?
 //
 // the range is symmetric, if the number is greater than the limit in absolute value it means
@@ -540,26 +502,22 @@ fn is_out_of_range_i64(buffer: &[u8]) -> bool {
     match buffer.len().cmp(&INT_LIMIT.len()) {
         // fewer digits, in range
         Ordering::Less => false,
-        // same length, compares the buffers lexicographically
+        // same length, compare the buffers lexicographically
         Ordering::Equal => buffer > INT_LIMIT,
         // more digits, definitely out of range
         Ordering::Greater => true,
     }
 }
 
-// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause json::<f64>() to return inf/-inf
-// Based on that handling normal numbers is straightforward. If the result of json is inf/-inf since
-// infinity and nan are not supported in the json rfc we can safely say that the number is out of range
+// Overflow: Parsing a number that exceeds f64::MAX/MIN will cause parse::<f64>() to return inf/-inf
+// Handling normal numbers is straightforward. If the result of parsing is inf/-inf since
+// infinity and NaN are not supported in the json rfc we can safely say that the number is out of range
 fn is_out_of_range_f64(buffer: &[u8]) -> bool {
     let s = str::from_utf8(buffer).unwrap();
     s.parse::<f64>().unwrap().is_infinite()
 }
 
-fn check_decimal_point(
-    buffer: &[u8],
-    pos: usize,
-    state: &mut NumberState,
-) -> Result<(), NumericError> {
+fn parse_frac(buffer: &[u8], pos: usize, state: &mut NumberState) -> Result<(), NumericError> {
     // 1.2.3
     if state.decimal_point {
         return Err(NumericError {
@@ -591,11 +549,9 @@ fn check_decimal_point(
     Ok(())
 }
 
-fn check_scientific_notation(
-    buffer: &[u8],
-    pos: usize,
-    state: &mut NumberState,
-) -> Result<(), NumericError> {
+// originally was named parse_sci_not but scientific notation is the entire number we work with just
+// the exponent
+fn parse_exp(buffer: &[u8], pos: usize, state: &mut NumberState) -> Result<(), NumericError> {
     let current = buffer[pos];
 
     match current {
@@ -812,7 +768,7 @@ mod tests {
     }
 
     // we don't need to test i64/i64 or f64/f64 cases, partial_cmp() for those cases is tested via
-    // Rust. We test cases where cast either lhs or rhs for i64/f64, no precision loss for numbers
+    // Rust. We test cases where we cast either lhs or rhs for i64/f64 with no precision loss for numbers
     // up to the upper/lower bound. For BigInt/Decimal cases we check that we correctly pass values
     // to from().
     fn comparisons() -> Vec<(Number, Number, Option<Ordering>)> {
@@ -822,13 +778,13 @@ mod tests {
             (Number::from(10), Number::from(9.9), Some(Ordering::Greater)),
             (Number::from(0), Number::from(-0.0), Some(Ordering::Equal)),
             (
-                Number::from(9007199254740991),
+                Number::from(9007199254740991i64),
                 Number::from(4),
                 Some(Ordering::Greater),
             ),
             (
                 Number::from(4),
-                Number::from(-9007199254740991),
+                Number::from(-9007199254740991i64),
                 Some(Ordering::Greater),
             ),
             (Number::from(5.0), Number::from(5), Some(Ordering::Equal)),
@@ -899,7 +855,6 @@ mod tests {
     #[test]
     fn convert_to_u16() {
         // "12aB"
-        // unwrap() uses the Debug trait, not Display
         assert_eq!(hex_to_u16(&[0x31, 0x32, 0x61, 0x42]).unwrap(), 0x12ab);
     }
 

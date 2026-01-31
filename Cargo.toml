@@ -6,7 +6,7 @@ description = "A library that provides JSON support"
 repository = "https://github.com/ThLentzas/jolt"
 keywords = ["json", "parser", "patch", "pointer", "path"]
 categories = ["parser-implementations"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0 OR MIT"
 
 [dependencies]
 indexmap = "2.12.1"

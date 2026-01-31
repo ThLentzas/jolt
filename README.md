@@ -198,8 +198,8 @@ undefined state, which may lead to unexpected behavior. For untrusted input, use
 
 Licensed under either of [Apache License, Version 2.0] or [MIT License] at your option.
 
-[MIT License]:
-[Apache License, Version 2.0]:
+[Apache License, Version 2.0]: https://github.com/ThLentzas/jolt/blob/master/LICENSE-APACHE
+[MIT License]: https://github.com/ThLentzas/jolt/blob/master/LICENSE-MIT
 
 ### Contribution
 

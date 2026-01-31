@@ -48,8 +48,6 @@ pub(super) fn map_escape_char(buffer: &[u8], pos: usize) -> char {
         b'n' => '\n',
         b'r' => '\r',
         b't' => '\t',
-        // should we move this call to decode() in the _ arm since the method is called only in
-        // valid escapes?
         b'u' => decode_unicode(buffer, pos),
         _ => unreachable!("backslash not followed by an escape character"),
     }

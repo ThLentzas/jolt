@@ -1,6 +1,13 @@
 use crate::json::error::{LexError, LexErrorKind, StringError, StringErrorKind};
 use crate::json::{escapes, number, utf8};
 
+// start inclusive, end exclusive
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(super) struct Span {
+    pub(super) start: usize,
+    pub(super) end: usize,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum TokenKind {
     LCurlyBracket,
@@ -15,12 +22,21 @@ pub(super) enum TokenKind {
     Null,
 }
 
-// rename json, use Eof
+// could group start and len to a struct Span
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) struct Token {
-    pub(super) start_index: usize,
-    pub(super) offset: usize,
+    pub(super) span: Span,
     pub(super) kind: TokenKind,
+}
+
+impl Token {
+    pub(super) fn start(&self) -> usize {
+        self.span.start
+    }
+
+    pub(super) fn end(&self) -> usize {
+        self.span.end
+    }
 }
 
 pub(super) struct Lexer<'a> {
@@ -44,94 +60,105 @@ impl<'a> Lexer<'a> {
         }
 
         let current = self.buffer[self.pos];
+        let start = self.pos;
         match current {
             b'{' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
+                self.advance_by(1);
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::LCurlyBracket,
-                };
-                self.advance_by(1);
-                Ok(Some(token))
-            },
+                }))
+            }
             b'}' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
+                self.advance_by(1);
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::RCurlyBracket,
-                };
-                self.advance_by(1);
-                Ok(Some(token))
-            },
+                }))
+            }
             b'[' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
+                self.advance_by(1);
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::LSquareBracket,
-                };
-                self.advance_by(1);
-                Ok(Some(token))
-            },
+                }))
+            }
             b']' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
+                self.advance_by(1);
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::RSquareBracket,
-                };
-                self.advance_by(1);
-                Ok(Some(token))
-            },
+                }))
+            }
             b':' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
+                self.advance_by(1);
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::Colon,
-                };
-                self.advance_by(1);
-                Ok(Some(token))
-            },
+                }))
+            }
             b',' => {
-                let token = Token {
-                    start_index: self.pos,
-                    offset: 1,
-                    kind: TokenKind::Comma,
-                };
                 self.advance_by(1);
-                Ok(Some(token))
-            },
+                Ok(Some(Token {
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
+                    kind: TokenKind::Comma,
+                }))
+            }
             b'-' | b'+' | b'0'..=b'9' => {
-                let start = self.pos;
                 self.read_number()?;
                 Ok(Some(Token {
-                    start_index: start,
-                    offset: self.pos - start,
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::Number,
                 }))
             }
             b'"' => {
-                let start = self.pos;
                 self.read_string()?;
                 Ok(Some(Token {
-                    start_index: start,
-                    offset: self.pos - start,
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::String,
                 }))
             }
             b't' | b'f' => {
-                let start = self.pos;
                 self.read_boolean()?;
                 Ok(Some(Token {
-                    start_index: start,
-                    offset: self.pos - start,
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::Boolean,
                 }))
             }
             b'n' => {
-                let start = self.pos;
                 self.read_null()?;
                 Ok(Some(Token {
-                    start_index: start,
-                    offset: self.pos - start,
+                    span: Span {
+                        start,
+                        end: self.pos,
+                    },
                     kind: TokenKind::Null,
                 }))
             }
@@ -200,8 +227,8 @@ impl<'a> Lexer<'a> {
                     escapes::check_escape_char(&self.buffer, self.pos)?;
                     self.advance_by(escapes::len(&self.buffer, self.pos));
                 }
-                // ascii 
-                _ => self.advance_by(1)
+                // ascii
+                _ => self.advance_by(1),
             }
         }
         // exhausted the buffer, didn't find closing quote
@@ -242,56 +269,49 @@ mod tests {
             (
                 b"0",
                 Token {
-                    start_index: 0,
-                    offset: 1,
+                    span: Span { start: 0, end: 1 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"-0",
                 Token {
-                    start_index: 0,
-                    offset: 2,
+                    span: Span { start: 0, end: 2 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"123",
                 Token {
-                    start_index: 0,
-                    offset: 3,
+                    span: Span { start: 0, end: 3 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"-45",
                 Token {
-                    start_index: 0,
-                    offset: 3,
+                    span: Span { start: 0, end: 3 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"123.45",
                 Token {
-                    start_index: 0,
-                    offset: 6,
+                    span: Span { start: 0, end: 6 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"1e10",
                 Token {
-                    start_index: 0,
-                    offset: 4,
+                    span: Span { start: 0, end: 4 },
                     kind: TokenKind::Number,
                 },
             ),
             (
                 b"-0.1e-2",
                 Token {
-                    start_index: 0,
-                    offset: 7,
+                    span: Span { start: 0, end: 7 },
                     kind: TokenKind::Number,
                 },
             ),
@@ -324,14 +344,13 @@ mod tests {
             ),
         ]
     }
-
+    
     fn valid_strings() -> Vec<(&'static [u8], Token)> {
         vec![
             (
                 b"\"abc\"",
                 Token {
-                    start_index: 0,
-                    offset: 5,
+                    span: Span { start: 0, end: 5 },
                     kind: TokenKind::String,
                 },
             ),
@@ -339,8 +358,7 @@ mod tests {
             (
                 b"\"A\\uD83D\\uDE00B\"",
                 Token {
-                    start_index: 0,
-                    offset: 16,
+                    span: Span { start: 0, end: 16 },
                     kind: TokenKind::String,
                 },
             ),
@@ -349,16 +367,14 @@ mod tests {
             (
                 b"\"b\\n\"",
                 Token {
-                    start_index: 0,
-                    offset: 5,
+                    span: Span { start: 0, end: 5 },
                     kind: TokenKind::String,
                 },
             ),
             (
                 b"\"\\u00E9\"",
                 Token {
-                    start_index: 0,
-                    offset: 8,
+                    span: Span { start: 0, end: 8 },
                     kind: TokenKind::String,
                 },
             ),
@@ -366,8 +382,7 @@ mod tests {
             (
                 "\"é\"".as_bytes(),
                 Token {
-                    start_index: 0,
-                    offset: 4,
+                    span: Span { start: 0, end: 4 },
                     kind: TokenKind::String,
                 },
             ),
@@ -455,24 +470,21 @@ mod tests {
             (
                 b"false",
                 Token {
-                    start_index: 0,
-                    offset: 5,
+                    span: Span { start: 0, end: 5 },
                     kind: TokenKind::Boolean,
                 },
             ),
             (
                 b"true",
                 Token {
-                    start_index: 0,
-                    offset: 4,
+                    span: Span { start: 0, end: 4 },
                     kind: TokenKind::Boolean,
                 },
             ),
             (
                 b"null",
                 Token {
-                    start_index: 0,
-                    offset: 4,
+                    span: Span { start: 0, end: 4 },
                     kind: TokenKind::Null,
                 },
             ),

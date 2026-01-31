@@ -182,10 +182,10 @@ pub enum FnType {
 }
 
 // length(), count() and value() return ValueType
-// search, match return Logical
+// search(), match() return Logical
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum FnResult<'r> {
-    // if the function returns data from root, borrow it. If it calculates new data, own it.
+    // if the function returns data from root, we borrow it. If it calculates new data, own it.
     // length(), match(), search() and count() all create new data, but value() returns an existing
     // value that lives in root, so we would have to clone in this case. length() and count() return
     // ints which we will wrap to Number, match() and search() will return Logical and with Cow
@@ -316,11 +316,10 @@ impl Registry {
 //  K (String) is standard and safe.
 //  V is of type Box<dyn Function>
 //
-// Box<T> is Send + Sync if T is
-//  T is dyn Function
+// Box<T> is Send + Sync if T is Send + Sync
+// T is dyn Function
 //
-// dyn Function
-//  For trait objects the compiler cannot see the fields inside the object, it cannot check if
+// For trait objects the compiler cannot see the fields inside the object, it cannot check if
 // those fields are thread-safe.
 //
 // If one of the impls of Function had a Rc we would have the following issue

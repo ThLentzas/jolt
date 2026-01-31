@@ -284,7 +284,6 @@ impl Nfa {
 
         for i in states {
             if let State::Atom(class_idx, out) = self.states[i] {
-                // toDo: we need to optimize the matches in CharClass
                 if self.classes[class_idx].matches(c) {
                     next.push(out.unwrap());
                 }
@@ -312,7 +311,7 @@ impl Nfa {
 
         // This is part is very similar to how we walk graphs. We need to avoid cycles, the cases
         // where we have loops
-        // In graph traversals we use a preallocated vector initialized to false and mark as we walk.
+        // In graph traversals we use a pre-allocated vector initialized to false and mark as we walk.
         // State machines have no memory, they don't know the path to the current state the only know
         // where they are now. We don't need global state to which states we have seen across every step
         // that we made so far, just for the current step. Allocating every time we make step is

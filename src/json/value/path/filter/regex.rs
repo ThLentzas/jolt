@@ -6,7 +6,7 @@ use crate::json::value::path::filter::table;
 const QUANTIFIER_LIMIT: u8 = 100;
 const MAX_NODES: u16 = 10_000;
 
-// any error during the json process returns false
+// any error during the parsing process returns false
 pub(super) fn full_match(input: &str, pattern: &str) -> bool {
     let mut parser = Parser::new(pattern.as_bytes());
     if let Err(_) = parser.parse() {
@@ -99,7 +99,6 @@ impl ExprItem {
     // extracts the char from a literal to form a range
     fn as_char(&self) -> Option<char> {
         match self {
-            // char implements Copy, we don't try to move out of a borrowed value
             ExprItem::Literal(c) => Some(*c),
             _ => None,
         }
@@ -289,7 +288,7 @@ impl Property {
 //
 // Instead of having Regex::Atom(a) own a when building the ast, we store the char class into a
 // vector and then let Regex::Atom(0) hold the index of 'a' in that vector. This actually solves both
-// problems. During json nothing changes, we expand quantifiers the same that we did, for aa we
+// problems. During parsing nothing changes, we expand quantifiers the same that we did, for aa we
 // still get Concat(0,0) that 0 refers to nodes[0] while Atom(0) refers to classes[0]. Now when
 // walking the ast to create the automaton all we have to do is copy the index and pass ownership to
 // the class vector
@@ -469,7 +468,7 @@ impl<'a> Parser<'a> {
 
         let delta = max - min;
         // Case: a{0,4}, a?a?a?a?
-        //  the mandatory part, min, is 0 in this case, which means delta is max.
+        //  the mandatory part, min, is 0, which means delta is max.
         if delta > 0 {
             let optional_idx = self.push_node(Regex::Question(atom_idx))?;
 
@@ -483,10 +482,6 @@ impl<'a> Parser<'a> {
         // then take that index and create aaa?a?
         let mut i = tmp[0];
         for node in tmp.into_iter().skip(1) {
-            // we concat i with tmp[j] not j, I had this initially which was wrong Concat(i, j)
-            // because my loop condition was for j in 1..tmp.len() so i was looking at indices
-            // we want the value at the given index; the most sane solution is to iterate over the
-            // values instead
             i = self.push_node(Regex::Concat(i, node))?;
         }
         Ok(i)
@@ -521,72 +516,30 @@ impl<'a> Parser<'a> {
     // Cases like ((a{100}){100}){100} are handled by keep tracking of the number of nodes in the
     // tree; when that number exceeds 10_000 we return an error. look at push_node()
     fn parse_quant_range(&mut self) -> Result<(u8, Option<u8>), RegexError> {
+        let start = self.pos;
+        let min = self.parse_bound()?;
+
         match self.buffer.get(self.pos) {
-            Some(b) if !b.is_ascii_digit() => Err(RegexError {
-                kind: RegexErrorKind::UnexpectedCharacter(*b),
-                pos: self.pos,
-            }),
-            Some(_) => {
-                // we can infer the type here, we don't need to be explicit and call u8::atoi()
-                let start = self.pos;
-                let min = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
-                if min > QUANTIFIER_LIMIT {
-                    return Err(RegexError {
-                        kind: RegexErrorKind::QuantifierLimitExceeded(QUANTIFIER_LIMIT),
-                        pos: start,
-                    });
+            Some(b',') => {
+                self.advance_by(1); // consume comma
+
+                // unbounded {2,}
+                if let Some(b'}') = self.buffer.get(self.pos) {
+                    self.advance_by(1);
+                    return Ok((min, None));
                 }
+
+                let max = self.parse_bound()?;
                 match self.buffer.get(self.pos) {
-                    Some(b',') => {
-                        self.advance_by(1);
-                        match self.buffer.get(self.pos) {
-                            // {2,}
-                            Some(b'}') => {
-                                self.advance_by(1);
-                                Ok((min, None))
-                            }
-                            Some(b) if !b.is_ascii_digit() => Err(RegexError {
-                                kind: RegexErrorKind::UnexpectedCharacter(*b),
-                                pos: self.pos,
-                            }),
-                            Some(_) => {
-                                let start = self.pos;
-                                let max = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
-                                if max > QUANTIFIER_LIMIT {
-                                    return Err(RegexError {
-                                        kind: RegexErrorKind::QuantifierLimitExceeded(
-                                            QUANTIFIER_LIMIT,
-                                        ),
-                                        pos: start,
-                                    });
-                                }
-                                match self.buffer.get(self.pos) {
-                                    Some(b'}') => {
-                                        self.advance_by(1);
-                                        Ok((min, Some(max)))
-                                    }
-                                    Some(b) => Err(RegexError {
-                                        kind: RegexErrorKind::UnexpectedCharacter(*b),
-                                        pos: self.pos,
-                                    }),
-                                    None => Err(RegexError {
-                                        kind: RegexErrorKind::UnexpectedEof,
-                                        pos: self.pos - 1,
-                                    }),
-                                }
-                            }
-                            None => Err(RegexError {
-                                kind: RegexErrorKind::UnexpectedEof,
-                                pos: self.pos - 1,
-                            }),
-                        }
-                    }
-                    // Case: {2}
-                    // we can rewrite it as {2,2} which will allow us to expand it as {min, max}
-                    // range. In both cases our range is bounded while in {2,} is not
                     Some(b'}') => {
                         self.advance_by(1);
-                        Ok((min, Some(min)))
+                        if min > max {
+                            return Err(RegexError {
+                                kind: RegexErrorKind::InvalidQuantifierRange,
+                                pos: start,
+                            });
+                        }
+                        Ok((min, Some(max)))
                     }
                     Some(b) => Err(RegexError {
                         kind: RegexErrorKind::UnexpectedCharacter(*b),
@@ -597,6 +550,41 @@ impl<'a> Parser<'a> {
                         pos: self.pos - 1,
                     }),
                 }
+            }
+            // {2}
+            // we can rewrite it as {2,2} which will allow us to expand it as bounded {min, max}
+            Some(b'}') => {
+                self.advance_by(1);
+                Ok((min, Some(min)))
+            }
+            Some(b) => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedCharacter(*b),
+                pos: self.pos,
+            }),
+            None => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedEof,
+                pos: self.pos - 1,
+            }),
+        }
+    }
+
+    fn parse_bound(&mut self) -> Result<u8, RegexError> {
+        match self.buffer.get(self.pos) {
+            Some(b) if !b.is_ascii_digit() => Err(RegexError {
+                kind: RegexErrorKind::UnexpectedCharacter(*b),
+                pos: self.pos,
+            }),
+            Some(_) => {
+                // we can infer the type here, we don't need to be explicit and call u8::atoi()
+                let start = self.pos;
+                let bound = Atoi::atoi(&mut self.buffer, &mut self.pos)?;
+                if bound > QUANTIFIER_LIMIT {
+                    return Err(RegexError {
+                        kind: RegexErrorKind::QuantifierLimitExceeded(QUANTIFIER_LIMIT),
+                        pos: start,
+                    });
+                }
+                Ok(bound)
             }
             None => Err(RegexError {
                 kind: RegexErrorKind::UnexpectedEof,
@@ -650,7 +638,7 @@ impl<'a> Parser<'a> {
             // any other metacharacter if appeared unescaped it is invalid
             //
             // Now for the escaped characters, the ones that can appear after '\' are the following
-            // n, r, t -> those map to \n, \t, \r; this is how we did the mapping in json too.
+            // n, r, t -> those map to \n, \t, \r; this is how we did the mapping in parsing too.
             // any of the metacharacters maps to themselves: ( -> ( and so on
             Some(b'[') | Some(b'.') | Some(b'\\') => {
                 let class = self.parse_class()?;
@@ -811,7 +799,7 @@ impl<'a> Parser<'a> {
         self.advance_by(1);
         match self.buffer.get(self.pos) {
             Some(b'p') | Some(b'P') => Ok(Escape::Property(self.parse_property()?)),
-            Some(_) => Ok(Escape::Literal(self.map_escape_character()?)),
+            Some(_) => Ok(Escape::Literal(self.map_escape_char()?)),
             None => Err(RegexError {
                 kind: RegexErrorKind::UnexpectedEof,
                 pos: self.pos - 1,
@@ -873,7 +861,7 @@ impl<'a> Parser<'a> {
         Ok(Property { category, negated })
     }
 
-    fn map_escape_character(&mut self) -> Result<char, RegexError> {
+    fn map_escape_char(&mut self) -> Result<char, RegexError> {
         let c = match self.buffer[self.pos] {
             b'n' => '\n',
             b'r' => '\r',
@@ -901,7 +889,7 @@ impl<'a> Parser<'a> {
         let next = self.peek();
 
         // major, minor order
-        // after json a category we need to advance pos by the category's length, 1 for major,
+        // after parsing a category we need to advance pos by the category's length, 1 for major,
         // 2 for minor
         let (category, n) = match (current, next) {
             (Some(b'L'), Some(b'}')) => (GeneralCategory::Letter, 1),
@@ -1085,9 +1073,12 @@ fn is_valid_cs_range(lhs: &ExprItem, rhs: &ExprItem) -> bool {
 enum RegexErrorKind {
     // invalid character set range
     InvalidCsRange,
-    // json ints for range quantifiers
+    // ints for range quantifiers
     OutOfRange,
+    // min > max
+    InvalidQuantifierRange,
     QuantifierLimitExceeded(u8),
+    // ast exceeds the 10_000 nodes
     ComplexityLimitExceeded(u16),
     UnexpectedCharacter(u8),
     UnexpectedEof,
@@ -1332,59 +1323,59 @@ mod test {
                     Regex::Concat(4, 1),
                 ],
             ),
-            //     // a?a?a?a?
-            //     (
-            //         "a{0,4}",
-            //         vec![
-            //             // creates 'a' -> returns 0
-            //             Regex::Atom(0),
-            //             // creates a? -> returns 1
-            //             Regex::Question(0),
-            //             // creates a?a? -> returns 3
-            //             Regex::Concat(1, 1),
-            //             // creates a?a?a? -> returns 4
-            //             Regex::Concat(2, 1),
-            //             // creates a?a?a?a? -> returns 5
-            //             Regex::Concat(3, 1),
-            //         ],
-            //     ),
-            //     (
-            //         "a{3}",
-            //         vec![
-            //             // creates 'a' -> returns 0
-            //             Regex::Atom(0),
-            //             // creates aa -> returns 1
-            //             Regex::Concat(0, 0),
-            //             // creates aaa
-            //             Regex::Concat(1, 0),
-            //         ],
-            //     ),
-            //     // expands to aaaa*
-            //     (
-            //         "a{3,}",
-            //         vec![
-            //             // creates 'a' -> returns 0
-            //             Regex::Atom(0),
-            //             // creates a* -> returns 1
-            //             Regex::Star(0),
-            //             // creates aa -> returns 2
-            //             Regex::Concat(0, 0),
-            //             // creates aaa -> returns 3
-            //             Regex::Concat(2, 0),
-            //             // creates aaaa*
-            //             Regex::Concat(3, 1),
-            //         ],
-            //     ),
-            //     // is just a*
-            //     (
-            //         "a{0,}",
-            //         vec![
-            //             // creates 'a' -> returns 0
-            //             Regex::Atom(0),
-            //             // creates a* -> returns 1
-            //             Regex::Star(0),
-            //         ],
-            //     ),
+            // a?a?a?a?
+            (
+                "a{0,4}",
+                vec![
+                    // creates 'a' -> returns 0
+                    Regex::Atom(0),
+                    // creates a? -> returns 1
+                    Regex::Question(0),
+                    // creates a?a? -> returns 3
+                    Regex::Concat(1, 1),
+                    // creates a?a?a? -> returns 4
+                    Regex::Concat(2, 1),
+                    // creates a?a?a?a? -> returns 5
+                    Regex::Concat(3, 1),
+                ],
+            ),
+            (
+                "a{3}",
+                vec![
+                    // creates 'a' -> returns 0
+                    Regex::Atom(0),
+                    // creates aa -> returns 1
+                    Regex::Concat(0, 0),
+                    // creates aaa
+                    Regex::Concat(1, 0),
+                ],
+            ),
+            // expands to aaaa*
+            (
+                "a{3,}",
+                vec![
+                    // creates 'a' -> returns 0
+                    Regex::Atom(0),
+                    // creates a* -> returns 1
+                    Regex::Star(0),
+                    // creates aa -> returns 2
+                    Regex::Concat(0, 0),
+                    // creates aaa -> returns 3
+                    Regex::Concat(2, 0),
+                    // creates aaaa*
+                    Regex::Concat(3, 1),
+                ],
+            ),
+            // is just a*
+            (
+                "a{0,}",
+                vec![
+                    // creates 'a' -> returns 0
+                    Regex::Atom(0),
+                    // creates a* -> returns 1
+                    Regex::Star(0),
+                ],
+            ),
         ]
     }
 
@@ -1441,6 +1432,14 @@ mod test {
                 RegexError {
                     kind: RegexErrorKind::UnexpectedEof,
                     pos: 4,
+                },
+            ),
+            // min > max
+            (
+                "z{3,2}",
+                RegexError {
+                    kind: RegexErrorKind::InvalidQuantifierRange,
+                    pos: 2,
                 },
             ),
         ]

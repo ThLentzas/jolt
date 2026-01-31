@@ -51,12 +51,12 @@ impl<'a> Parser<'a> {
 
         let val = self.parse_value()?;
         if self.peek()?.is_some() {
-            // after successfully json a value we can't have leftover tokens
+            // after successfully parsing a value we can't have leftover tokens
             // false5, "abc"123, {}  null,
             // note that this could return an error, {}001, -> leading zeros are not allowed
             return Err(ParseError {
                 kind: ParseErrorKind::UnexpectedToken { expected: None },
-                pos: self.peeked.unwrap().start_index,
+                pos: self.peeked.unwrap().start(),
             });
         }
         Ok(val)
@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
     // parse_number,string,bool all need 1 token; they use the starting index and offset to parse
     // the value from the buffer.
     //
-    // After json a value, peek() references the next token after it
+    // After parsing a value, peek() references the next token after it
     fn parse_value(&mut self) -> Result<Value, ParseError> {
         let Some(token) = self.peek()? else {
             return Err(ParseError {
@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: Some("json value"),
                     },
-                    pos: token.start_index,
+                    pos: token.start(),
                 });
             }
         };
@@ -137,14 +137,14 @@ impl<'a> Parser<'a> {
             //     loop {
             //         match self.peek()? {
             //             .....
-            //             Some(token) if expect(token.kind(), TokenKind::String) => {
+            //             Some(token) if expect(token.kind, TokenKind::String) => {
             //                 let key = self.parse_string(token.start_index(), token.offset())?;
             //
             // The compiler will complain that we have 2 mutable borrows for self. We do, self.peek()
             // and then we call self.parse_string() which also takes &mut self, the borrow from peek
             // is still active part of the match block
             //
-            // With this approach we extract the information that we need, then the 1st borrow ends
+            // With this approach we extract the information we need, then the 1st borrow ends
             // after we are done with token, and we can call parse_string()
             let Some(token) = self.peek()? else {
                 return Err(ParseError {
@@ -153,7 +153,7 @@ impl<'a> Parser<'a> {
                 });
             };
             let kind = token.kind;
-            let start = token.start_index;
+            let start = token.start();
 
             match kind {
                 // expect key
@@ -164,10 +164,7 @@ impl<'a> Parser<'a> {
                     let name = self.parse_string()?;
                     if map.contains_key(&name) {
                         return Err(ParseError {
-                            kind: ParseErrorKind::DuplicateName {
-                                // SAFETY: lexer already validated the sequence
-                                name,
-                            },
+                            kind: ParseErrorKind::DuplicateName { name },
                             pos: start,
                         });
                     }
@@ -228,58 +225,12 @@ impl<'a> Parser<'a> {
         Ok(arr)
     }
 
-    //         let token = &self.tokens[self.pos];
-    //         let mut val = String::with_capacity(token.offset - 2); // drop quotes
-    //         let mut i = token.start_index + 1; // skip opening quote
-    //
-    //         while i < token.start_index + token.offset - 1 {
-    //             // skip closing quote
-    //             let current = self.buffer[i];
-    //             match current {
-    //                 b'\\' => {
-    //                     val.push(escapes::map_escape_character(self.buffer, i));
-    //                     i += escapes::len(self.buffer, i);
-    //                 }
-    //                 b if !b.is_ascii() => {
-    //                     val.push(utf8::read_utf8_char(self.buffer, i));
-    //                     i += utf8::utf8_char_width(current);
-    //                 }
-    //                 _ => {
-    //                     val.push(current as char);
-    //                     i += 1;
-    //                 }
-    //             }
-    //             if val.len() > super::STRING_LENGTH_LIMIT {
-    //                 return Err(ParseError {
-    //                     kind: ParseErrorKind::StringLengthLimitExceeded {
-    //                         len: super::STRING_LENGTH_LIMIT,
-    //                     },
-    //                     pos: token.start_index,
-    //                 });
-    //             }
-    //         }
-    //         Ok(val)
-    //
-    // had the above code which runs in O(n) time/space where n is the number of characters in the
-    // string. The profiler though showed that it is slow. The reason is that it is much more efficient
-    // to write 10 characters in memory at once rather than 1 character 10 times. Everytime we write
-    // certain things need to be checked, when we can call push() 10 times we do that every time
-    // which impacts the performance, but when we push chunks we only get to do it once. This is
-    // based on how the hardware works.
-    // In the new approach we keep scanning until we encounter a non ascii byte or an escape sequence
-    // Those 2 need special handling. In any other case, as long as we keep encountering non-escape characters
-    // we can keep track of that slice and call push_str() instead of push(). push() needs to increase
-    // len, do bounds checks etc each time is called.
-    // This approach improves performance by 1.5ms, from 7.4 to 5.9
-    //
-    // to extract the value from slice all we need is the starting index and the offset;
-    // the only type of StringError that can occur at this point is LenLimitExceeded. It makes no
-    // sense for this method to return StringError
+    // read parse_value()
+    // to extract the value from slice all we need is the starting index and the offset
+    // the only type of error that can occur at this point is LenLimitExceeded.
     fn parse_string(&mut self) -> Result<String, ParseError> {
-        // always safe to call unwrap twice; next() is called after parse_value() called peek()
-        // so it can be an Error and it can be None
         let token = self.next()?.unwrap();
-        let slice = &self.buffer[token.start_index + 1..token.start_index + token.offset - 1];
+        let slice = &self.buffer[token.start() + 1..token.end() - 1];
         let mut val = String::with_capacity(slice.len());
         let mut i = 0;
 
@@ -292,8 +243,7 @@ impl<'a> Parser<'a> {
             // if it contains at least 1 character parse it
             if i > j {
                 // SAFETY: lexer already verified the sequence
-                let chunk = unsafe { str::from_utf8_unchecked(&slice[j..i]) };
-                val.push_str(chunk);
+                val.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
             }
             if i >= slice.len() {
                 break;
@@ -308,7 +258,7 @@ impl<'a> Parser<'a> {
                 kind: ParseErrorKind::StringLengthLimitExceeded {
                     len: super::STRING_LENGTH_LIMIT,
                 },
-                pos: token.start_index,
+                pos: token.start(),
             });
         }
 
@@ -317,31 +267,31 @@ impl<'a> Parser<'a> {
 
     fn parse_number(&mut self) -> Number {
         // always safe to call unwrap twice; next() is called after parse_value() called peek()
-        // so it can be an Error and it can be None
+        // so it can't be an Error and it can't be None
         let token = self.next().unwrap().unwrap();
-        let slice = &self.buffer[token.start_index..token.start_index + token.offset];
+        let slice = &self.buffer[token.start()..token.end()];
         number::parse(slice)
     }
 
     fn parse_bool(&mut self) -> bool {
         // always safe to call unwrap twice; next() is called after parse_value() called peek()
-        // so it can be an Error and it can be None
+        // so it can't be an Error and it can't be None
         let token = self.next().unwrap().unwrap();
-        self.buffer[token.start_index] == b't'
+        self.buffer[token.start()] == b't'
     }
 
     fn expect_colon(&mut self) -> Result<(), ParseError> {
         match self.peek()? {
-            Some(t) if t.kind == TokenKind::Colon => {
+            Some(token) if token.kind == TokenKind::Colon => {
                 self.next()?;
                 Ok(())
             }
-            // mismatch on colon
-            Some(t) => Err(ParseError {
+            // mismatch
+            Some(token) => Err(ParseError {
                 kind: ParseErrorKind::UnexpectedToken {
                     expected: Some("colon ':'"),
                 },
-                pos: t.start_index,
+                pos: token.start(),
             }),
             None => Err(ParseError {
                 kind: ParseErrorKind::UnexpectedEof,
@@ -385,11 +335,11 @@ impl<'a> Parser<'a> {
                             kind: ParseErrorKind::UnexpectedToken {
                                 expected: Some(expected),
                             },
-                            pos: next.start_index,
+                            pos: next.start(),
                         });
                     }
                 }
-                // if we don't encounter a closing bracket or peek() return None, continue and let
+                // if we don't encounter a closing bracket or peek() returned None, continue and let
                 // parse_value() handle it
                 Ok(Action::Continue)
             }
@@ -403,7 +353,7 @@ impl<'a> Parser<'a> {
                 kind: ParseErrorKind::UnexpectedToken {
                     expected: Some("',' or closing bracket"),
                 },
-                pos: token.start_index,
+                pos: token.start(),
             }),
         }
     }
@@ -592,7 +542,7 @@ mod tests {
         let mut numbers = Vec::new();
         numbers.push(Value::Number(Number::from(116i64)));
         numbers.push(Value::Number(Number::from(-943i64)));
-        numbers.push(Value::Number(Number::from(9007199254740991)));
+        numbers.push(Value::Number(Number::from(9007199254740991i64)));
         numbers.push(Value::Number(Number::from(
             BigDecimal::from_str("-3.14159265358979e+100").unwrap(),
         )));
@@ -627,7 +577,7 @@ mod tests {
         let mut numbers = Vec::new();
         numbers.push(Value::Number(Number::from(116i64)));
         numbers.push(Value::Number(Number::from(-943i64)));
-        numbers.push(Value::Number(Number::from(9007199254740991)));
+        numbers.push(Value::Number(Number::from(9007199254740991i64)));
         numbers.push(Value::Number(Number::from(-3.14159265358979e+100)));
         numbers.push(Value::Number(Number::from(6.02214076e+23)));
         numbers.push(Value::Number(Number::from(2.718281828e-50)));

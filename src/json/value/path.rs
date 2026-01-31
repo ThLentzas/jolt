@@ -19,7 +19,7 @@ pub(super) mod tracker;
 enum Selector {
     Name(String),
     WildCard,
-    // i64 covers the range [-(2^53)+1, (2^53)-1], we don't need to use Number
+    // i64 covers the range [-(2^53)+1, (2^53)-1]
     Index(i64),
     Slice(Slice),
     Filter(LogicalExpr),
@@ -45,6 +45,9 @@ impl Segment {
         }
     }
 
+    // we can't split the logic into apply_child() and apply_desc because we could call self.apply_desc()
+    // for a child segment
+    // lifetimes: Tracker holds references to keys that live in root
     fn apply<'r, T: Tracker<'r>>(
         &self,
         context: &mut EvalContext<'r>,
@@ -52,87 +55,60 @@ impl Segment {
         writer: &mut Vec<PathNode<'r, T::Trace>>,
     ) {
         match self.kind {
-            SegmentKind::Child => self.apply_child::<T>(context, &reader, writer),
-            SegmentKind::Descendant => self.apply_desc::<T>(context, &reader, writer),
-        }
-    }
-
-    // child segments
-    //
-    //{
-    //   "users": [
-    //     {
-    //       "name": "Alice",
-    //       "age": 30,
-    //       "city": "NYC"
-    //     },
-    //     {
-    //       "name": "Bob",
-    //       "age": 25,
-    //       "city": "LA"
-    //     },
-    //     {
-    //       "name": "Charlie",
-    //       "age": 35,
-    //       "city": "Chicago"
-    //     }
-    //   ]
-    // }
-    //
-    // $.users[*]['name', 'city']
-    //
-    // 1. .users returns the array
-    // 2. [*] returns all the elements
-    // 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
-    // 2 name selectors.
-    // output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
-    // It is important to note that from the output we see that we applied all the selector for the 1st
-    // element we got back "Alice", "NYC" and so on
-    //
-    // applying each segment essentially increases the depth by 1 level
-    //
-    // lifetimes: context and path nodes hold references to values that live in root so they share
-    // the same lifetime; the lifetime of context, reader, writer as references is not tied to self,
-    // they're independent borrows passed into the function; for T read parse()
-    fn apply_child<'r, T: Tracker<'r>>(
-        &self,
-        context: &mut EvalContext<'r>,
-        reader: &Vec<PathNode<'r, T::Trace>>,
-        writer: &mut Vec<PathNode<'r, T::Trace>>,
-    ) {
-        if reader.is_empty() {
-            return;
-        }
-
-        for v in reader.iter() {
-            for selector in &self.selectors {
-                selector.apply::<T>(context, writer, v);
-            }
-        }
-    }
-
-    // read the comment above the test_desc_seg_and_multi_selector() method in value.rs
-    //
-    // it is dfs on the values of the node, and if a match is found as we visit them for the 1st time(preorder)
-    // not when recursion backtracks(postorder) we append them in the list
-    //
-    // lifetimes: context and path nodes hold references to values that live in root so they share
-    // the same lifetime; the lifetime of context, reader, writer as references is not tied to self,
-    // they're independent borrows passed into the function; for T read parse()
-    fn apply_desc<'r, T: Tracker<'r>>(
-        &self,
-        context: &mut EvalContext<'r>,
-        reader: &Vec<PathNode<'r, T::Trace>>,
-        writer: &mut Vec<PathNode<'r, T::Trace>>,
-    ) {
-        if reader.is_empty() {
-            return;
-        }
-
-        for v in reader.iter() {
-            for selector in &self.selectors {
-                dfs::<T>(context, v, writer, selector);
-            }
+            // child segments
+            //
+            //{
+            //   "users": [
+            //     {
+            //       "name": "Alice",
+            //       "age": 30,
+            //       "city": "NYC"
+            //     },
+            //     {
+            //       "name": "Bob",
+            //       "age": 25,
+            //       "city": "LA"
+            //     },
+            //     {
+            //       "name": "Charlie",
+            //       "age": 35,
+            //       "city": "Chicago"
+            //     }
+            //   ]
+            // }
+            //
+            // $.users[*]['name', 'city']
+            //
+            // 1. .users returns the array
+            // 2. [*] returns all the elements
+            // 3. for every element in the nodelist, the input list, we apply each selector, in this case we have
+            // 2 name selectors.
+            // output: ["]Alice", "NYC", "Bob", "LA", "Charlie", "Chicago"]
+            // It is important to note that from the output we see that we applied all the selector for the 1st
+            // element we got back "Alice", "NYC" and so on
+            //
+            // applying each segment essentially increases the depth by 1 level
+            SegmentKind::Child => {
+                if reader.is_empty() {
+                    return;
+                }
+                for node in reader.iter() {
+                    for selector in &self.selectors {
+                        selector.apply::<T>(context, writer, node);
+                    }
+                }
+            },
+            // read the comment above the test_desc_seg_and_multi_selector() method in value.rs
+            SegmentKind::Descendant => {
+                if reader.is_empty() {
+                    return;
+                }
+                for node in reader.iter() {
+                    for selector in &self.selectors {
+                        dfs::<T>(context, node, writer, selector);
+                    }
+                }
+            },
         }
     }
 
@@ -155,6 +131,10 @@ impl Selector {
         }
     }
 
+    // lifetimes: all data referenced by EvalContext, Vec<PathNode>, and PathNode hold references to
+    // values that live in root. The reference parameters (&mut context, &mut writer, &current)
+    // are independent borrows into this function,their borrow durations are not tied to 'r, only
+    // the data they point to shares lifetime 'r.
     fn apply<'r, T: Tracker<'r>>(
         &self,
         context: &mut EvalContext<'r>,
@@ -268,7 +248,6 @@ impl Range {
     fn new(slice: &Slice, len: i64) -> Self {
         let start;
         let end;
-        // equivalent to: if step.is_none() { 1 } else { step.unwrap() }
         let step = slice.step.unwrap_or(1);
 
         if step >= 0 {
@@ -312,7 +291,6 @@ impl Range {
 }
 
 impl Iterator for Range {
-    // why an associated type instead of a generic? https://www.youtube.com/watch?v=yozQ9C69pNs
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -481,12 +459,12 @@ impl<'a, 'r> Parser<'a, 'r> {
     // child-segment = bracketed-selection / ("." (wildcard-selector / member-name-shorthand))
     // descendant-segment  = ".." (bracketed-selection / wildcard-selector / member-name-shorthand)
     //
-    // if pos is at '.' we are not sure what kind of segment we are json; it can be the shorthand
+    // if pos is at '.' we are not sure what kind of segment we are parsing; it can be the shorthand
     // syntax for a child segment, .foo, or it can be a descendant segment that we don't know if
     // it is represented with a bracketed selection or the shorthand syntax. We need to peek to determine
     // the notation
-    //   if current is '.', previous is also '.' and next is '[' it is a descendant segment using
-    //   bracketed selection syntax. In any other case, it is shorthand
+    // if current is '.', previous is also '.' and next is '[' it is a descendant segment using
+    // bracketed selection syntax. In any other case, it is shorthand
     fn parse_notation(&mut self, kind: SegmentKind) -> Result<Segment, PathError> {
         if self.buffer[self.pos] == b'.' && self.buffer[self.pos - 1] == b'.' {
             if let Some(b'[') = self.buffer.get(self.pos + 1) {
@@ -517,7 +495,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                 true if self.buffer[self.pos] == b']' => {
                     break;
                 }
-                // after json a selector, if we don't encounter ']', we expect comma to separate
+                // after parsing a selector, if we don't encounter ']', we expect comma to separate
                 // multiple selectors.
                 true if self.buffer[self.pos] != b',' => {
                     return Err(PathError {
@@ -622,14 +600,12 @@ impl<'a, 'r> Parser<'a, 'r> {
         let len = self.buffer.len();
         self.pos += 1; // skip opening quote(' or ")
 
-        let end = json::find(&self.buffer[self.pos..], quote, |b| {
-            b == quote || escapes::is_escape(b)
-        })
-        .map(|i| self.pos + i)
-        .ok_or(StringError {
-            kind: StringErrorKind::UnexpectedEof,
-            pos: len - 1,
-        })?;
+        let end = json::find_unescaped(&self.buffer[self.pos..], quote)
+            .map(|i| self.pos + i)
+            .ok_or(StringError {
+                kind: StringErrorKind::UnexpectedEof,
+                pos: len - 1,
+            })?;
 
         let slice = &self.buffer[self.pos..end];
 
@@ -648,8 +624,10 @@ impl<'a, 'r> Parser<'a, 'r> {
                 }
                 i += utf8::char_width(slice[i]);
             }
-            // SAFETY: slice is part of the buffer that we created by calling as_bytes() in the input str
-            name.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+            if i > j {
+                // SAFETY: slice is part of the buffer that we created by calling as_bytes() in the input str
+                name.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+            }
             if i >= slice.len() {
                 break;
             }
@@ -685,8 +663,7 @@ impl<'a, 'r> Parser<'a, 'r> {
         Ok(name)
     }
 
-    // we follow the same logic as the previous cases where we had to parse strings; don't do it 1
-    // by 1 calling push() each time, create a slice by tracking the starting position
+    // we follow the same logic as the previous cases where we had to parse strings
     fn parse_name_shorthand(&mut self) -> Result<String, PathError> {
         let len = self.buffer.len();
         let mut current = self.buffer[self.pos];
@@ -705,23 +682,22 @@ impl<'a, 'r> Parser<'a, 'r> {
             self.pos += utf8::char_width(current);
         }
 
-        // We stop when we encounter 1 of the following characters without necessarily having an
-        // invalid name
-        //
-        //   '.', '[' -> start of next segment
-        //   '<', '>', '=', '&', '|' -> comparison/logical operators in filter expressions
-        //   ')', ']' -> end of parenthesized expression or filter selector
-        //   ',' -> function argument separator
-        //   whitespace -> delimiter
-        //
-        // '!' is missing because no valid expression can start in that case,
-        // @.name!... (nothing valid follows)
-        //
-        // if we have a case like "$.price< ", json will fail later when we attempt to parse the
-        // next segment
         while self.pos < len {
             current = self.buffer[self.pos];
-
+            // We stop when we encounter 1 of the following characters without necessarily having an
+            // invalid name
+            //
+            //   '.', '[' -> start of next segment
+            //   '<', '>', '=', '&', '|' -> comparison/logical operators in filter expressions
+            //   ')', ']' -> end of parenthesized expression or filter selector
+            //   ',' -> function argument separator
+            //   whitespace -> delimiter
+            //
+            // '!' is missing because no valid expression can start in that case,
+            // @.name!... (nothing valid follows)
+            //
+            // if we have a case like "$.price< ", parsing will fail later when we attempt to parse the
+            // next segment
             if matches!(
                 current,
                 b'.' | b'[' | b'<' | b'>' | b'=' | b'&' | b'|' | b')' | b']' | b','
@@ -800,8 +776,8 @@ impl<'a, 'r> Parser<'a, 'r> {
     // rfc syntax: start *S ":" *S end *S ":" *S step
     fn parse_slice(&mut self, start: Option<i64>) -> Result<Selector, PathError> {
         let len = self.buffer.len();
-        let mut step: Option<i64> = Some(1); // default step value
-        let mut end: Option<i64> = None;
+        let mut step = Some(1); // default step value
+        let mut end = None;
         self.pos += 1; // consume ':'
 
         json::skip_whitespaces(self.buffer, &mut self.pos);
@@ -883,9 +859,9 @@ impl<'a, 'r> Parser<'a, 'r> {
     // results in a non-empty list and the comparison with .x returns false so no nodes added in the
     // list
     //
-    // Pratt json
+    // Pratt parsing
     //
-    // we could use Pratt json but it is an overkill for this case; we only have 3 operators
+    // we could use Pratt parsing but it is an overkill for this case; we only have 3 operators
     // 1 prefix(!) and 2 infix(&&, ||), we have parenthesized expression too but those start a new
     // chain anyway. Comparison operators do not have precedence.
     //
@@ -1270,7 +1246,7 @@ impl<'a, 'r> Parser<'a, 'r> {
             } else {
                 // this is the ambiguous part. It is known as the "First set problem"
                 //
-                // The "first set problem" in json, especially for LL(1) grammars, refers to when
+                // The "first set problem" in parsing, especially for LL(1) grammars, refers to when
                 // a non-terminal can derive multiple production rules that start with the exact
                 // same terminal symbol, creating ambiguity for top-down parsers (like LL parsers)
                 // that need to decide which rule to apply next based on the next input token.
@@ -1297,7 +1273,7 @@ impl<'a, 'r> Parser<'a, 'r> {
                     // a logical one.
                     let mut expr = self.parse_comparison_tail(arg)?;
                     // we can't just call parse_logical_and/or
-                    // we are not json a logical expression from the start like we do when we call
+                    // we are not parsing a logical expression from the start like we do when we call
                     // parse_filter(). We have already parsed the lhs, we are at && or || we need to
                     // parse the remaining part of the expression. We need those tail methods to look
                     // after lhs. Calling parse_logical_and/or would look for lhs, encounter && and
@@ -1312,8 +1288,12 @@ impl<'a, 'r> Parser<'a, 'r> {
                     // we encountered no operator, map it as is
                     match arg {
                         Comparable::Literal(l) => args.push(FnExprArg::Literal(l)),
-                        Comparable::EmbeddedQuery(q) => args.push(FnExprArg::EmbeddedQuery(q)),
-                        Comparable::FnExpr(f) => args.push(FnExprArg::FnExpr(Box::new(f))),
+                        Comparable::EmbeddedQuery(q) => {
+                            args.push(FnExprArg::EmbeddedQuery(q));
+                        },
+                        Comparable::FnExpr(f) => {
+                            args.push(FnExprArg::FnExpr(Box::new(f)));
+                        },
                     }
                 }
             }
@@ -1387,6 +1367,7 @@ impl<'a, 'r> Parser<'a, 'r> {
     }
 }
 
+// preorder dfs
 fn dfs<'r, T: Tracker<'r>>(
     context: &mut EvalContext<'r>,
     current: &PathNode<'r, T::Trace>,
@@ -1419,7 +1400,6 @@ fn dfs<'r, T: Tracker<'r>>(
 
 // !matches!(byte, 0x00..=0x1F | 0x20..=0x2F | 0x3A..=0x40 | 0x5C..=0x5E | 0x60 | 0x7B..=0x7E)
 // the above one would work as well, it covers all the cases mentioned in the not_allowed section
-// in the comment above
 fn is_valid_name_first(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_' || !b.is_ascii()
 }

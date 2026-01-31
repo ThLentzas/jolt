@@ -4,8 +4,8 @@ use crate::json::escapes::{self, EscapeError, EscapeErrorKind};
 use crate::json::utf8;
 use crate::json::value::error::{PointerError, PointerErrorKind};
 
-// when we split the input pointer path to create tokens, apart from the value we also need to know
-// where the token started based on the underline buffer for better error messaging
+// when we split the path to create tokens, apart from the value we also need to know where the token
+// started based on the underline buffer for better error messaging
 //
 // we are building the token value based on the pointer path, but we will need to do replacements
 // (replacing ~0 and ~1), RefTokens must own their data rather than referencing slices of the
@@ -59,7 +59,7 @@ impl<'a> Pointer<'a> {
         }
 
         // find next occurrence of '/' or the end of the input
-        let end = json::find(&self.buffer[self.pos..], b'/', |b| escapes::is_escape(b))
+        let end = json::find_unescaped(&self.buffer[self.pos..], b'/')
             .map(|i| self.pos + i)
             .unwrap_or(len);
 
@@ -68,7 +68,7 @@ impl<'a> Pointer<'a> {
 
         // Case: /foo//
         // When we have an empty token, that is considered valid as key in a map, there is no index
-        // in between '/' and '/'. We use as start the index of the 2nd '\'. We put the index that
+        // in between '/' and '/'. We use as start the index of the 2nd '\'. We use the index that
         // we would typically expect a value.
         if slice.is_empty() {
             // move past the 2nd '/'
@@ -77,6 +77,7 @@ impl<'a> Pointer<'a> {
         }
 
         let start = self.pos;
+        // the index to walk the slice
         let mut i = 0;
 
         while i < slice.len() {
@@ -92,7 +93,13 @@ impl<'a> Pointer<'a> {
                 i += utf8::char_width(slice[i]);
             }
 
-            val.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+            // if it contains at least 1 character parse it
+            if i > j {
+                // SAFETY: lexer already verified the sequence
+                let chunk = unsafe { str::from_utf8_unchecked(&slice[j..i]) };
+                val.push_str(chunk);
+            }
+
             if i >= slice.len() {
                 break;
             }
@@ -125,9 +132,9 @@ impl<'a> Pointer<'a> {
         Ok(Some(RefToken { val, pos: start }))
     }
 
-    pub(super) fn check_start(&mut self) -> Result<(), PointerError> {
-        // pointer path is a json string and it can also start with the Unicode sequence that maps
-        // to '/'
+    // pointer path is a json string, which means it can also start with the Unicode sequence that
+    // maps to '/'
+    pub(super) fn expect_root(&mut self) -> Result<(), PointerError> {
         // neither '/', nor a Unicode sequence that could map to '/'
         // a pointer path always starts with '/', unless it is empty which we already checked by the time
         // this method gets called
@@ -143,23 +150,24 @@ impl<'a> Pointer<'a> {
             return Ok(());
         }
 
-        // was '\'
-        if let Err(e) = escapes::check_escape_char(self.buffer, 0) {
-            return Err(PointerError::from(StringError::from(e)));
-        }
+        escapes::check_escape_char(self.buffer, 0)
+            .map_err(|err| PointerError::from(StringError::from(err)))?;
+
+        // was valid escape but didn't map to '/'
         if escapes::map_escape_char(self.buffer, self.pos) != '/' {
             return Err(PointerError {
                 kind: PointerErrorKind::InvalidPointerSyntax,
                 pos: 0,
             });
         }
-        self.pos += 6; // move past the sequence that mapped to '\'
+        self.pos += escapes::len(self.buffer, self.pos); // move past the sequence
 
         Ok(())
     }
+
     // When this method gets called slice[i] is at '~', we only need to check the next character
     fn map_ptr_escape(&self, slice: &[u8], i: &mut usize) -> Result<char, EscapeError> {
-        // advance the pointer of the buffer to the next character
+        // advance to the next character of the slice
         match slice.get(*i + 1) {
             Some(b'0') => {
                 *i += 1;
@@ -175,15 +183,18 @@ impl<'a> Pointer<'a> {
                 let ch = escapes::map_escape_char(slice, *i + 1);
                 match ch {
                     '0' => {
-                        *i += 6;
+                        *i += escapes::len(slice, *i + 1);
                         Ok('~')
                     }
                     '1' => {
-                        *i += 6;
+                        *i += escapes::len(slice, *i + 1);
                         Ok('/')
                     }
+                    // was an escape sequence but not the expected one
                     _ => Err(EscapeError {
-                        kind: EscapeErrorKind::UnknownEscapedCharacter { byte: b'\\' },
+                        kind: EscapeErrorKind::UnknownEscapedCharacter {
+                            byte: slice[*i + 1],
+                        },
                         pos: self.pos + *i + 1,
                     }),
                 }
@@ -336,14 +347,14 @@ pub fn to_ptr_path(npath: &str) -> Option<String> {
         return None;
     }
 
-    let mut path = String::new();
+    let mut path = String::with_capacity(npath.len());
     // npath: "$" -> ptr_path: ""
     if buffer.len() == 1 {
         return Some(path);
     }
+
     path.push('/');
     let mut pos = 1;
-
     // parse '[' -> parse key/index -> parse ']'
     while buffer.get(pos).is_some() {
         if buffer[pos] != b'[' {
@@ -363,7 +374,7 @@ pub fn to_ptr_path(npath: &str) -> Option<String> {
             Some(_) | None => return None,
         }
         path.push('/');
-        // after json a key/index we expect ']'
+        // after parsing a key/index we expect ']'
         match buffer.get(pos) {
             Some(b']') => pos += 1,
             Some(_) | None => return None,
@@ -380,71 +391,29 @@ fn parse_key(buffer: &[u8], pos: &mut usize) -> Option<String> {
     let mut key = String::new();
 
     // standard escapes  + '\'' since it can appear escaped in single quoted strings
-    let end = json::find(&buffer[*pos..], b'\'', |b| escapes::is_escape(b) || b == b'\'')
-        .map(|i| *pos + i)?;
+    let end = json::find_unescaped(&buffer[*pos..], b'\'').map(|i| *pos + i)?;
 
     let slice = &buffer[*pos..end];
     let mut i = 0;
 
-    while let Some(b) = slice.get(i) {
+    while i < slice.len() {
         let j = i;
         // as long as we don't encounter any char that needs special handling keep going
         while i < slice.len() && slice[i] != b'\\' && slice[i] != b'~' && slice[i] != b'/' {
             if slice[i].is_ascii_control() {
                 return None;
             }
-            i += utf8::char_width(*b);
+            i += utf8::char_width(slice[i]);
         }
-
-        key.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+        if i > j {
+            key.push_str(unsafe { str::from_utf8_unchecked(&slice[j..i]) });
+        }
         if i >= slice.len() {
             break;
         }
 
         match slice[i] {
-            b'\\' => {
-                match slice.get(i + 1) {
-                    Some(b) if matches!(*b, b'b' | b'f' | b'n' | b'r' | b't' | b'\\') => {
-                        key.push('\\');
-                        key.push(*b as char);
-                        i += 2;
-                    }
-                    Some(b'u') => {
-                        i += 2;
-                        let mut hex = String::with_capacity(4);
-                        for _ in 0..4 {
-                            if let Some(b) = slice.get(i) {
-                                // normal-HEXDIG = DIGIT / %x61-66    ; "0"-"9", "a"-"f"
-                                // in a valid npath, a Unicode sequence can only appear with lowercase
-                                // letters
-                                if !b.is_ascii_digit() && !(*b >= b'a' && *b <= b'f')  {
-                                    return None;
-                                }
-                                hex.push(*b as char);
-                                i += 1;
-                            } else {
-                                // Not enough characters to form a Unicode sequence
-                                return None;
-                            }
-                        }
-                        let cp = u16::from_str_radix(&hex, 16).ok()?;
-                        // the only Unicode sequences that can appear as \u{....} in an npath are in
-                        // the 00..1f range, apart from b, f, n, r, t
-                        if matches!(cp, 0x08 | 0x09 | 0x0A | 0x0C | 0x0D) || cp >= 0x20 {
-                            return None;
-                        }
-                        key.push_str("\\u");
-                        // push_str clones and appends the bytes of key; this is why it works with &key
-                        // despite key being a local variable
-                        key.push_str(&hex);
-                    }
-                    Some(b'\'') => {
-                        key.push('\'');
-                        i += 2;
-                    }
-                    Some(_) | None => return None,
-                }
-            }
+            b'\\' => handle_escape(slice, &mut i, &mut key)?,
             // forward slash as a literal in a pointer path is represented as ~1
             b'/' => {
                 key.push('~');
@@ -477,6 +446,50 @@ fn parse_index(buffer: &[u8], pos: &mut usize, path: &mut String) {
             break;
         }
     }
+}
+
+fn handle_escape(slice: &[u8], i: &mut usize, key: &mut String) -> Option<()> {
+    match slice.get(*i + 1) {
+        Some(b) if matches!(*b, b'b' | b'f' | b'n' | b'r' | b't' | b'\\') => {
+            key.push('\\');
+            key.push(*b as char);
+            *i += 2;
+        }
+        Some(b'u') => {
+            *i += 2;
+
+            let mut hex = String::with_capacity(4);
+            for _ in 0..4 {
+                let b = slice.get(*i)?;
+
+                // must be digit or lowercase 'a'-'f'
+                if !b.is_ascii_digit() && !(*b >= b'a' && *b <= b'f') {
+                    return None;
+                }
+                hex.push(*b as char);
+                *i += 1;
+            }
+
+            let cp = u16::from_str_radix(&hex, 16).ok()?;
+            // Validate strict npath constraints:
+            // - Cannot be a common control char (must use \b, \n etc instead)
+            // - Cannot be >= 0x20 (must be a literal)
+            if matches!(cp, 0x08 | 0x09 | 0x0A | 0x0C | 0x0D) || cp >= 0x20 {
+                return None;
+            }
+
+            key.push_str("\\u");
+            key.push_str(&hex);
+        }
+        // Escaped single quote: \'
+        Some(b'\'') => {
+            key.push('\'');
+            *i += 2;
+        }
+        // Invalid escape
+        _ => return None,
+    }
+    Some(())
 }
 
 #[cfg(test)]
@@ -527,8 +540,8 @@ mod test {
                     pos: 9,
                 }),
             ),
-            // passing it as "/\u{007e}" is wrong because this is not how we use Unicode sequence in json strings
-            // the parser has to map the sequence to the character
+            // passing it as "/\u{007e}" is wrong because this is not how we use Unicode sequence in
+            // json strings the parser has to map the sequence to the character
             // unpaired pointer escape where '~' is represented as Unicode sequence
             (
                 "/\\u007e",

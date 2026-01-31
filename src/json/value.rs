@@ -412,7 +412,7 @@ impl Value {
 
         let buffer = pointer.as_bytes();
         let mut ptr = Pointer::new(buffer);
-        ptr.check_start()?;
+        ptr.expect_root()?;
         // in the previous approach, we generated all the ref tokens and then iterated over the vector
         // calling match on current and returning a value if present. It worked, but we iterated twice,
         // once the input buffer to generate all the tokens and once the vector of those tokens. We
@@ -470,7 +470,7 @@ impl Value {
 
         let buffer = pointer.as_bytes();
         let mut ptr = Pointer::new(buffer);
-        ptr.check_start()?;
+        ptr.expect_root()?;
 
         let mut current = self;
         while let Some(token) = ptr.next()? {
@@ -627,6 +627,7 @@ impl Value {
     }
 
     // this method rolls back the changes if one operation resulted in an error
+    //
     /// Applies a [JSON Patch](https://www.rfc-editor.org/rfc/rfc6902) document atomically.
     ///
     /// All operations must succeed or the entire patch is rolled back, leaving the value unchanged.
@@ -1448,7 +1449,7 @@ mod tests {
             ),
             // for every element in the array we try check if the test expression returns true
             // test expression has an absolute query
-            // .* adds all the elements of the root, so our input list is of size and then we apply
+            // .* adds all the elements of the root, so our input list is of size, and then we apply
             // the next segment which is [0]
             // for the first two elements [0] can't be applied but for the last one it can and now
             // our list consists of just 3, no more segments to apply the test expression returns
@@ -1742,10 +1743,10 @@ mod tests {
             ),
             // logical not operator:
             // @.foo evaluates to true for the 1st element; in our logic when we evaluate the test
-            // expression it returns true but because we have '!' we flip the result so it is false
+            // expression it returns true but because we have '!' we flip the result so it is false,
             // and we don't include it
-            // for the 2nd element though .foo returns false but it is flipped due to '!' and it
-            // evaluates to true and we include current to the output to the list
+            // for the 2nd element though .foo returns false, but it is flipped due to '!' and it
+            // evaluates to true, and we include current to the output to the list
             (
                 "$[?!@.foo]",
                 json!([
@@ -1767,12 +1768,12 @@ mod tests {
                 ]),
                 vec![json!([3])],
             ),
-            // @.* is an existence test and we are allowed to use multi-selectors like '*'. The result
+            // @.* is an existence test, and we are allowed to use multi-selectors like '*'. The result
             // of @.* returns a lists of all the values of the map and because it returns a non-empty
             // list it evaluates to true so we include the 1st element.
             //
             // for the 2nd element we can't apply '*' in a non-container node so it returns an empty
-            // list and we don't include it to our output list
+            // list, and we don't include it to our output list
             (
                 "$[?@.*]",
                 json!([
@@ -1942,7 +1943,7 @@ mod tests {
             //
             // AND is left to right
             // so the expression is evaluated as (@.x && @.y) && @.z
-            // in boolean algebra it does not matter @x && (@.y && @.z) is the same but we need
+            // in boolean algebra it does not matter @x && (@.y && @.z) is the same, but we need
             // this left to right approach for our parser to be consistent
             //
             // OR is exactly the same
@@ -2033,7 +2034,7 @@ mod tests {
             ),
             // this was the trickiest one, initially i had "$[?value(@.x) == 2]" and value(@.x)
             // returned an empty list. This is because the filter selector for root iterates through
-            // all the members and try to evaluate the expression on the VALUE so i was calling
+            // all the members and try to evaluate the expression on the VALUE so I was calling
             // .x for 2
             (
                 "$[?value(@) == 2]",

@@ -50,6 +50,7 @@ macro_rules! impl_atoi {
             ) -> Result<Self, crate::json::number::OutOfRangeError> {
                 use crate::json::number::OutOfRangeError;
                 use crate::json::number::NumericBounds;
+                use crate::json::number::Number;
                 
                 let mut num: $t = 0;
                 let start = *pos;
@@ -72,7 +73,7 @@ macro_rules! impl_atoi {
                             .and_then(|n| n.checked_sub(digit))
                             .filter(|&n| n >= <$t as NumericBounds>::MIN)
                             .ok_or_else(|| OutOfRangeError {
-                                bound: <$t as NumericBounds>::MIN.to_string(),
+                                bound: Number::from(<$t as NumericBounds>::MIN),
                                 pos: start
                             })?;
                     } else {
@@ -81,7 +82,7 @@ macro_rules! impl_atoi {
                             .and_then(|n| n.checked_add(digit))
                             .filter(|&n| n <= <$t as NumericBounds>::MAX)
                             .ok_or_else(|| OutOfRangeError {
-                                bound: <$t as NumericBounds>::MAX.to_string(),
+                                bound: Number::from(<$t as NumericBounds>::MAX),
                                 pos: start
                             })?;
                     }

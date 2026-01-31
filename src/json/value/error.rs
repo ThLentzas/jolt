@@ -207,7 +207,8 @@ impl From<PointerError> for OpError {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PatchErrorKind {
     // in previous cases, we used to pass ParseErrorKind as the type to avoid having pos twice, 1
-    // for the inner type and one of the outer type, but now PatchError is an enum, not a struct
+    // from the inner type and one from the outer type, but now PatchError does not have a pos field
+    // so no duplication happens
     ParseError(ParseError),
     UnexpectedValue { expected: &'static str },
     InvalidOp(OpError),
@@ -220,8 +221,6 @@ impl fmt::Display for PatchErrorKind {
             PatchErrorKind::UnexpectedValue { expected } => {
                 write!(f, "expected {}", expected)
             }
-            // Just print the underlying OpError.
-            // The "operation X failed" prefix is now handled by the parent struct.
             PatchErrorKind::InvalidOp(err) => write!(f, "{}", err),
         }
     }

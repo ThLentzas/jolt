@@ -9,16 +9,6 @@ mod nfa;
 mod regex;
 mod table;
 
-// https://docs.rs/recursion/latest/recursion/
-//
-// struct A {
-//     inner : A
-// }
-// we get an error: - recursive without indirection
-//
-// Rust needs to know the size of LogicalExpression and because it is a recursive the size grows
-// infinite
-// AST
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LogicalExpr {
     Comparison(ComparisonExpr),
@@ -30,7 +20,7 @@ pub(crate) enum LogicalExpr {
 
 impl LogicalExpr {
     // short-circuiting and well-typedness of functions
-    // because the type checking happens during json, we will never encounter a case where we
+    // because the type checking happens during parsing, we will never encounter a case where we
     // might have an invalid function(Arity/Type mismatch) that we will miss because the lhs evaluated
     // to true/false, and we returned without evaluating the rhs
     //
@@ -136,7 +126,7 @@ impl Comparable {
     // gets the 'r lifetime.
     //
     // the problem is in this case: Comparable::Literal(t) => Operand::Value(Cow::Borrowed(t))
-    // This is the case where either lhs or rhs was a literal. During json we wrapped the literal
+    // This is the case where either lhs or rhs was a literal. During parsing we wrapped the literal
     // in a Value() so we can then use the comparison operators. The Comparable::Literal(t) has the
     // lifetime of self not of 'r, it does not live in root which is shorter than 'r.
     //
@@ -305,6 +295,4 @@ impl EmbeddedQuery {
         self.segments.iter().all(|seg| seg.is_singular())
     }
 }
-
-// toDo: review anchors
 
